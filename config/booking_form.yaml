@@ -1,0 +1,71 @@
+fields:
+  - key: service_type
+    label: "Что планируете: беседка, баня, дом, тёплая беседка или несколько услуг?"
+    required_for_availability: true
+    required_for_booking: true
+    type: enum
+    allowed_values:
+      - bathhouse
+      - gazebo
+      - warm_gazebo
+      - house
+
+  - key: date
+    label: "На какую дату планируете отдых?"
+    required_for_availability: true
+    required_for_booking: true
+    type: date
+
+  - key: service_variant
+    label: "Какую беседку выбираете? Могу предложить варианты по количеству гостей и удобствам."
+    required_for_availability: false
+    required_for_booking: true
+    type: string
+
+  - key: time
+    label: "Во сколько хотите приехать? Можно сразу написать период, например: с 18:00 до 00:00."
+    required_for_availability: false
+    required_for_booking: true
+    type: time
+
+  - key: duration
+    label: "На сколько часов хотите забронировать?"
+    required_for_availability: false
+    required_for_booking: true
+    type: duration
+
+  - key: guests_count
+    label: "Сколько примерно гостей?"
+    required_for_availability: false
+    required_for_booking: true
+    type: integer
+
+  - key: event_format
+    label: "Какой формат отдыха: день рождения, корпоратив, семейный отдых, компания друзей или спокойный вечер?"
+    required_for_availability: false
+    required_for_booking: true
+    type: string
+
+  - key: preferences
+    label: "Что важно: у воды, детям удобно, побольше места, тише, рядом мангал, оформление?"
+    required_for_availability: false
+    required_for_booking: false
+    type: string
+
+  - key: client_name
+    label: "Как вас зовут?"
+    required_for_availability: false
+    required_for_booking: true
+    type: string
+
+  - key: phone
+    label: "Телефон для бронирования?"
+    required_for_availability: false
+    required_for_booking: true
+    type: phone
+
+  - key: upsell_items
+    label: "Обычно к отдыху берут допы, чтобы ничего не везти с собой: уголь, розжиг, решетка/шампуры, лед, посуда, кальян, продление или уборка. Что подготовить для вас?"
+    required_for_availability: false
+    required_for_booking: true
+    type: list
