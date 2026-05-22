@@ -132,3 +132,18 @@ def close_matching(
             params.append(desired_time)
         cur.execute(sql, params)
         return cur.rowcount
+
+
+def close_for_user(conn: PgConnection, *, user_id: int) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE waitlist_requests
+            SET status = 'closed',
+                updated_at = NOW()
+            WHERE user_id = %s
+              AND status IN ('active', 'notified')
+            """,
+            (user_id,),
+        )
+        return cur.rowcount

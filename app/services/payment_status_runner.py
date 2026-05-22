@@ -23,7 +23,7 @@ async def run_payment_status_loop(bot: Bot | None = None) -> None:
         logger.info("Payment status sync skipped: provider is not yookassa")
         return
 
-    interval = max(settings.payment_status_sync_interval_seconds, 30)
+    interval = max(settings.payment_status_sync_interval_seconds, 5)
     logger.info("Payment status sync loop started interval=%s", interval)
     while True:
         try:

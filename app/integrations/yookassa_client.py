@@ -50,12 +50,14 @@ class YooKassaClient:
         }
         if customer_phone:
             digits = re.sub(r"\D", "", customer_phone)
+            if digits.startswith("9") and len(digits) == 10:
+                digits = "7" + digits
             if digits.startswith("8") and len(digits) == 11:
                 digits = "7" + digits[1:]
+            if not (digits.startswith("7") and len(digits) == 11):
+                raise YooKassaError("Invalid customer phone for YooKassa receipt")
             payload["receipt"] = {
-                "customer": {
-                    "phone": digits,
-                },
+                "customer": {"phone": digits},
                 "items": [
                     {
                         "description": description[:128],

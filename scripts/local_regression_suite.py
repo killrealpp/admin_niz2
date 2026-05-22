@@ -748,12 +748,61 @@ def _test_first_upsell_no_gets_soft_push() -> Check:
     form = _base_form(service_type="gazebo", service_variant="Беседка №2")
     reply = message_handler._upsell_push_reply(form)
     no_patch = message_handler._upsell_items_patch("наверное ничего")
+    typo_patch = message_handler._upsell_items_patch("наверное ничег")
     ok = (
         "уголь" in reply.lower()
         and "напишите «нет» ещё раз" in reply.lower()
         and no_patch.get("upsell_items") == ["не нужны"]
+        and typo_patch.get("upsell_items") == ["не нужны"]
     )
     return Check("first upsell no gets soft push", ok, reply)
+
+
+def _test_first_upsell_flow_before_phone(now: datetime) -> Check:
+    suffix = "first_upsell_flow"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №8",
+            date="2026-05-23",
+            time="18:00",
+            duration=6,
+            guests_count=5,
+            event_format="спокойный отдых",
+            upsell_items=[],
+            client_name="Кирилл",
+            phone=None,
+        ),
+    )
+    with get_connection() as conn:
+        messages_repo = message_handler.messages_repo
+        messages_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            sender="assistant",
+            text="Обычно к беседке берут допы: уголь, розжиг, решетка/шампуры, лед, посуда, кальян. Что подготовить для вас?",
+        )
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+        )
+
+    reply = _send(suffix, "наверное ничего", now)
+    state = _latest_state(suffix)
+    form = state.get("form_data") or {}
+    ok = (
+        "напишите «нет» ещё раз" in reply.lower()
+        and form.get("upsell_offer_count") == 1
+        and not form.get("upsell_items")
+        and state.get("current_step") == "upsell_items"
+    )
+    return Check("first upsell flow before phone gets soft push", ok, f"{reply} | {state}")
 
 
 def _test_positive_upsell_goes_to_next_step(now: datetime) -> Check:
@@ -793,6 +842,279 @@ def _test_positive_upsell_goes_to_next_step(now: datetime) -> Check:
         and form.get("upsell_items") == ["вода"]
     )
     return Check("positive upsell goes to confirmation", ok, f"{reply} | {state}")
+
+
+def _test_free_dates_lookup_after_no_availability(now: datetime) -> Check:
+    suffix = "free_dates_lookup"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="bathhouse",
+            service_variant=None,
+            date=None,
+            time=None,
+            duration=None,
+            guests_count=5,
+            last_unavailable={"service_type": "bathhouse", "date": "2026-06-23"},
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="awaiting_new_date",
+            next_step="date",
+        )
+
+    original_availability = message_handler.check_availability
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        form = kwargs.get("form_data") or {}
+        if form.get("date") == "2026-06-25":
+            return AvailabilityResult(True, "ok", ["Баня: дата свободна"])
+        return AvailabilityResult(True, "no", [])
+
+    message_handler.check_availability = fake_availability
+    try:
+        reply = _send(suffix, "а когда свободно?", now)
+        ok = "25 июня" in reply and "24 июня" not in reply and "ближайшие свободные даты" in reply.lower()
+        return Check("free dates lookup after no availability", ok, reply)
+    finally:
+        message_handler.check_availability = original_availability
+
+
+def _test_waitlist_decline_does_not_handoff(now: datetime) -> Check:
+    suffix = "waitlist_decline"
+    _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        yclients_service_id="18490331",
+        provider_record_id="local_waitlist_decline_record",
+        phone="+79990000006",
+    )
+    original_classifier = message_handler.classify_post_booking_message
+    called = {"value": False}
+
+    def fake_classifier(*_args: Any, **_kwargs: Any) -> PostBookingResponse:
+        called["value"] = True
+        return PostBookingResponse(intent="other", reply_to_user="fallback", handoff_to_human=True)
+
+    message_handler.classify_post_booking_message = fake_classifier
+    try:
+        reply = _send(suffix, "нет, не актуально", now)
+        state = _latest_state(suffix)
+        ok = "запрос" in reply.lower() and state.get("status") != "handoff" and not called["value"]
+        return Check("waitlist decline does not handoff", ok, f"{reply} | {state}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+
+
+def _add_paid_booking(
+    created: dict[str, Any],
+    now: datetime,
+    *,
+    service_type: str,
+    booking_date: date,
+    provider_record_id: str,
+    yclients_service_id: str | None = None,
+) -> None:
+    service_id = yclients_service_id or ("18201056" if service_type == "gazebo" else "18490331")
+    with get_connection() as conn:
+        hold = slot_holds_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            service_type=service_type,
+            yclients_service_id=service_id,
+            slot_date=booking_date,
+            slot_time=time(18, 0),
+            duration_minutes=360,
+            expires_at=now + timedelta(minutes=10),
+        )
+        booking = bookings_repo.create_from_hold(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            slot_hold_id=hold["id"],
+            service_type=service_type,
+            booking_date=booking_date,
+            booking_time=time(18, 0),
+            duration_minutes=360,
+            client_name="Кирилл",
+            phone="+79990000007",
+            guests_count=5,
+            event_format="спокойный отдых",
+            preferences=None,
+            upsell_items=["не нужны"],
+            status="created_in_yclients",
+            payment_status="paid",
+        )
+        bookings_repo.mark_yclients_created(conn, booking_id=booking["id"], yclients_record_id=provider_record_id)
+        slot_holds_repo.mark_converted(conn, hold_id=hold["id"], now=now)
+
+
+def _test_post_booking_summary_always_uses_db(now: datetime) -> Check:
+    suffix = "summary_uses_db"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        yclients_service_id="18490331",
+        provider_record_id="local_summary_bath",
+        phone="+79990000007",
+    )
+    _add_paid_booking(created, now, service_type="gazebo", booking_date=date(2026, 6, 25), provider_record_id="local_summary_gazebo")
+    original_classifier = message_handler.classify_post_booking_message
+    called = {"value": False}
+
+    def fake_classifier(*_args: Any, **_kwargs: Any) -> PostBookingResponse:
+        called["value"] = True
+        return PostBookingResponse(intent="current_booking_question", reply_to_user="У вас одна бронь")
+
+    message_handler.classify_post_booking_message = fake_classifier
+    try:
+        reply = _send(suffix, "какие теперь у меня есть брони?", now)
+        reply2 = _send(suffix, "и это все?", now)
+        ok = (
+            "2 брони" in reply
+            and "Баня" in reply
+            and "Бесед" in reply
+            and "2 брони" in reply2
+            and not called["value"]
+        )
+        return Check("post booking summary always uses db", ok, f"{reply} | {reply2}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+
+
+def _test_reschedule_selects_service_after_list(now: datetime) -> Check:
+    suffix = "reschedule_select_service"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        yclients_service_id="18490331",
+        provider_record_id="local_reschedule_select_bath",
+        phone="+79990000008",
+    )
+    _add_paid_booking(created, now, service_type="gazebo", booking_date=date(2026, 6, 25), provider_record_id="local_reschedule_select_gazebo")
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(True, "ok", ["Баня: свободно"])
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        first = _send(suffix, "могу ли я перенести с 25 на 26 то же время?", now)
+        second = _send(suffix, "баню которая на 25 июня хочу перенести на 26", now)
+        ok = (
+            "какую бронь переносим" in first.lower()
+            and "перенести бронь" in second.lower()
+            and "баня" in second.lower()
+            and "26 июня" in second
+        )
+        return Check("reschedule selects service after list", ok, f"{first} | {second}")
+    finally:
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_reschedule_uses_target_date_not_source_date(now: datetime) -> Check:
+    suffix = "reschedule_target_date"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 5, 23),
+        yclients_service_id="18201065",
+        provider_record_id="local_reschedule_target_gazebo8",
+        phone="+79990000009",
+    )
+    _add_paid_booking(
+        created,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        provider_record_id="local_reschedule_target_bath",
+    )
+    _add_paid_booking(
+        created,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 25),
+        provider_record_id="local_reschedule_target_gazebo5",
+        yclients_service_id="18201062",
+    )
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+    seen: list[dict[str, Any]] = []
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        form = dict(kwargs.get("form_data") or {})
+        seen.append(form)
+        return AvailabilityResult(True, "ok", [f"{form.get('service_variant') or 'Бронь'}: свободно"])
+
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.check_availability = fake_availability
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "могу ли я беседку на 8 которая на 23 мая перенеси на 26 июня", now)
+        checked = seen[-1] if seen else {}
+        ok = (
+            "26 июня" in reply
+            and checked.get("date") == "2026-06-26"
+            and checked.get("service_type") == "gazebo"
+            and checked.get("service_variant") == "Беседка №8"
+        )
+        return Check("reschedule uses target date not source date", ok, f"{reply} | checked={checked}")
+    finally:
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_reschedule_typo_pernesti_uses_target_date(now: datetime) -> Check:
+    suffix = "reschedule_typo_pernesti"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        yclients_service_id="18490331",
+        provider_record_id="local_reschedule_typo_bath",
+        phone="+79990000010",
+    )
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+    seen: list[dict[str, Any]] = []
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        form = dict(kwargs.get("form_data") or {})
+        seen.append(form)
+        return AvailabilityResult(True, "ok", ["Баня: свободно"])
+
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.check_availability = fake_availability
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "тогда баня которая на 25 июня пернести на 26 июня", now)
+        checked = seen[-1] if seen else {}
+        ok = "26 июня" in reply and checked.get("date") == "2026-06-26"
+        return Check("reschedule typo pernesti uses target date", ok, f"{reply} | checked={checked}")
+    finally:
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
 
 
 def _create_paid_booking_for_action(
@@ -983,7 +1305,14 @@ def main() -> None:
         checks.append(_test_bare_weekday_requires_confirmation(now))
         checks.append(_test_weekday_confirmation_yes_uses_saved_candidate(now))
         checks.append(_test_first_upsell_no_gets_soft_push())
+        checks.append(_test_first_upsell_flow_before_phone(now))
         checks.append(_test_positive_upsell_goes_to_next_step(now))
+        checks.append(_test_free_dates_lookup_after_no_availability(now))
+        checks.append(_test_waitlist_decline_does_not_handoff(now))
+        checks.append(_test_post_booking_summary_always_uses_db(now))
+        checks.append(_test_reschedule_selects_service_after_list(now))
+        checks.append(_test_reschedule_uses_target_date_not_source_date(now))
+        checks.append(_test_reschedule_typo_pernesti_uses_target_date(now))
         checks.append(_test_paid_cancel_asks_confirmation(now))
         checks.append(_test_paid_reschedule_asks_confirmation(now))
     finally:

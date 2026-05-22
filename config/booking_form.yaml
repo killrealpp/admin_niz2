@@ -52,6 +52,12 @@ fields:
     required_for_booking: false
     type: string
 
+  - key: upsell_items
+    label: "Обычно к отдыху берут допы, чтобы ничего не везти с собой: уголь, розжиг, решетка/шампуры, лед, посуда, кальян, продление или уборка. Что подготовить для вас?"
+    required_for_availability: false
+    required_for_booking: true
+    type: list
+
   - key: client_name
     label: "Как вас зовут?"
     required_for_availability: false
@@ -63,9 +69,3 @@ fields:
     required_for_availability: false
     required_for_booking: true
     type: phone
-
-  - key: upsell_items
-    label: "Обычно к отдыху берут допы, чтобы ничего не везти с собой: уголь, розжиг, решетка/шампуры, лед, посуда, кальян, продление или уборка. Что подготовить для вас?"
-    required_for_availability: false
-    required_for_booking: true
-    type: list

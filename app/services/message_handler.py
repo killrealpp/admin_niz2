@@ -24,6 +24,7 @@ from app.db.repositories import (
     slot_holds_repo,
     system_logs_repo,
     users_repo,
+    waitlist_repo,
 )
 from app.services.availability_service import check_availability, load_services_map
 from app.services.booking_form_service import initial_form_data, merge_form_data, next_question
@@ -479,7 +480,7 @@ def _join_preferences(current: Any, value: str) -> str:
     return f"{text}; {value}"
 
 
-def _service_variant_patch(text: str) -> dict[str, str]:
+def _service_variant_patch(text: str, *, allow_bare_ordinal: bool = False) -> dict[str, str]:
     normalized = text.lower().replace("ё", "е")
     word_numbers = {
         "один": "1",
@@ -527,7 +528,9 @@ def _service_variant_patch(text: str) -> dict[str, str]:
     if match:
         return {"service_variant": f"Беседка №{match.group(1)}"}
     for word, number in word_numbers.items():
-        if re.search(rf"\b(?:номер\s+)?{word}\b", normalized):
+        if re.search(rf"\b(?:номер\s+)?{word}\b", normalized) and (
+            allow_bare_ordinal or "бесед" in normalized or "номер" in normalized
+        ):
             return {"service_variant": f"Беседка №{number}"}
     return {}
 
@@ -536,9 +539,13 @@ def _phone_patch(text: str) -> dict[str, str]:
     if not re.search(r"\+?\d[\d\s().-]{5,}\d", text):
         return {}
     digits = re.sub(r"\D", "", text)
+    if len(digits) == 10 and digits.startswith("9"):
+        digits = "7" + digits
     if len(digits) == 11 and digits.startswith("8"):
         digits = "7" + digits[1:]
-    if 10 <= len(digits) <= 15:
+    if len(digits) == 11 and digits.startswith("7"):
+        return {"phone": "+" + digits}
+    if 11 <= len(digits) <= 15 and not digits.startswith(("7", "8")):
         return {"phone": "+" + digits}
     return {"phone": text.strip()}
 
@@ -579,6 +586,8 @@ def _upsell_items_patch(text: str) -> dict[str, list[str]]:
     )
     fuzzy_no_extras = (
         "ничего",
+        "ничег",
+        "нечег",
         "не надо",
         "не нужно",
         "не будем",
@@ -626,20 +635,26 @@ def _is_upsell_negative(text: str) -> bool:
 def _upsell_push_reply(form_data: dict[str, Any]) -> str:
     service_type = form_data.get("service_type")
     if service_type == "bathhouse":
-        usual = "к бане обычно берут лёд для напитков, посуду, воду и кальян"
-        soft = "На день рождения это особенно удобно: не нужно везти мелочи с собой."
+        usual = "к бане чаще всего берут воду, лёд для напитков, посуду и кальян"
+        soft = "Так компания не отвлекается на мелочи, а отдых сразу получается собранным."
+        minimal = "Могу добавить хотя бы воду или лёд — это обычно точно пригождается."
     elif service_type == "gazebo":
-        usual = "к беседке чаще всего берут уголь, розжиг, решётку или шампуры, посуду и кальян"
-        soft = "Так отдых начинается сразу, без лишних заездов в магазин."
+        usual = "к беседке чаще всего берут базовый набор для мангала: уголь, розжиг, решётку или шампуры, плюс посуду и лёд"
+        soft = "Это самый частый набор, потому что он экономит время перед заездом и не приходится срочно искать магазин."
+        minimal = "Могу поставить минимум — уголь и розжиг, а остальное не добавлять."
     elif service_type == "house":
         usual = "к дому обычно берут посуду, лёд, воду, кальян и иногда продление"
-        soft = "Это удобно, если компания планирует отдыхать дольше."
+        soft = "Это удобно, если компания планирует отдыхать дольше и не хочет везти всё с собой."
+        minimal = "Могу добавить только воду или посуду, без лишнего."
     else:
         usual = "обычно берут посуду, лёд, воду, кальян или продление"
         soft = "Можно добавить только то, что действительно пригодится."
+        minimal = "Могу отметить самый базовый вариант, без лишнего."
     return (
-        f"Поняла. Всё же подскажу: {usual}.\n\n"
-        f"{soft} Может, отметим хотя бы что-то из этого? Если точно ничего не нужно, напишите «нет» ещё раз."
+        f"Поняла. Всё же подскажу по опыту: {usual}.\n\n"
+        f"{soft}\n\n"
+        f"{minimal}\n\n"
+        "Что добавим? Если точно ничего не нужно, напишите «нет» ещё раз."
     )
 
 
@@ -670,7 +685,11 @@ def _looks_like_name(text: str) -> bool:
 
 def _valid_phone(value: Any) -> bool:
     digits = re.sub(r"\D", "", str(value or ""))
-    return 10 <= len(digits) <= 15
+    if len(digits) == 10 and digits.startswith("9"):
+        return True
+    if digits.startswith(("7", "8")):
+        return len(digits) == 11
+    return 11 <= len(digits) <= 15
 
 
 def _time_period_patch(text: str) -> dict[str, Any]:
@@ -859,6 +878,8 @@ def _asks_booking_summary(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
     if _asks_available_services(text):
         return False
+    if "брон" in normalized and any(marker in normalized for marker in ("какие", "есть", "мои", "у меня", "теперь")):
+        return True
     return (
         any(
             marker in normalized
@@ -1567,6 +1588,10 @@ def _handle_post_booking_message(
 
     status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
 
+    if _asks_booking_summary(text) or _continues_booking_summary_question(text, history):
+        cleared = {**form_data, "cancel_flow": None, "reschedule_flow": None}
+        return _post_booking_summary(conn, conversation, cleared, now), status, "reserved", "payment_status", cleared
+
     if form_data.get("cancel_flow"):
         return _handle_cancel_booking_flow(conn, conversation, text, form_data, now)
 
@@ -1578,6 +1603,24 @@ def _handle_post_booking_message(
 
     if _wants_reschedule(text):
         return _start_reschedule_flow(conn, conversation, text, form_data, status, now)
+
+    if _is_waitlist_decline(text):
+        waitlist_repo.close_for_user(conn, user_id=int(conversation["user_id"]))
+        return (
+            "Поняла, больше не будем держать этот запрос в ожидании ✅\n\nЕсли снова понадобится проверить дату или оформить бронь, просто напишите услугу и дату.",
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
+
+    if _asks_for_free_slots(text):
+        lookup_form = form_data | _service_type_patch(text)
+        if lookup_form.get("service_type") != "gazebo":
+            lookup_form["service_variant"] = None
+        reply = _next_free_dates_reply(conn, conversation, lookup_form, now)
+        if reply:
+            return reply, status, "reserved", "payment_status", form_data
 
     try:
         classified = _classify_post_booking(
@@ -1668,7 +1711,23 @@ def _handle_post_booking_message(
 
 def _wants_reschedule(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
-    return any(marker in normalized for marker in ("перенес", "перенести", "поменять дату", "изменить дату", "другую дату", "поменять время", "изменить время"))
+    return any(
+        marker in normalized
+        for marker in (
+            "перенес",
+            "перенеси",
+            "перенести",
+            "перенесешь",
+            "перенесёшь",
+            "пернести",
+            "перенос",
+            "поменять дату",
+            "изменить дату",
+            "другую дату",
+            "поменять время",
+            "изменить время",
+        )
+    )
 
 
 def _wants_cancel_booking(text: str) -> bool:
@@ -1795,6 +1854,11 @@ def _start_reschedule_flow(
     updated = {**form_data, "reschedule_flow": flow}
     if len(bookings) == 1:
         flow["booking_id"] = bookings[0]["id"]
+        updated["reschedule_flow"] = flow
+        return _handle_reschedule_flow(conn, conversation, text, updated, now)
+    selected = _select_reschedule_booking(bookings, None, text)
+    if selected:
+        flow["booking_id"] = selected["id"]
         updated["reschedule_flow"] = flow
         return _handle_reschedule_flow(conn, conversation, text, updated, now)
 
@@ -1945,10 +2009,84 @@ def _execute_reschedule(
 def _reschedule_target_date_patch(text: str, now: datetime, booking: dict[str, Any]) -> dict[str, str]:
     booking_date = booking.get("booking_date")
     base_date = booking_date if isinstance(booking_date, date) else None
-    for marker in ("перенести на", "перенесем на", "перенесём на", "поменять на", "изменить на"):
+    for marker in (
+        "перенести на",
+        "перенеси на",
+        "перенесите на",
+        "перенесем на",
+        "перенесём на",
+        "пернести на",
+        "пернести на",
+        "поменять на",
+        "изменить на",
+    ):
         patch = _date_patch_after_marker(text, now, marker, base_date=base_date)
         if patch:
             return patch
+    patch = _reschedule_source_target_day_patch(text, now, base_date)
+    if patch:
+        return patch
+    patch = _last_explicit_date_patch(text, now, exclude_date=base_date)
+    if patch:
+        return patch
+    return {}
+
+
+def _reschedule_source_target_day_patch(text: str, now: datetime, base_date: date | None) -> dict[str, str]:
+    if not base_date:
+        return {}
+    normalized = text.lower().replace("ё", "е")
+    month_pattern = (
+        r"января|январь|февраля|февраль|марта|март|апреля|апрель|мая|май|"
+        r"июня|июнь|июля|июль|августа|август|сентября|сентябрь|"
+        r"октября|октябрь|ноября|ноябрь|декабря|декабрь"
+    )
+    patterns = (
+        rf"\bс\s+\d{{1,2}}(?:\s+(?:{month_pattern}))?\s+на\s+(\d{{1,2}})(?:\s+({month_pattern}))?\b",
+        rf"\b\d{{1,2}}(?:\s+(?:{month_pattern}))?\s+на\s+(\d{{1,2}})(?:\s+({month_pattern}))?\b",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if not match:
+            continue
+        day = int(match.group(1))
+        month = MONTH_NUMBERS_RU.get(match.group(2) or "") if match.group(2) else base_date.month
+        try:
+            candidate = base_date.replace(month=month, day=day)
+        except ValueError:
+            continue
+        if candidate < now.date():
+            candidate = candidate.replace(year=candidate.year + 1)
+        if candidate != base_date:
+            return {"date": candidate.isoformat()}
+    return {}
+
+
+def _last_explicit_date_patch(text: str, now: datetime, *, exclude_date: date | None = None) -> dict[str, str]:
+    normalized = text.lower().replace("ё", "е")
+    matches = list(
+        re.finditer(
+            r"\b(\d{1,2})\s+("
+            r"января|январь|февраля|февраль|марта|март|апреля|апрель|мая|май|"
+            r"июня|июнь|июля|июль|августа|август|сентября|сентябрь|"
+            r"октября|октябрь|ноября|ноябрь|декабря|декабрь"
+            r")\b",
+            normalized,
+        )
+    )
+    for match in reversed(matches):
+        day = int(match.group(1))
+        month = MONTH_NUMBERS_RU[match.group(2)]
+        year = now.date().year
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if candidate < now.date():
+            candidate = date(year + 1, month, day)
+        if exclude_date and candidate == exclude_date:
+            continue
+        return {"date": candidate.isoformat()}
     return {}
 
 
@@ -1976,13 +2114,60 @@ def _select_reschedule_booking(bookings: list[dict[str, Any]], booking_id: Any, 
         index = int(match.group(1)) - 1
         if 0 <= index < len(bookings):
             return bookings[index]
+    ordinal_index = _ordinal_index(normalized)
+    if ordinal_index is not None and 0 <= ordinal_index < len(bookings):
+        return bookings[ordinal_index]
     service_patch = _service_type_patch(text)
     service_type = service_patch.get("service_type")
     if service_type:
         matches = [booking for booking in bookings if booking.get("service_type") == service_type]
+        variant = (_service_variant_patch(text) or {}).get("service_variant")
+        if variant:
+            variant_lower = str(variant).lower().replace("ё", "е")
+            variant_matches = [
+                booking
+                for booking in matches
+                if str(_booking_object_title(booking)).lower().replace("ё", "е") == variant_lower
+            ]
+            if variant_matches:
+                matches = variant_matches
+        date_patch = _relative_date_patch(text, _now_local())
+        if date_patch.get("date"):
+            dated = [booking for booking in matches if str(booking.get("booking_date")) == date_patch["date"]]
+            if len(dated) == 1:
+                return dated[0]
         if len(matches) == 1:
             return matches[0]
     return bookings[0] if len(bookings) == 1 else None
+
+
+def _ordinal_index(text: str) -> int | None:
+    words = {
+        "первую": 0,
+        "первая": 0,
+        "первый": 0,
+        "первое": 0,
+        "вторую": 1,
+        "вторая": 1,
+        "второй": 1,
+        "второе": 1,
+        "третью": 2,
+        "третья": 2,
+        "третий": 2,
+        "третье": 2,
+        "четвертую": 3,
+        "четвертая": 3,
+        "четвертый": 3,
+        "четвертое": 3,
+        "пятую": 4,
+        "пятая": 4,
+        "пятый": 4,
+        "пятое": 4,
+    }
+    for word, index in words.items():
+        if re.search(rf"\b{word}\b", text):
+            return index
+    return None
 
 
 def _form_data_for_booking_reschedule(form_data: dict[str, Any], booking: dict[str, Any], flow: dict[str, Any]) -> dict[str, Any]:
@@ -1995,13 +2180,13 @@ def _form_data_for_booking_reschedule(form_data: dict[str, Any], booking: dict[s
         "duration": flow.get("duration"),
         "guests_count": booking.get("guests_count") or form_data.get("guests_count"),
     }
-    if service_type == "gazebo" and form_data.get("service_variant"):
-        updated["service_variant"] = form_data.get("service_variant")
+    if service_type == "gazebo":
+        updated["service_variant"] = _booking_object_title(booking)
     return updated
 
 
 def _booking_line_short(booking: dict[str, Any]) -> str:
-    title = (load_services_map().get(booking.get("service_type")) or {}).get("title") or booking.get("service_type")
+    title = _booking_object_title(booking)
     return f"{title}: {_format_date_ru(str(booking.get('booking_date')))}, с {str(booking.get('booking_time'))[:5]} на {_format_duration(_hours_from_minutes(booking.get('duration_minutes')))}"
 
 
@@ -2115,6 +2300,75 @@ def _append_waitlist_offer(reply: str) -> str:
     )
 
 
+def _next_free_dates_reply(
+    conn,
+    conversation: dict[str, Any],
+    form_data: dict[str, Any],
+    now: datetime,
+    *,
+    limit: int = 5,
+    days_ahead: int = 75,
+) -> str | None:
+    last_unavailable = form_data.get("last_unavailable") or {}
+    service_type = form_data.get("service_type") or last_unavailable.get("service_type")
+    if not service_type:
+        return None
+
+    service_config = load_services_map().get(service_type) or {}
+    title = service_config.get("title") or service_type
+    booked_dates = {
+        str(booking.get("booking_date"))
+        for booking in _active_user_bookings(conn, conversation, form_data, now)
+        if booking.get("service_type") == service_type
+    }
+
+    start = now.date()
+    if last_unavailable.get("date"):
+        try:
+            start = max(start, datetime.fromisoformat(str(last_unavailable["date"])).date() + timedelta(days=1))
+        except ValueError:
+            pass
+
+    time_value = form_data.get("time") or last_unavailable.get("time")
+    duration_value = form_data.get("duration") or last_unavailable.get("duration")
+    guests_count = form_data.get("guests_count") or last_unavailable.get("guests_count")
+    service_variant = form_data.get("service_variant") or last_unavailable.get("service_variant")
+
+    found: list[tuple[date, list[str]]] = []
+    for offset in range(days_ahead):
+        candidate = start + timedelta(days=offset)
+        if candidate.isoformat() in booked_dates:
+            continue
+        check_form = {
+            **form_data,
+            "service_type": service_type,
+            "service_variant": service_variant,
+            "date": candidate.isoformat(),
+            "time": time_value,
+            "duration": duration_value,
+            "guests_count": guests_count,
+        }
+        availability = check_availability(conn, form_data=check_form, now=now)
+        if availability.ok and availability.slots:
+            found.append((candidate, availability.slots))
+            if len(found) >= limit:
+                break
+
+    if not found:
+        return (
+            f"На ближайшие {days_ahead} дней свободных дат для «{title}» не нашла.\n\n"
+            "Можно написать другой период или выбрать другую услугу — проверю по журналу."
+        )
+
+    lines = [f"Ближайшие свободные даты для «{title}»:"]
+    for candidate, slots in found:
+        first_slot = slots[0].split(":", 1)[1].strip() if ":" in slots[0] else slots[0]
+        lines.append(f"- {_format_date_ru(candidate)}: {first_slot}")
+    lines.append("")
+    lines.append("Какую дату выбираете?")
+    return "\n".join(lines)
+
+
 def _reset_unavailable_slot(form_data: dict[str, Any]) -> dict[str, Any]:
     updated = form_data.copy()
     updated["last_unavailable"] = {
@@ -2173,8 +2427,63 @@ def _same_unavailable_date_reply(form_data: dict[str, Any]) -> tuple[str, str]:
 
 
 def _asks_for_free_slots(text: str) -> bool:
-    normalized = text.lower()
-    return any(word in normalized for word in ("свобод", "слот", "время", "во сколько", "на сколько"))
+    normalized = text.lower().replace("ё", "е")
+    if any(word in normalized for word in ("свобод", "слот", "во сколько")):
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "когда можно",
+            "когда есть",
+            "когда получится",
+            "какие даты",
+            "ближайшие даты",
+        )
+    )
+
+
+def _continues_booking_summary_question(text: str, history: list[dict[str, Any]]) -> bool:
+    normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
+    if normalized not in {"и это все", "и это всё", "это все", "это всё", "только одна", "только одну"}:
+        return False
+    for item in reversed(history[:-1]):
+        if item.get("sender") == SENDER_USER:
+            continue
+        if item.get("sender") != SENDER_ASSISTANT:
+            continue
+        previous = str(item.get("text") or "").lower().replace("ё", "е")
+        return "брон" in previous
+    return False
+
+
+def _last_assistant_asked_upsell(history: list[dict[str, Any]]) -> bool:
+    for item in reversed(history):
+        if item.get("sender") == SENDER_USER:
+            continue
+        if item.get("sender") != SENDER_ASSISTANT:
+            continue
+        text = str(item.get("text") or "").lower().replace("ё", "е")
+        return (
+            "что подготовить" in text
+            and any(marker in text for marker in ("доп", "уголь", "розжиг", "решет", "шампур", "кальян", "воду"))
+        )
+    return False
+
+
+def _is_waitlist_decline(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
+    return any(
+        marker in normalized
+        for marker in (
+            "не актуально",
+            "уже не актуально",
+            "больше не актуально",
+            "не нужно уведомлять",
+            "не надо уведомлять",
+            "снял запрос",
+            "снять запрос",
+        )
+    )
 
 
 def _is_likely_form_answer(
@@ -2707,7 +3016,7 @@ def _current_step_patch(text: str, expected_key: str | None, now: datetime | Non
     if expected_key == "guests_count":
         patch |= _guests_count_patch(text, expected_key)
     if expected_key == "service_variant":
-        patch |= _service_variant_patch(text)
+        patch |= _service_variant_patch(text, allow_bare_ordinal=True)
         patch |= _guests_count_patch(text, "guests_count")
     if expected_key == "client_name":
         patch |= _client_name_patch(text, expected_key)
@@ -2846,6 +3155,27 @@ def handle_incoming(message: IncomingMessage) -> str:
             raw_payload=message.raw_payload,
         )
         history = messages_repo.list_recent(conn, conversation["id"], limit=20)
+
+        if _handoff_active(user, now) and _is_waitlist_decline(message.text):
+            waitlist_repo.close_for_user(conn, user_id=int(user["id"]))
+            users_repo.clear_handoff(conn, user_id=int(user["id"]))
+            reply = "Поняла, запрос на уведомление сняла ✅\n\nЕсли снова понадобится проверить свободные даты, просто напишите услугу и дату."
+            messages_repo.create(
+                conn,
+                conversation_id=conversation["id"],
+                sender=SENDER_ASSISTANT,
+                text=reply,
+            )
+            conversations_repo.update_after_message(
+                conn,
+                conversation["id"],
+                now,
+                status="payment_paid" if conversation.get("status") == "payment_paid" else "waiting_user",
+                current_step="reserved" if conversation.get("status") == "payment_paid" else conversation.get("current_step"),
+                next_step="payment_status" if conversation.get("status") == "payment_paid" else conversation.get("next_step"),
+                form_data=conversation.get("form_data") or {},
+            )
+            return reply
 
         if _handoff_active(user, now):
             reply = _handoff_reply()
@@ -3220,8 +3550,41 @@ def handle_incoming(message: IncomingMessage) -> str:
             )
             return reply
 
+        if (
+            _asks_for_free_slots(message.text)
+            and (
+                conversation.get("current_step") == "awaiting_new_date"
+                or (conversation.get("form_data") or {}).get("last_unavailable")
+            )
+        ):
+            form_data = conversation.get("form_data") or {}
+            reply = _next_free_dates_reply(conn, conversation, form_data, now)
+            if reply:
+                messages_repo.create(
+                    conn,
+                    conversation_id=conversation["id"],
+                    sender=SENDER_ASSISTANT,
+                    text=reply,
+                )
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status="waiting_user",
+                    current_step="awaiting_new_date",
+                    next_step="date",
+                    form_data=form_data,
+                )
+                return reply
+
         current_form_data = conversation.get("form_data") or {}
         expected_key_before = next_question(current_form_data)[0]
+        if (
+            expected_key_before != "upsell_items"
+            and not current_form_data.get("upsell_items")
+            and _last_assistant_asked_upsell(history)
+        ):
+            expected_key_before = "upsell_items"
         if expected_key_before == "upsell_items" and _is_upsell_negative(message.text):
             offer_count = int(current_form_data.get("upsell_offer_count") or 0)
             if offer_count < 1:
