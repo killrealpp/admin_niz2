@@ -34,6 +34,34 @@ def normalize_telegram_message(message: Message) -> IncomingMessage:
     )
 
 
+def normalize_telegram_voice_message(message: Message, transcribed_text: str) -> IncomingMessage:
+    user = message.from_user
+    if not user:
+        raise ValueError("Telegram message has no from_user")
+
+    msg_time = message.date
+    if msg_time.tzinfo is None:
+        msg_time = msg_time.replace(tzinfo=timezone.utc)
+
+    voice = message.voice
+    return IncomingMessage(
+        channel=CHANNEL_TELEGRAM,
+        external_user_id=str(user.id),
+        user_name=user.full_name or user.username,
+        text=transcribed_text.strip(),
+        message_time=msg_time,
+        raw_payload={
+            "message_id": message.message_id,
+            "chat_id": message.chat.id,
+            "username": user.username,
+            "content_type": "voice",
+            "voice_file_id": voice.file_id if voice else None,
+            "voice_duration": voice.duration if voice else None,
+            "transcribed_text": transcribed_text.strip(),
+        },
+    )
+
+
 def normalize_incoming(channel: str, payload: dict[str, Any]) -> IncomingMessage:
     """Unified entry for future MAX / VK adapters."""
     if channel == CHANNEL_TELEGRAM:

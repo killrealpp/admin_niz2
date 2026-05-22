@@ -8,6 +8,7 @@ from psycopg2.extensions import connection as PgConnection
 
 from app.core.config import get_settings
 from app.db.repositories import bookings_repo, yclients_records_repo
+from app.integrations.yclients_client import YClientsError
 from app.integrations.yclients_client import YClientsClient
 from app.services.availability_service import load_services_map
 
@@ -68,6 +69,10 @@ def delete_yclients_record_for_booking(
         return True
     try:
         YClientsClient().delete_record(record_id)
+    except YClientsError as exc:
+        error_text = str(exc).lower()
+        if "404" not in error_text and "не найден" not in error_text:
+            return False
     except Exception:
         return False
     yclients_records_repo.delete_busy_interval(

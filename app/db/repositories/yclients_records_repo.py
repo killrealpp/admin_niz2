@@ -299,12 +299,7 @@ def delete_records_ended_before(conn: PgConnection, cutoff: datetime) -> int:
         cur.execute(
             """
             DELETE FROM resource_busy_intervals
-            WHERE source = 'yclients'
-              AND source_record_id IN (
-                  SELECT yclients_record_id
-                  FROM yclients_records
-                  WHERE end_at < %s
-              )
+            WHERE end_at < %s
             """,
             (cutoff,),
         )

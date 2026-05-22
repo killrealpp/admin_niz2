@@ -29,6 +29,7 @@ from app.db.connection import get_connection  # noqa: E402
 from app.db.repositories import bookings_repo, conversations_repo, payments_repo, slot_holds_repo, users_repo  # noqa: E402
 from app.services.availability_service import AvailabilityResult  # noqa: E402
 from app.services import message_handler  # noqa: E402
+from app.services.media_service import media_for_client_message  # noqa: E402
 from app.services.message_handler import IncomingMessage, handle_incoming  # noqa: E402
 
 
@@ -659,6 +660,35 @@ def _test_new_conversation_sees_old_user_booking(now: datetime) -> Check:
     return Check("new conversation sees old user booking", ok, f"{reply} | conversations={total_conversations}")
 
 
+def _test_new_conversation_sees_old_summary(now: datetime) -> Check:
+    suffix = "old_summary_context"
+    created = _create_reserved_conversation(suffix, now)
+    old_conversation_id = created["conversation"]["id"]
+    user_id = created["user"]["id"]
+    later = now + timedelta(hours=73)
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO conversation_summaries (
+                    conversation_id, summary, messages_from, messages_to, messages_count
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                """,
+                (
+                    old_conversation_id,
+                    "Старый диалог: клиент хотел баню, имя Кирилл, телефон сохранен.",
+                    now - timedelta(hours=74),
+                    now - timedelta(hours=73),
+                    12,
+                ),
+            )
+        new_conversation = conversations_repo.create(conn, user_id, "telegram", later)
+        summaries = message_handler._context_summaries(conn, new_conversation, {}, later)
+    ok = any("Старый диалог" in str(item.get("summary") or "") for item in summaries)
+    return Check("new conversation sees old summary", ok, str(summaries))
+
+
 def _test_customer_templates_do_not_mention_admin(now: datetime) -> Check:
     forbidden = ("админ", "администратор", "администрац")
     hold = {
@@ -912,6 +942,33 @@ def _test_waitlist_decline_does_not_handoff(now: datetime) -> Check:
         return Check("waitlist decline does not handoff", ok, f"{reply} | {state}")
     finally:
         message_handler.classify_post_booking_message = original_classifier
+
+
+def _test_location_question_does_not_handoff() -> Check:
+    samples = [
+        "А где вы находитесь?",
+        "Где находитесь",
+        "Какой адрес?",
+    ]
+    ok = all(not message_handler._looks_like_handoff_needed(text) for text in samples)
+    rude_ok = message_handler._looks_like_handoff_needed("вы меня бесите")
+    return Check("location question does not handoff", ok and rude_ok, f"samples={samples}, rude_ok={rude_ok}")
+
+
+def _test_gazebo_media_selection() -> Check:
+    all_media = media_for_client_message("какие беседки есть?", "Беседка №1, Беседка №2, Беседка №8")
+    specific = media_for_client_message("покажи беседку 8", "Вот беседка №8")
+    location = media_for_client_message("где вы находитесь?", "Адрес: Выкса")
+    ok = (
+        len(all_media) >= 6
+        and [path.name for path in specific] == ["besedka8png.png"]
+        and not location
+    )
+    return Check(
+        "gazebo media selection",
+        ok,
+        f"all={len(all_media)}, specific={[path.name for path in specific]}, location={location}",
+    )
 
 
 def _add_paid_booking(
@@ -1227,6 +1284,149 @@ def _test_paid_cancel_asks_confirmation(now: datetime) -> Check:
         message_handler.create_missing_yclients_records = original_create_missing
 
 
+def _test_paid_bathhouse_cancel_without_hold(now: datetime) -> Check:
+    suffix = "paid_bath_cancel_no_hold"
+    _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        yclients_service_id="18490331",
+        provider_record_id="local_cancel_bath_record",
+        phone="+79990000011",
+    )
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_create_missing = message_handler.create_missing_yclients_records
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "хочу баню которая на 25 июня отменить", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        confirm_ok = (
+            "баня" in reply.lower()
+            and "аванс" in reply.lower()
+            and "точно" in reply.lower()
+            and (form.get("cancel_flow") or {}).get("stage") == "confirm_cancel"
+        )
+        done = _send(suffix, "да", now)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT b.status
+                    FROM bookings b
+                    JOIN conversations c ON c.id = b.conversation_id
+                    JOIN users u ON u.id = c.user_id
+                    WHERE u.external_id = %s
+                    LIMIT 1
+                    """,
+                    (TEST_PREFIX + suffix,),
+                )
+                booking_status = cur.fetchone()["status"]
+        ok = confirm_ok and "отменила" in done.lower() and booking_status == "cancelled"
+        return Check("paid bathhouse cancel without hold", ok, f"{reply} | {done} | status={booking_status}")
+    finally:
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_ai_change_type_cancel_starts_flow(now: datetime) -> Check:
+    suffix = "ai_change_cancel"
+    _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        yclients_service_id="18490331",
+        provider_record_id="local_ai_cancel_bath_record",
+        phone="+79990000012",
+    )
+    original_classifier = message_handler.classify_post_booking_message
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_create_missing = message_handler.create_missing_yclients_records
+
+    def fake_classifier(*_args: Any, **_kwargs: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="change_existing_booking",
+            confidence=0.98,
+            change_type="cancel",
+            reply_to_user="",
+        )
+
+    message_handler.classify_post_booking_message = fake_classifier
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "планы поменялись, баня 25 июня не нужна", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        ok = (
+            "аванс" in reply.lower()
+            and "точно" in reply.lower()
+            and (form.get("cancel_flow") or {}).get("stage") == "confirm_cancel"
+        )
+        return Check("ai change_type cancel starts flow", ok, f"{reply} | {form}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_ai_change_type_reschedule_starts_flow(now: datetime) -> Check:
+    suffix = "ai_change_reschedule"
+    _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="bathhouse",
+        booking_date=date(2026, 6, 25),
+        yclients_service_id="18490331",
+        provider_record_id="local_ai_reschedule_bath_record",
+        phone="+79990000013",
+    )
+    original_classifier = message_handler.classify_post_booking_message
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+    original_create_record = message_handler.create_yclients_record_for_booking
+
+    def fake_classifier(*_args: Any, **_kwargs: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="change_existing_booking",
+            confidence=0.98,
+            change_type="reschedule",
+            reply_to_user="",
+        )
+
+    message_handler.classify_post_booking_message = fake_classifier
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(
+        True,
+        "ok",
+        ["Баня: свободно"],
+    )
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    message_handler.create_yclients_record_for_booking = lambda *_args, **_kwargs: {}
+    try:
+        reply = _send(suffix, "давайте сместим баню на 26 июня", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        flow = form.get("reschedule_flow") or {}
+        ok = (
+            "26 июня" in reply
+            and "подтверждаете" in reply.lower()
+            and flow.get("stage") == "confirm_reschedule"
+            and flow.get("date") == "2026-06-26"
+        )
+        return Check("ai change_type reschedule starts flow", ok, f"{reply} | {flow}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
+        message_handler.create_yclients_record_for_booking = original_create_record
+
+
 def _test_paid_reschedule_asks_confirmation(now: datetime) -> Check:
     suffix = "paid_reschedule"
     _create_paid_booking_for_action(
@@ -1241,6 +1441,7 @@ def _test_paid_reschedule_asks_confirmation(now: datetime) -> Check:
     original_delete = message_handler.delete_yclients_record_for_booking
     original_availability = message_handler.check_availability
     original_create_missing = message_handler.create_missing_yclients_records
+    original_create_record = message_handler.create_yclients_record_for_booking
     message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
     message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(
         True,
@@ -1248,6 +1449,7 @@ def _test_paid_reschedule_asks_confirmation(now: datetime) -> Check:
         ["Баня: свободно"],
     )
     message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    message_handler.create_yclients_record_for_booking = lambda *_args, **_kwargs: {}
     try:
         reply = _send(suffix, "баня которая 23 июня можно перенести на 24?", now)
         state = _latest_state(suffix)
@@ -1278,6 +1480,7 @@ def _test_paid_reschedule_asks_confirmation(now: datetime) -> Check:
         message_handler.delete_yclients_record_for_booking = original_delete
         message_handler.check_availability = original_availability
         message_handler.create_missing_yclients_records = original_create_missing
+        message_handler.create_yclients_record_for_booking = original_create_record
 
 
 def main() -> None:
@@ -1300,6 +1503,7 @@ def main() -> None:
         checks.append(_test_single_available_gazebo_is_auto_selected())
         checks.append(_test_booking_summary_counts_all_bookings(now))
         checks.append(_test_new_conversation_sees_old_user_booking(now))
+        checks.append(_test_new_conversation_sees_old_summary(now))
         checks.append(_test_customer_templates_do_not_mention_admin(now))
         checks.append(_test_short_yes_confirms())
         checks.append(_test_bare_weekday_requires_confirmation(now))
@@ -1309,11 +1513,16 @@ def main() -> None:
         checks.append(_test_positive_upsell_goes_to_next_step(now))
         checks.append(_test_free_dates_lookup_after_no_availability(now))
         checks.append(_test_waitlist_decline_does_not_handoff(now))
+        checks.append(_test_location_question_does_not_handoff())
+        checks.append(_test_gazebo_media_selection())
         checks.append(_test_post_booking_summary_always_uses_db(now))
         checks.append(_test_reschedule_selects_service_after_list(now))
         checks.append(_test_reschedule_uses_target_date_not_source_date(now))
         checks.append(_test_reschedule_typo_pernesti_uses_target_date(now))
         checks.append(_test_paid_cancel_asks_confirmation(now))
+        checks.append(_test_paid_bathhouse_cancel_without_hold(now))
+        checks.append(_test_ai_change_type_cancel_starts_flow(now))
+        checks.append(_test_ai_change_type_reschedule_starts_flow(now))
         checks.append(_test_paid_reschedule_asks_confirmation(now))
     finally:
         _cleanup()

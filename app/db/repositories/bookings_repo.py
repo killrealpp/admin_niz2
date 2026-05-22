@@ -335,7 +335,10 @@ def list_paid_without_yclients_record(
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
             WHERE b.payment_status = 'paid'
               AND b.yclients_record_id IS NULL
-              AND b.yclients_create_error IS NULL
+              AND (
+                  b.yclients_create_error IS NULL
+                  OR b.updated_at < NOW() - INTERVAL '5 minutes'
+              )
               AND b.status NOT IN ('cancelled')
             ORDER BY b.updated_at ASC, b.id ASC
             LIMIT %s

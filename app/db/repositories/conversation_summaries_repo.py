@@ -52,3 +52,31 @@ def list_for_conversation(
         )
         rows = cur.fetchall()
     return [dict(row) for row in reversed(rows)]
+
+
+def list_for_user(
+    conn: PgConnection,
+    *,
+    user_id: int,
+    limit: int = 5,
+) -> list[dict]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                cs.summary,
+                cs.messages_from,
+                cs.messages_to,
+                cs.messages_count,
+                cs.created_at,
+                cs.conversation_id
+            FROM conversation_summaries cs
+            JOIN conversations c ON c.id = cs.conversation_id
+            WHERE c.user_id = %s
+            ORDER BY cs.created_at DESC
+            LIMIT %s
+            """,
+            (user_id, limit),
+        )
+        rows = cur.fetchall()
+    return [dict(row) for row in reversed(rows)]

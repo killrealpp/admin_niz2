@@ -20,6 +20,14 @@ class Settings(BaseSettings):
     session_ttl_hours: int = Field(72, alias="SESSION_TTL_HOURS")
     hold_ttl_minutes: int = Field(10, alias="HOLD_TTL_MINUTES")
     handoff_ttl_minutes: int = Field(60, alias="HANDOFF_TTL_MINUTES")
+    message_summary_enabled: bool = Field(True, alias="MESSAGE_SUMMARY_ENABLED")
+    message_summary_after_hours: int = Field(72, alias="MESSAGE_SUMMARY_AFTER_HOURS")
+    message_summary_interval_seconds: int = Field(
+        3600, alias="MESSAGE_SUMMARY_INTERVAL_SECONDS"
+    )
+    message_summary_batch_conversations: int = Field(
+        20, alias="MESSAGE_SUMMARY_BATCH_CONVERSATIONS"
+    )
 
     db_host: str = Field(..., alias="DB_HOST")
     db_port: int = Field(5432, alias="DB_PORT")
@@ -38,6 +46,7 @@ class Settings(BaseSettings):
     telegram_webhook_url: str = Field("", alias="TELEGRAM_WEBHOOK_URL")
 
     ai_provider: str = Field("openrouter", alias="AI_PROVIDER")
+    openai_api_key: str = Field("", alias="OPENAI_API_KEY")
     openrouter_api_key: str = Field("", alias="OPENROUTER_API_KEY")
     openrouter_base_url: str = Field(
         "https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL"
@@ -45,6 +54,17 @@ class Settings(BaseSettings):
     openai_model: str = Field("anthropic/claude-sonnet-4", alias="OPENAI_MODEL")
     openai_temperature: float = Field(0.2, alias="OPENAI_TEMPERATURE")
     openai_max_tokens: int = Field(700, alias="OPENAI_MAX_TOKENS")
+    voice_transcription_enabled: bool = Field(False, alias="VOICE_TRANSCRIPTION_ENABLED")
+    voice_transcription_provider: str = Field(
+        "openrouter", alias="VOICE_TRANSCRIPTION_PROVIDER"
+    )
+    voice_transcription_model: str = Field(
+        "openai/whisper-large-v3", alias="VOICE_TRANSCRIPTION_MODEL"
+    )
+    voice_transcription_language: str = Field("ru", alias="VOICE_TRANSCRIPTION_LANGUAGE")
+    voice_transcription_max_seconds: int = Field(
+        120, alias="VOICE_TRANSCRIPTION_MAX_SECONDS"
+    )
 
     yclients_base_url: str = Field(
         "https://api.yclients.com/api/v1", alias="YCLIENTS_BASE_URL"
@@ -97,6 +117,7 @@ class Settings(BaseSettings):
             "db_sslmode": self.db_sslmode,
             "ai_provider": self.ai_provider,
             "openai_model": self.openai_model,
+            "voice_transcription_enabled": self.voice_transcription_enabled,
             "telegram_configured": bool(self.telegram_bot_token),
             "openrouter_configured": bool(self.openrouter_api_key),
             "yclients_configured": bool(self.yclients_partner_token),

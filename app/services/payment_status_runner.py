@@ -2,12 +2,14 @@ import asyncio
 import logging
 
 from aiogram import Bot
+from aiogram.types import FSInputFile
 
 from app.core.config import get_settings
 from app.db.connection import get_connection
-from app.db.repositories import conversations_repo, messages_repo, payments_repo, system_logs_repo
+from app.db.repositories import bookings_repo, conversations_repo, messages_repo, payments_repo, system_logs_repo
 from app.db.repositories import users_repo
 from app.services.admin_telegram_service import notify_admin_about_new_bookings, notify_admin_text
+from app.services.media_service import media_for_bookings
 from app.services.payment_service import sync_payment_statuses
 from app.services.yclients_record_service import create_missing_yclients_records
 
@@ -67,9 +69,22 @@ async def notify_paid_payments_once(bot: Bot) -> None:
         chat_id = str(payment.get("user_external_id") or "")
         if not chat_id:
             continue
+        with get_connection() as conn:
+            journal_ready = _payment_journal_ready(conn, payment)
+        if not journal_ready:
+            logger.info(
+                "Skip paid notification until YCLIENTS record is ready payment_id=%s",
+                payment.get("id"),
+            )
+            continue
         text = _paid_notification_text(payment)
+        with get_connection() as conn:
+            bookings = _payment_bookings(conn, payment)
+        media_paths = media_for_bookings(bookings)
         try:
             await bot.send_message(chat_id=chat_id, text=text)
+            for path in media_paths:
+                await bot.send_photo(chat_id=chat_id, photo=FSInputFile(path))
         except Exception:
             logger.exception(
                 "Failed to notify paid payment payment_id=%s chat_id=%s",
@@ -148,10 +163,37 @@ async def notify_admin_about_handoffs(bot: Bot) -> None:
                 users_repo.mark_handoff_notified(conn, user_id=user["id"])
 
 
+def _payment_journal_ready(conn, payment: dict) -> bool:
+    bookings = _payment_bookings(conn, payment)
+    return bool(bookings) and all(booking.get("yclients_record_id") for booking in bookings)
+
+
+def _payment_bookings(conn, payment: dict) -> list[dict]:
+    booking_ids = _booking_ids_from_payment(payment)
+    if not booking_ids:
+        return []
+    bookings: list[dict] = []
+    for booking_id in booking_ids:
+        booking = bookings_repo.get_by_id(conn, booking_id=int(booking_id))
+        if booking:
+            bookings.append(booking)
+    return bookings
+
+
+def _booking_ids_from_payment(payment: dict) -> list[int]:
+    value = payment.get("booking_ids") or []
+    if isinstance(value, list):
+        return [int(item) for item in value if str(item).isdigit()]
+    if isinstance(value, str):
+        return [int(item) for item in value.split(",") if item.strip().isdigit()]
+    return []
+
+
 def _paid_notification_text(payment: dict) -> str:
     amount = payment.get("amount")
     return (
-        "Оплата прошла, спасибо ✅\n\n"
-        "Бронь успешно подтверждена. Запись создана в журнале. "
-        f"Сумма оплаты: {amount} ₽."
+        "Поздравляем, бронь успешно подтверждена ✅\n\n"
+        "Запись создана в журнале, ждём вас на отдых. "
+        "Пусть всё пройдёт легко, уютно и с хорошим настроением.\n\n"
+        f"Предоплата: {amount} ₽."
     )

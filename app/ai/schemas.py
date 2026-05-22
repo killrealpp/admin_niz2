@@ -56,9 +56,17 @@ PostBookingIntent = Literal[
     "other",
 ]
 
+PostBookingChangeType = Literal[
+    "cancel",
+    "reschedule",
+    "change_details",
+    "unknown",
+]
+
 
 class PostBookingResponse(BaseModel):
     intent: PostBookingIntent = "other"
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    change_type: PostBookingChangeType | None = "unknown"
     reply_to_user: str = ""
     handoff_to_human: bool = False

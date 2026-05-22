@@ -39,6 +39,7 @@ from app.services.user_service import get_or_create_user
 from app.services.waitlist_service import remember_waitlist_request
 from app.services.yclients_record_service import (
     create_missing_yclients_records,
+    create_yclients_record_for_booking,
     delete_yclients_record_for_booking,
     upsert_local_busy_interval_for_booking,
 )
@@ -171,6 +172,8 @@ def _persist_user_profile(conn, *, user_id: int, form_data: dict[str, Any]) -> N
 
 def _looks_like_handoff_needed(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
+    if _is_location_question(normalized):
+        return False
     complaint_markers = (
         "ужас",
         "кошмар",
@@ -184,17 +187,35 @@ def _looks_like_handoff_needed(text: str) -> bool:
         "вы что",
         "почему так",
     )
-    rude_markers = (
-        "дурак",
-        "тупой",
-        "идиот",
-        "бесит",
-        "задолбал",
-        "хрен",
-        "нах",
-        "бля",
+    if any(marker in normalized for marker in complaint_markers):
+        return True
+    rude_patterns = (
+        r"(?<![а-яa-z0-9])дурак(?:[а-яa-z]*)?(?![а-яa-z0-9])",
+        r"(?<![а-яa-z0-9])туп(?:ой|ая|ые|о|ые|ите|ишь)?(?![а-яa-z0-9])",
+        r"(?<![а-яa-z0-9])идиот(?:[а-яa-z]*)?(?![а-яa-z0-9])",
+        r"(?<![а-яa-z0-9])бесит(?:е|ь)?(?![а-яa-z0-9])",
+        r"(?<![а-яa-z0-9])задолбал(?:[а-яa-z]*)?(?![а-яa-z0-9])",
+        r"(?<![а-яa-z0-9])хрен(?:[а-яa-z]*)?(?![а-яa-z0-9])",
+        r"(?<![а-яa-z0-9])нах(?:уй|ер)?(?![а-яa-z0-9])",
+        r"(?<![а-яa-z0-9])бля(?:[а-яa-z]*)?(?![а-яa-z0-9])",
     )
-    return any(marker in normalized for marker in complaint_markers + rude_markers)
+    return any(re.search(pattern, normalized) for pattern in rude_patterns)
+
+
+def _is_location_question(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    location_markers = (
+        "где вы находитесь",
+        "где находитесь",
+        "где находится",
+        "где вы",
+        "какой адрес",
+        "адрес",
+        "как добраться",
+        "куда ехать",
+        "локация",
+    )
+    return any(marker in normalized for marker in location_markers)
 
 
 def _start_user_handoff(
@@ -1088,15 +1109,27 @@ def _handle_reserved_hold_command(
                 form_data,
             )
         if wants_cancel_or_change:
-            if _wants_reschedule(text) and _has_user_bookings(conn, conversation, form_data, now):
-                return _start_reschedule_flow(
-                    conn,
-                    conversation,
-                    text,
-                    form_data,
-                    "payment_paid",
-                    now,
-                )
+            has_bookings = _has_user_bookings(conn, conversation, form_data, now)
+            if has_bookings:
+                if _wants_cancel_booking(text):
+                    return _start_cancel_booking_flow(
+                        conn,
+                        conversation,
+                        text,
+                        form_data,
+                        "payment_paid",
+                        now,
+                    )
+                if _wants_reschedule(text):
+                    return _start_reschedule_flow(
+                        conn,
+                        conversation,
+                        text,
+                        form_data,
+                        "payment_paid",
+                        now,
+                    )
+                return None
             return (
                 "Сейчас не вижу активной предварительной заявки, которую можно отменить или поменять. Можем оформить новую бронь.",
                 "waiting_user",
@@ -1445,10 +1478,10 @@ def _context_summaries(
     form_data: dict[str, Any],
     now: datetime,
 ) -> list[dict[str, Any]]:
-    summaries = conversation_summaries_repo.list_for_conversation(
+    summaries = conversation_summaries_repo.list_for_user(
         conn,
-        conversation["id"],
-        limit=3,
+        user_id=int(conversation["user_id"]),
+        limit=5,
     )
     bookings = _active_user_bookings(conn, conversation, form_data, now)
     if bookings:
@@ -1499,9 +1532,10 @@ def _payment_status_reply(conn, conversation: dict[str, Any], form_data: dict[st
 
     paid_payment = next((payment for payment in payments if payment.get("status") == "paid"), None)
     if paid_payment:
-        if not paid_payment.get("payment_notified_at"):
-            payments_repo.mark_payment_notified(conn, payment_id=paid_payment["id"])
         bookings = _active_user_bookings(conn, conversation, form_data, _now_local())
+        journal_ready = bool(bookings) and all(booking.get("yclients_record_id") for booking in bookings)
+        if journal_ready and not paid_payment.get("payment_notified_at"):
+            payments_repo.mark_payment_notified(conn, payment_id=paid_payment["id"])
         summary = _format_booking_summary(bookings) if bookings else "Заявка зафиксирована."
         return (
             f"Да, оплата получена. Спасибо!\n\n{summary}\n\n"
@@ -1678,7 +1712,10 @@ def _handle_post_booking_message(
             reply = summary
         return reply, status, "reserved", "payment_status", form_data
     if intent == "change_existing_booking":
-        if _wants_reschedule(text):
+        change_type = getattr(classified, "change_type", "unknown") or "unknown"
+        if change_type == "cancel" or _wants_cancel_booking(text):
+            return _start_cancel_booking_flow(conn, conversation, text, form_data, status, now)
+        if change_type == "reschedule" or _wants_reschedule(text):
             return _start_reschedule_flow(conn, conversation, text, form_data, status, now)
         return (
             reply_to_user
@@ -1721,6 +1758,7 @@ def _wants_reschedule(text: str) -> bool:
             "перенесёшь",
             "пернести",
             "перенос",
+            "сдвин",
             "поменять дату",
             "изменить дату",
             "другую дату",
@@ -1734,7 +1772,19 @@ def _wants_cancel_booking(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
     if "доп" in normalized:
         return False
-    return any(marker in normalized for marker in ("отмен", "удал", "убрать брон", "снять брон"))
+    return any(
+        marker in normalized
+        for marker in (
+            "отмен",
+            "удал",
+            "убрать брон",
+            "снять брон",
+            "не сможем прийти",
+            "не смогу прийти",
+            "не получится приехать",
+            "не получится прийти",
+        )
+    )
 
 
 def _start_cancel_booking_flow(
@@ -1995,7 +2045,26 @@ def _execute_reschedule(
     )
     if updated_booking:
         upsert_local_busy_interval_for_booking(conn, booking=updated_booking)
-        create_missing_yclients_records(conn)
+        try:
+            create_yclients_record_for_booking(conn, booking=updated_booking)
+        except Exception as exc:
+            logger.exception("Failed to create YCLIENTS record after reschedule booking_id=%s", booking.get("id"))
+            bookings_repo.mark_yclients_create_error(
+                conn,
+                booking_id=int(booking["id"]),
+                error=str(exc),
+            )
+            user = users_repo.get_by_id(conn, int(conversation["user_id"]))
+            if user:
+                _start_user_handoff(
+                    conn,
+                    user=user,
+                    conversation_id=conversation["id"],
+                    text=f"перенос брони #{booking.get('id')}",
+                    now=_now_local(),
+                    reason="не удалось автоматически создать новую запись в журнале при переносе",
+                )
+            return _handoff_reply(), "handoff", "handoff", "handoff", form_data
     cleared = {**form_data, "date": target_date, "time": target_time, "duration": target_duration, "reschedule_flow": None}
     return (
         f"Готово ✅\n\nПеренесла бронь на {_format_date_ru(target_date)}, с {target_time} на {_format_duration(target_duration)}.\n\nАванс сохраняется, остаток можно будет внести на месте.",
