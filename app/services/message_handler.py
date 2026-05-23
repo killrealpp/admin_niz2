@@ -25,6 +25,7 @@ from app.db.repositories import (
     system_logs_repo,
     users_repo,
     waitlist_repo,
+    yclients_records_repo,
 )
 from app.services.availability_service import check_availability, load_services_map
 from app.services.booking_form_service import initial_form_data, merge_form_data, next_question
@@ -534,11 +535,11 @@ def _service_variant_patch(text: str, *, allow_bare_ordinal: bool = False) -> di
     if "крыт" in normalized and "бесед" in normalized:
         return {"service_variant": "Крытая беседка"}
     if "прост" in normalized and ("мангал" in normalized or "обыч" in normalized):
-        return {"service_variant": "Простая беседка с мангалом"}
+        return {"preferences": "простая беседка с мангалом"}
     if "свет" in normalized or "розет" in normalized:
-        return {"service_variant": "Беседка со светом и розетками"}
+        return {"preferences": "беседка со светом и розетками"}
     if "больш" in normalized or "много мест" in normalized:
-        return {"service_variant": "Большая беседка"}
+        return {"preferences": "большая беседка"}
     match = re.search(r"\b(?:беседк[аиуойе]*\s*)?№?\s*([1-8])\b", normalized)
     if match and "бесед" in normalized:
         return {"service_variant": f"Беседка №{match.group(1)}"}
@@ -780,6 +781,109 @@ def _client_name_patch(text: str, expected_key: str | None) -> dict[str, str]:
     return {"client_name": cleaned.title()}
 
 
+def _form_detail_correction_patch(text: str, form_data: dict[str, Any]) -> dict[str, Any]:
+    patch: dict[str, Any] = {}
+    name = _extract_corrected_client_name(text)
+    if name:
+        patch["client_name"] = name
+
+    normalized = text.lower().replace("ё", "е")
+    if any(marker in normalized for marker in ("телефон", "номер")):
+        phone_patch = _phone_patch(text)
+        if phone_patch:
+            patch |= phone_patch
+
+    if any(marker in normalized for marker in ("гост", "человек")):
+        guests_patch = _guests_count_patch(text, "guests_count")
+        if guests_patch:
+            patch |= guests_patch
+
+    event_patch = _event_format_patch(text)
+    if event_patch and any(marker in normalized for marker in ("формат", "отдых", "туса", "день рождения", "корпоратив", "семейн", "компан")):
+        patch |= event_patch
+
+    upsell_patch = _upsell_items_patch(text)
+    if upsell_patch and _has_upsell_signal(text):
+        patch |= upsell_patch
+
+    return {
+        key: value
+        for key, value in patch.items()
+        if key in form_data and value not in (None, "", [])
+    }
+
+
+def _extract_corrected_client_name(text: str) -> str | None:
+    normalized = re.sub(r"\s+", " ", text.strip())
+    lowered = normalized.lower().replace("ё", "е")
+    if not any(marker in lowered for marker in ("имя", "зовут", "назови", "запиши", "укажи")):
+        return None
+    if re.search(r"(?:меня\s+зовут|зовут)\s+не\b", lowered) and not re.search(r"\bа\s+[a-zа-яё]", lowered):
+        return None
+
+    patterns = (
+        r"(?:заменить|поменять|изменить|поправить)\s+(?:имя|фио)\s+(?:на\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
+        r"(?:имя|фио)\s+(?:заменить|поменять|изменить|поправить)\s+(?:на\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
+        r"(?:меня\s+зовут|зовут)\s+не\s+[A-Za-zА-Яа-яЁё -]{2,40}?[,\s]+(?:а|а\s+именно)\s+([A-Za-zА-Яа-яЁё -]{2,40})",
+        r"(?:меня\s+зовут|зовут)\s+(?:как\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
+        r"(?:имя|фио)\s*(?:будет|пусть\s+будет|:|-|=)?\s*([A-Za-zА-Яа-яЁё -]{2,40})",
+        r"(?:запиши|укажи|поставь)\s+(?:имя\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, normalized, flags=re.IGNORECASE)
+        if not match:
+            continue
+        candidate = _clean_name_candidate(match.group(1))
+        if candidate:
+            return candidate
+    return None
+
+
+def _clean_name_candidate(value: str) -> str | None:
+    candidate = re.sub(r"\s+", " ", value.strip(" .,!?:;\"'«»"))
+    candidate = re.sub(r"^(?:на|как|не|а)\s+", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(r"\s+(?:пожалуйста|плиз)$", "", candidate, flags=re.IGNORECASE)
+    blocked = {
+        "имя",
+        "не",
+        "нет",
+        "поменять",
+        "заменить",
+        "изменить",
+        "не даша",
+    }
+    if not candidate or candidate.lower().replace("ё", "е") in blocked:
+        return None
+    if not _looks_like_name(candidate):
+        return None
+    return candidate.title()
+
+
+def _maybe_name_correction_without_value(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(marker in normalized for marker in ("имя", "зовут")) and any(
+        marker in normalized for marker in ("не ", "невер", "ошиб", "не так")
+    )
+
+
+def _correction_ack_text(patch: dict[str, Any]) -> str:
+    labels: list[str] = []
+    if "client_name" in patch:
+        labels.append(f"имя на {patch['client_name']}")
+    if "phone" in patch:
+        labels.append(f"телефон на {patch['phone']}")
+    if "guests_count" in patch:
+        labels.append(f"количество гостей на {patch['guests_count']}")
+    if "event_format" in patch:
+        labels.append(f"формат отдыха на {patch['event_format']}")
+    if "upsell_items" in patch:
+        items = patch.get("upsell_items") or []
+        labels.append("допы: " + (", ".join(items) if items else "не нужны"))
+    if not labels:
+        return "Поняла, обновила данные ✅"
+    return "Поняла, обновила " + "; ".join(labels) + " ✅"
+
+
 def _duration_from_text(text: str) -> int | float | None:
     normalized = text.lower().replace(",", ".")
     match = re.search(r"(?:на\s*)?(\d+(?:\.\d+)?)\s*(?:час|часа|часов|ч\b)", normalized)
@@ -1007,7 +1111,58 @@ def _is_closing_ack(text: str) -> bool:
 
 def _wants_cancel_or_change_hold(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
+    if _is_non_slot_detail_change(text):
+        return False
     return any(marker in normalized for marker in ("отмен", "убер", "помен", "замен", "вместо", "перенес"))
+
+
+def _is_non_slot_detail_change(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    detail_markers = (
+        "имя",
+        "зовут",
+        "телефон",
+        "номер",
+        "гост",
+        "человек",
+        "доп",
+        "кальян",
+        "уголь",
+        "розжиг",
+        "решет",
+        "шампур",
+        "посуд",
+        "лед",
+        "вода",
+        "формат",
+    )
+    if not any(marker in normalized for marker in detail_markers):
+        return False
+    slot_markers = (
+        "дат",
+        "сегодня",
+        "завтра",
+        "послезавтра",
+        "суббот",
+        "воскрес",
+        "понедель",
+        "вторник",
+        "сред",
+        "четверг",
+        "пятниц",
+        "время",
+        "час",
+        "беседк",
+        "бан",
+        "дом",
+        "перенес",
+        "перенест",
+    )
+    if any(marker in normalized for marker in slot_markers) and not any(
+        marker in normalized for marker in ("имя", "зовут", "телефон", "номер", "гост", "человек", "доп", "кальян", "уголь", "розжиг", "решет", "шампур", "посуд", "лед", "вода", "формат")
+    ):
+        return False
+    return True
 
 
 def _date_patch_after_marker(
@@ -1089,6 +1244,7 @@ def _handle_reserved_hold_command(
     conversation: dict[str, Any],
     text: str,
     now: datetime,
+    history: list[dict[str, Any]] | None = None,
 ) -> tuple[str, str, str, str | None, dict[str, Any]] | None:
     form_data = conversation.get("form_data") or {}
     asks_summary = _asks_booking_summary(text)
@@ -1099,6 +1255,8 @@ def _handle_reserved_hold_command(
         now=now,
     )
     if not active_holds:
+        if form_data.get("reschedule_flow") or form_data.get("swap_reschedule_flow"):
+            return None
         if asks_summary:
             summary = _post_booking_summary(conn, conversation, form_data, now)
             return (
@@ -1143,6 +1301,28 @@ def _handle_reserved_hold_command(
         reply = _reply_with_hold_summary(conn, conversation, form_data, now)
         status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
         return reply, status, "reserved", "payment_status", form_data
+
+    correction_patch = _form_detail_correction_patch(text, form_data)
+    if not correction_patch and history and _last_assistant_asked_name_correction(history) and _looks_like_name(text):
+        correction_patch = {"client_name": text.strip().title()}
+    if correction_patch:
+        form_data = merge_form_data(form_data, correction_patch)
+        reply = (
+            f"{_correction_ack_text(correction_patch)}\n\n"
+            "Резерв оставила активным. Можно оплатить по ссылке, которую отправляла выше.\n\n"
+            "После оплаты пришлю подтверждение брони ✅"
+        )
+        status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
+        return reply, status, "reserved", "payment_status", form_data
+    if _maybe_name_correction_without_value(text):
+        status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
+        return (
+            "Поняла, поправим имя ✅\n\nКакое имя указать в брони?",
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
 
     if _confirmation_yes(text):
         try:
@@ -1400,8 +1580,10 @@ def _booking_object_title(booking: dict[str, Any]) -> str:
 def _booking_status_text(booking: dict[str, Any]) -> str:
     payment_status = str(booking.get("payment_status") or "")
     status = str(booking.get("status") or "")
-    if payment_status == "paid" and booking.get("yclients_record_id"):
+    if payment_status == "paid" and booking.get("synced_yclients_record_id"):
         return "оплата прошла, бронь подтверждена"
+    if payment_status == "paid" and booking.get("yclients_record_id"):
+        return "оплата прошла, запись в журнале сейчас не найдена"
     if payment_status == "paid":
         return "оплата прошла, бронь подтверждается в журнале"
     if payment_status == "awaiting_payment":
@@ -1420,7 +1602,11 @@ def _booking_word(count: int) -> str:
 
 
 def _format_booking_summary(bookings: list[dict[str, Any]]) -> str:
-    active = [booking for booking in bookings if booking.get("status") != "cancelled"]
+    active = [
+        booking
+        for booking in bookings
+        if booking.get("status") not in {"cancelled", "journal_missing"}
+    ]
     if not active:
         return "Пока не вижу активных броней."
 
@@ -1455,12 +1641,58 @@ def _active_user_bookings(
         phone=str(phone) if phone else None,
         now=now,
     )
+    bookings = _filter_actual_journal_bookings(conn, bookings, now)
     if bookings:
         return bookings
-    return bookings_repo.list_active_for_conversation(
+    fallback_bookings = bookings_repo.list_active_for_conversation(
         conn,
         conversation_id=conversation["id"],
     )
+    return _filter_actual_journal_bookings(conn, fallback_bookings, now)
+
+
+def _filter_actual_journal_bookings(
+    conn,
+    bookings: list[dict[str, Any]],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    actual: list[dict[str, Any]] = []
+    missing_ids: list[int] = []
+    present_ids: list[int] = []
+    for booking in bookings:
+        record_id = str(booking.get("yclients_record_id") or "").strip()
+        if record_id and not booking.get("synced_yclients_record_id"):
+            if yclients_records_repo.has_active_busy_interval_for_booking(
+                conn,
+                booking_id=int(booking["id"]),
+                yclients_record_id=record_id,
+            ):
+                actual.append(
+                    {
+                        **booking,
+                        "status": (
+                            "created_in_yclients"
+                            if booking.get("status") == "journal_missing"
+                            else booking.get("status")
+                        ),
+                        "synced_yclients_record_id": record_id,
+                    }
+                )
+                present_ids.append(int(booking["id"]))
+                continue
+            missing_ids.append(int(booking["id"]))
+            continue
+        if str(booking.get("synced_yclients_status") or "").lower() in {"cancelled", "canceled", "deleted", "removed", "not_come"}:
+            missing_ids.append(int(booking["id"]))
+            continue
+        actual.append(booking)
+        if booking.get("status") == "journal_missing":
+            present_ids.append(int(booking["id"]))
+    if present_ids:
+        bookings_repo.mark_journal_present_by_ids(conn, booking_ids=present_ids, now=now)
+    if missing_ids:
+        bookings_repo.mark_journal_missing_by_ids(conn, booking_ids=missing_ids, now=now)
+    return actual
 
 
 def _has_user_bookings(
@@ -1575,7 +1807,7 @@ def _post_booking_summary(conn, conversation: dict[str, Any], form_data: dict[st
                 " для финального подтверждения",
             )
         return summary
-    return "Заявка зафиксирована. Ваш номер сохранён, с вами свяжутся в ближайшее время."
+    return "Пока не вижу активных броней по вашему номеру.\n\nЕсли хотите оформить бронь, напишите услугу и дату — проверю свободные варианты."
 
 
 def _classify_post_booking(
@@ -1623,11 +1855,26 @@ def _handle_post_booking_message(
     status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
 
     if _asks_booking_summary(text) or _continues_booking_summary_question(text, history):
-        cleared = {**form_data, "cancel_flow": None, "reschedule_flow": None}
+        cleared = {**form_data, "cancel_flow": None, "reschedule_flow": None, "swap_reschedule_flow": None}
         return _post_booking_summary(conn, conversation, cleared, now), status, "reserved", "payment_status", cleared
 
     if form_data.get("cancel_flow"):
         return _handle_cancel_booking_flow(conn, conversation, text, form_data, now)
+
+    flow_info_reply = _reply_to_info_during_reschedule_flow(
+        conn,
+        conversation,
+        text,
+        history,
+        form_data,
+        status,
+        now,
+    )
+    if flow_info_reply:
+        return flow_info_reply
+
+    if form_data.get("swap_reschedule_flow"):
+        return _handle_swap_reschedule_flow(conn, conversation, text, form_data, now)
 
     if form_data.get("reschedule_flow"):
         return _handle_reschedule_flow(conn, conversation, text, form_data, now)
@@ -1635,7 +1882,12 @@ def _handle_post_booking_message(
     if _wants_cancel_booking(text):
         return _start_cancel_booking_flow(conn, conversation, text, form_data, status, now)
 
+    if _wants_multi_booking_reschedule(text):
+        return _start_swap_reschedule_flow(conn, conversation, text, form_data, status, now)
+
     if _wants_reschedule(text):
+        if _wants_swap_bookings(text):
+            return _start_swap_reschedule_flow(conn, conversation, text, form_data, status, now)
         return _start_reschedule_flow(conn, conversation, text, form_data, status, now)
 
     if _is_waitlist_decline(text):
@@ -1684,7 +1936,9 @@ def _handle_post_booking_message(
     intent = getattr(classified, "intent", "other") if classified else "other"
     reply_to_user = _clean_reply((getattr(classified, "reply_to_user", "") or "").strip()) if classified else ""
     status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
-    if getattr(classified, "handoff_to_human", False):
+    if getattr(classified, "handoff_to_human", False) and not (
+        _wants_cancel_booking(text) or _wants_reschedule(text) or _wants_swap_bookings(text)
+    ):
         user = users_repo.get_by_id(conn, int(conversation["user_id"]))
         if user:
             _start_user_handoff(
@@ -1716,6 +1970,8 @@ def _handle_post_booking_message(
         if change_type == "cancel" or _wants_cancel_booking(text):
             return _start_cancel_booking_flow(conn, conversation, text, form_data, status, now)
         if change_type == "reschedule" or _wants_reschedule(text):
+            if _wants_swap_bookings(text) or _wants_multi_booking_reschedule(text):
+                return _start_swap_reschedule_flow(conn, conversation, text, form_data, status, now)
             return _start_reschedule_flow(conn, conversation, text, form_data, status, now)
         return (
             reply_to_user
@@ -1764,8 +2020,101 @@ def _wants_reschedule(text: str) -> bool:
             "другую дату",
             "поменять время",
             "изменить время",
+            "поменять местами",
+            "местами",
+            "поменять брони",
         )
     )
+
+
+def _wants_swap_bookings(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return (
+        "местами" in normalized
+        and any(marker in normalized for marker in ("брон", "дат", "бесед", "бан", "помен", "обмен"))
+    ) or (
+        "поменять даты" in normalized
+        and any(marker in normalized for marker in ("две", "2", "обе", "брон"))
+    )
+
+
+def _wants_multi_booking_reschedule(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(marker in normalized for marker in ("обе", "оба", "все брони", "все брон", "две брони", "2 брони")) or (
+        "обе" in normalized and any(marker in normalized for marker in ("бесед", "бан", "услуг"))
+    )
+
+
+def _asks_reschedule_options(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return (
+        "как" in normalized
+        and any(marker in normalized for marker in ("перенест", "перенес", "пернос", "поменять"))
+    ) or (
+        "вариант" in normalized
+        and any(marker in normalized for marker in ("перенос", "перенест", "поменять"))
+    )
+
+
+def _reply_to_info_during_reschedule_flow(
+    conn,
+    conversation: dict[str, Any],
+    text: str,
+    history: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    status: str,
+    now: datetime,
+) -> tuple[str, str, str, str | None, dict[str, Any]] | None:
+    if not (form_data.get("reschedule_flow") or form_data.get("swap_reschedule_flow")):
+        return None
+    if _asks_reschedule_options(text):
+        bookings = _active_user_bookings(conn, conversation, form_data, now)
+        updated = {
+            **form_data,
+            "reschedule_flow": None,
+            "swap_reschedule_flow": {"stage": "collect_swap"} if len(bookings) > 1 else form_data.get("swap_reschedule_flow"),
+        }
+        return _reschedule_options_reply(bookings), status, "reserved", "payment_status", updated
+    if _wants_cancel_booking(text) or _wants_reschedule(text) or _wants_multi_booking_reschedule(text):
+        return None
+    if not _looks_like_info_question(text, now=now):
+        return None
+
+    info_form = {**form_data, "reschedule_flow": None, "swap_reschedule_flow": None}
+    reply = _deterministic_info_reply(text, info_form)
+    if not reply:
+        reply = _ai_process_reply(
+            text=text,
+            form_data=info_form,
+            history=history,
+            required_meaning=(
+                "Клиент задал информационный вопрос во время сценария переноса брони. "
+                "Коротко ответь по базе знаний, без выдумок. "
+                "Не передавай администратору, если вопрос обычный информационный."
+            ),
+        )
+    reply = reply.strip()
+    if form_data.get("reschedule_flow") or form_data.get("swap_reschedule_flow"):
+        reply += "\n\nЕсли продолжаем перенос, напишите новую дату и нужную бронь."
+    return reply, status, "reserved", "payment_status", form_data
+
+
+def _reschedule_options_reply(bookings: list[dict[str, Any]]) -> str:
+    lines = [
+        "Можно перенести одну бронь или несколько сразу ✅",
+        "",
+        "Напишите в свободной форме, например:",
+        "- «первую бронь на 27 июня»",
+        "- «обе брони на 29 июня»",
+        "- «Беседку №4 на 27 июня, Беседку №1 на 29 июня»",
+        "",
+        "Я проверю журнал и скажу, получится ли так перенести.",
+    ]
+    if bookings:
+        lines.extend(["", "Сейчас вижу такие брони:"])
+        for index, booking in enumerate(bookings, start=1):
+            lines.append(f"{index}. {_booking_line_short(booking)}")
+    return "\n".join(lines)
 
 
 def _wants_cancel_booking(text: str) -> bool:
@@ -1882,6 +2231,397 @@ def _cancel_confirmation_reply(booking: dict[str, Any]) -> str:
     )
 
 
+def _start_swap_reschedule_flow(
+    conn,
+    conversation: dict[str, Any],
+    text: str,
+    form_data: dict[str, Any],
+    status: str,
+    now: datetime,
+) -> tuple[str, str, str, str | None, dict[str, Any]]:
+    bookings = _active_user_bookings(conn, conversation, form_data, now)
+    if len(bookings) < 2:
+        return _start_reschedule_flow(conn, conversation, text, form_data, status, now)
+    status = "payment_paid" if any(booking.get("payment_status") == "paid" for booking in bookings) else status
+    same_target_assignments = _same_target_assignments_for_bookings(text, bookings, now)
+    if len(same_target_assignments) >= 2:
+        updated = {**form_data, "swap_reschedule_flow": {"stage": "collect_swap"}, "reschedule_flow": None}
+        return _prepare_swap_reschedule(conn, conversation, bookings, same_target_assignments, updated, status, now)
+    assignments = _parse_swap_assignments(text, bookings, now)
+    updated = {**form_data, "swap_reschedule_flow": {"stage": "collect_swap"}, "reschedule_flow": None}
+    if len(assignments) >= 2:
+        return _prepare_swap_reschedule(conn, conversation, bookings, assignments, updated, status, now)
+    return _swap_collect_reply(bookings), status, "reserved", "payment_status", updated
+
+
+def _handle_swap_reschedule_flow(
+    conn,
+    conversation: dict[str, Any],
+    text: str,
+    form_data: dict[str, Any],
+    now: datetime,
+) -> tuple[str, str, str, str | None, dict[str, Any]]:
+    bookings = _active_user_bookings(conn, conversation, form_data, now)
+    status = (
+        "payment_paid"
+        if conversation.get("status") == "payment_paid" or any(booking.get("payment_status") == "paid" for booking in bookings)
+        else "reserved"
+    )
+    flow = dict(form_data.get("swap_reschedule_flow") or {})
+    if flow.get("stage") == "confirm_swap":
+        if _confirmation_no(text):
+            return "Хорошо, оставила брони без изменений ✅", status, "reserved", "payment_status", {**form_data, "swap_reschedule_flow": None}
+        if _confirmation_yes(text):
+            return _execute_swap_reschedule(conn, conversation, bookings, form_data, flow)
+        return _swap_confirmation_reply(bookings, flow.get("assignments") or []), status, "reserved", "payment_status", form_data
+
+    assignments = _same_target_assignments_for_bookings(text, bookings, now) or _parse_swap_assignments(text, bookings, now)
+    if len(assignments) < 2:
+        return _swap_collect_reply(bookings), status, "reserved", "payment_status", form_data
+    return _prepare_swap_reschedule(conn, conversation, bookings, assignments, form_data, status, now)
+
+
+def _prepare_swap_reschedule(
+    conn,
+    conversation: dict[str, Any],
+    bookings: list[dict[str, Any]],
+    assignments: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    status: str,
+    now: datetime,
+) -> tuple[str, str, str, str | None, dict[str, Any]]:
+    by_id = {int(booking["id"]): booking for booking in bookings}
+    normalized_assignments: list[dict[str, Any]] = []
+    unavailable: list[str] = []
+    ignore_source_record_ids = [
+        str(booking.get("yclients_record_id"))
+        for booking in bookings
+        if booking.get("yclients_record_id")
+    ]
+    for assignment in assignments:
+        booking = by_id.get(int(assignment["booking_id"]))
+        if not booking:
+            continue
+        flow = {
+            "booking_id": booking["id"],
+            "date": assignment["date"],
+            "time": assignment.get("time") or str(booking.get("booking_time"))[:5],
+            "duration": assignment.get("duration") or _hours_from_minutes(booking.get("duration_minutes")),
+        }
+        check_form = _form_data_for_booking_reschedule(
+            {**form_data, "ignore_source_record_ids": ignore_source_record_ids},
+            booking,
+            flow,
+        )
+        availability = check_availability(conn, form_data=check_form, now=now)
+        if availability.ok and not availability.slots:
+            unavailable.append(f"{_booking_object_title(booking)} на {_format_date_ru(flow['date'])}, с {flow['time']}")
+            continue
+        normalized_assignments.append(flow)
+    if unavailable:
+        return (
+            "Так перенести не получится: по журналу не свободно:\n"
+            + "\n".join(f"- {item}" for item in unavailable)
+            + "\n\nНапишите другой вариант переноса — проверю заново.",
+            status,
+            "reserved",
+            "payment_status",
+            {**form_data, "swap_reschedule_flow": {"stage": "collect_swap"}},
+        )
+    if len(normalized_assignments) < 2:
+        return _swap_collect_reply(bookings), status, "reserved", "payment_status", {**form_data, "swap_reschedule_flow": {"stage": "collect_swap"}}
+    flow = {"stage": "confirm_swap", "assignments": normalized_assignments}
+    return (
+        _swap_confirmation_reply(bookings, normalized_assignments),
+        status,
+        "reserved",
+        "payment_status",
+        {**form_data, "swap_reschedule_flow": flow, "reschedule_flow": None},
+    )
+
+
+def _execute_swap_reschedule(
+    conn,
+    conversation: dict[str, Any],
+    bookings: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    flow: dict[str, Any],
+) -> tuple[str, str, str, str | None, dict[str, Any]]:
+    by_id = {int(booking["id"]): booking for booking in bookings}
+    assignments = list(flow.get("assignments") or [])
+    old_bookings: list[dict[str, Any]] = []
+    for assignment in assignments:
+        booking = bookings_repo.get_by_id(conn, booking_id=int(assignment["booking_id"])) or by_id.get(int(assignment["booking_id"]))
+        if booking:
+            old_bookings.append(booking)
+    if len(old_bookings) < len(assignments):
+        return (
+            "Не смогла найти одну из броней для переноса. Напишите, пожалуйста, какие брони переносим — проверю заново.",
+            "payment_paid",
+            "reserved",
+            "payment_status",
+            {**form_data, "swap_reschedule_flow": None, "reschedule_flow": None},
+        )
+
+    deleted_old: list[dict[str, Any]] = []
+    for booking in old_bookings:
+        if not delete_yclients_record_for_booking(conn, booking=booking):
+            for deleted in deleted_old:
+                _restore_booking_after_failed_reschedule(conn, deleted)
+            return (
+                "Сейчас не получилось изменить одну из записей в журнале.\n\n"
+                "Старые брони оставила без изменений. Напишите другой вариант переноса — проверю ещё раз.",
+                "payment_paid",
+                "reserved",
+                "payment_status",
+                {**form_data, "swap_reschedule_flow": None, "reschedule_flow": None},
+            )
+        deleted_old.append(booking)
+
+    updated_bookings: list[dict[str, Any]] = []
+    try:
+        for assignment, old_booking in zip(assignments, old_bookings, strict=False):
+            new_date = datetime.fromisoformat(str(assignment["date"])).date()
+            new_time = datetime.strptime(str(assignment["time"])[:5], "%H:%M").time()
+            new_duration = _duration_minutes_value(assignment.get("duration"))
+            updated = bookings_repo.update_schedule(
+                conn,
+                booking_id=int(old_booking["id"]),
+                booking_date=new_date,
+                booking_time=new_time,
+                duration_minutes=new_duration,
+            )
+            if not updated:
+                raise RuntimeError(f"booking #{old_booking.get('id')} was not updated")
+            updated = bookings_repo.get_by_id(conn, booking_id=int(updated["id"])) or updated
+            updated_bookings.append(updated)
+        for updated in updated_bookings:
+            create_yclients_record_for_booking(conn, booking=updated)
+    except Exception:
+        logger.exception("Failed to execute grouped reschedule")
+        restored_lines: list[str] = []
+        for old_booking in old_bookings:
+            restored = _restore_booking_after_failed_reschedule(conn, old_booking)
+            if restored:
+                restored_lines.append(_booking_line_short(restored))
+        restored_text = "\n".join(f"- {line}" for line in restored_lines) if restored_lines else "старые брони оставила в базе, но журнал нужно проверить вручную"
+        return (
+            "Новое время не получилось закрепить в журнале: похоже, один из слотов уже занят или недоступен.\n\n"
+            f"Старые брони восстановила:\n{restored_text}\n\n"
+            "Напишите другой вариант переноса — проверю ещё раз.",
+            "payment_paid",
+            "reserved",
+            "payment_status",
+            {**form_data, "swap_reschedule_flow": None, "reschedule_flow": None},
+        )
+
+    done = [
+        f"{_booking_object_title(booking)} → {_format_date_ru(str(booking.get('booking_date')))}, с {str(booking.get('booking_time'))[:5]}"
+        for booking in updated_bookings
+    ]
+    cleared = {**form_data, "swap_reschedule_flow": None, "reschedule_flow": None}
+    return (
+        "Готово ✅\n\nОбновила брони по вашему варианту:\n"
+        + "\n".join(f"- {item}" for item in done)
+        + "\n\nАвансы сохраняются, разницу при необходимости можно будет доплатить на месте.",
+        "payment_paid",
+        "reserved",
+        "payment_status",
+        cleared,
+    )
+
+
+def _swap_collect_reply(bookings: list[dict[str, Any]]) -> str:
+    lines = [
+        "Поняла, хотите изменить несколько броней ✅",
+        "",
+        "Напишите, пожалуйста, конкретно что куда переносим. Например:",
+        "«Беседка №4 на 26 июня, Беседка №1 на 29 мая»",
+        "или «обе брони на 27 июня».",
+        "",
+        "Сейчас вижу такие брони:",
+    ]
+    for index, booking in enumerate(bookings, start=1):
+        lines.append(f"{index}. {_booking_line_short(booking)}")
+    return "\n".join(lines)
+
+
+def _swap_confirmation_reply(bookings: list[dict[str, Any]], assignments: list[dict[str, Any]]) -> str:
+    by_id = {int(booking["id"]): booking for booking in bookings}
+    lines = ["Проверила по журналу, такой перенос возможен ✅", "", "Подтвердите, пожалуйста:"]
+    for assignment in assignments:
+        booking = by_id.get(int(assignment["booking_id"]))
+        if not booking:
+            continue
+        lines.append(
+            f"- {_booking_line_short(booking)} → {_format_date_ru(assignment['date'])}, с {assignment['time']} на {_format_duration(assignment.get('duration'))}"
+        )
+    lines.extend(["", "Авансы сохраняются. Подтверждаете перенос? Напишите «да» или «нет»."])
+    return "\n".join(lines)
+
+
+def _parse_swap_assignments(text: str, bookings: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    normalized = text.lower().replace("ё", "е")
+    positions: list[tuple[int, int, dict[str, Any]]] = []
+    used: set[int] = set()
+    for booking in bookings:
+        booking_id = int(booking["id"])
+        for pattern in _booking_reference_patterns(booking, bookings):
+            match = re.search(pattern, normalized)
+            if match and booking_id not in used:
+                positions.append((match.start(), match.end(), booking))
+                used.add(booking_id)
+                break
+    positions.sort(key=lambda item: item[0])
+    assignments: list[dict[str, Any]] = []
+    last_target: dict[str, Any] | None = None
+    for index, (_start, end, booking) in enumerate(positions):
+        next_start = positions[index + 1][0] if index + 1 < len(positions) else len(text)
+        segment = text[end:next_start]
+        base_date = booking.get("booking_date") if isinstance(booking.get("booking_date"), date) else None
+        date_patch = _date_patch_in_segment(segment, now, base_date=base_date)
+        if not date_patch.get("date") and last_target and _means_same_target(segment):
+            date_patch = {"date": last_target["date"]}
+        if not date_patch.get("date"):
+            continue
+        time_patch = _time_period_patch(segment)
+        target = {
+            "booking_id": booking["id"],
+            "date": date_patch["date"],
+            "time": time_patch.get("time") or str(booking.get("booking_time"))[:5],
+            "duration": time_patch.get("duration") or _hours_from_minutes(booking.get("duration_minutes")),
+        }
+        assignments.append(
+            target
+        )
+        last_target = target
+    return assignments
+
+
+def _same_target_assignments_for_bookings(text: str, bookings: list[dict[str, Any]], now: datetime) -> list[dict[str, Any]]:
+    if len(bookings) < 2 or not _wants_multi_booking_reschedule(text):
+        return []
+    first_booking_date = bookings[0].get("booking_date") if isinstance(bookings[0].get("booking_date"), date) else None
+    date_patch = _date_patch_in_segment(text, now, base_date=first_booking_date)
+    if not date_patch.get("date"):
+        return []
+    time_patch = _time_period_patch(text)
+    assignments: list[dict[str, Any]] = []
+    for booking in bookings:
+        assignments.append(
+            {
+                "booking_id": booking["id"],
+                "date": date_patch["date"],
+                "time": time_patch.get("time") or str(booking.get("booking_time"))[:5],
+                "duration": time_patch.get("duration") or _hours_from_minutes(booking.get("duration_minutes")),
+            }
+        )
+    return assignments
+
+
+def _means_same_target(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(marker in normalized for marker in ("тоже", "также", "туда же", "на эту же", "на тот же", "то же"))
+
+
+def _booking_reference_patterns(booking: dict[str, Any], bookings: list[dict[str, Any]]) -> list[str]:
+    title = _booking_object_title(booking).lower().replace("ё", "е")
+    patterns: list[str] = []
+    number_match = re.search(r"№\s*(\d+)", title)
+    if number_match:
+        number = number_match.group(1)
+        patterns.extend(
+            [
+                rf"беседк[а-я\s]*(?:номер|№)?\s*{number}\b",
+                rf"(?:номер|№)\s*{number}\b",
+            ]
+        )
+        ordinal = {
+            "1": "перв",
+            "2": "втор",
+            "3": "трет",
+            "4": "четверт",
+            "5": "пят",
+            "6": "шест",
+            "8": "восьм",
+        }.get(number)
+        if ordinal:
+            patterns.append(rf"{ordinal}[а-я]*\s+беседк[а-я]*")
+    if booking.get("service_type") == "bathhouse":
+        patterns.append(r"бан[а-я]*")
+    if booking.get("service_type") == "house":
+        patterns.append(r"дом[а-я]*")
+    try:
+        index = bookings.index(booking) + 1
+    except ValueError:
+        index = 0
+    ordinal_by_index = {1: "перв", 2: "втор", 3: "трет", 4: "четверт"}.get(index)
+    if ordinal_by_index:
+        patterns.append(rf"{ordinal_by_index}[а-я]*\s+(?:брон[а-я]*|беседк[а-я]*|бан[а-я]*|услуг[а-я]*)")
+    ordinal_forms = {
+        1: ("первую", "первая", "первой", "первую"),
+        2: ("вторую", "вторая", "второй", "второе"),
+        3: ("третью", "третья", "третьей", "третье"),
+        4: ("четвертую", "четвертая", "четвертой", "четвертое"),
+    }.get(index, ())
+    patterns.extend(rf"\b{form}\b" for form in ordinal_forms)
+    return patterns
+
+
+def _date_patch_in_segment(text: str, now: datetime, *, base_date: date | None = None) -> dict[str, str]:
+    if base_date and not _contains_month_name(text):
+        base_day = _day_number_in_text_patch(text, now, base_date=base_date)
+        if base_day:
+            return base_day
+    return (
+        _relative_date_patch(text, now)
+        or _last_explicit_date_patch(text, now)
+        or _day_number_in_text_patch(text, now, base_date=base_date)
+        or _bare_day_patch(text.strip(), now, "date")
+    )
+
+
+def _contains_month_name(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(month in normalized for month in MONTH_NUMBERS_RU)
+
+
+def _day_number_in_text_patch(text: str, now: datetime, *, base_date: date | None = None) -> dict[str, str]:
+    normalized = text.lower().replace("ё", "е")
+    match = re.search(r"\b(?:на|к|ко)\s+(\d{1,2})(?:\s*(?:числа|число))?\b", normalized)
+    if not match:
+        match = re.search(r"\b(\d{1,2})\s*(?:числа|число)\b", normalized)
+    if not match:
+        return {}
+    day = int(match.group(1))
+    if day <= 0:
+        return {}
+    today = now.date()
+    if base_date:
+        try:
+            candidate = base_date.replace(day=day)
+        except ValueError:
+            return {}
+        if candidate < today:
+            try:
+                candidate = candidate.replace(year=candidate.year + 1)
+            except ValueError:
+                return {}
+        return {"date": candidate.isoformat()}
+    month = today.month
+    year = today.year
+    for _ in range(13):
+        if day <= calendar.monthrange(year, month)[1]:
+            candidate = date(year, month, day)
+            if candidate >= today:
+                return {"date": candidate.isoformat()}
+        month += 1
+        if month > 12:
+            month = 1
+            year += 1
+    return {}
+
+
 def _start_reschedule_flow(
     conn,
     conversation: dict[str, Any],
@@ -1900,6 +2640,11 @@ def _start_reschedule_flow(
             form_data,
         )
     status = "payment_paid" if any(booking.get("payment_status") == "paid" for booking in bookings) else status
+    if len(bookings) > 1:
+        same_target_assignments = _same_target_assignments_for_bookings(text, bookings, now)
+        if len(same_target_assignments) >= 2:
+            updated = {**form_data, "swap_reschedule_flow": {"stage": "collect_swap"}, "reschedule_flow": None}
+            return _prepare_swap_reschedule(conn, conversation, bookings, same_target_assignments, updated, status, now)
     flow = {"stage": "reschedule", "booking_id": None}
     updated = {**form_data, "reschedule_flow": flow}
     if len(bookings) == 1:
@@ -1932,6 +2677,11 @@ def _handle_reschedule_flow(
         else "reserved"
     )
     flow = dict(form_data.get("reschedule_flow") or {})
+    if len(bookings) > 1:
+        same_target_assignments = _same_target_assignments_for_bookings(text, bookings, now)
+        if len(same_target_assignments) >= 2:
+            updated = {**form_data, "swap_reschedule_flow": {"stage": "collect_swap"}, "reschedule_flow": None}
+            return _prepare_swap_reschedule(conn, conversation, bookings, same_target_assignments, updated, status, now)
     booking = _select_reschedule_booking(bookings, flow.get("booking_id"), text)
     if not booking:
         lines = ["Какую бронь переносим?"]
@@ -2021,17 +2771,14 @@ def _execute_reschedule(
     target_duration = flow.get("duration")
     old_booking = bookings_repo.get_by_id(conn, booking_id=int(booking["id"])) or booking
     if not delete_yclients_record_for_booking(conn, booking=old_booking):
-        user = users_repo.get_by_id(conn, int(conversation["user_id"]))
-        if user:
-            _start_user_handoff(
-                conn,
-                user=user,
-                conversation_id=conversation["id"],
-                text=f"перенос брони #{booking.get('id')}",
-                now=_now_local(),
-                reason="не удалось автоматически удалить старую запись при переносе",
-            )
-        return _handoff_reply(), "handoff", "handoff", "handoff", form_data
+        return (
+            "Сейчас не получилось изменить запись в журнале.\n\n"
+            "Старую бронь оставила без изменений. Напишите другую дату или время — проверю ещё раз.",
+            "payment_paid",
+            "reserved",
+            "payment_status",
+            {**form_data, "reschedule_flow": None},
+        )
 
     new_date = datetime.fromisoformat(str(target_date)).date()
     new_time = datetime.strptime(str(target_time)[:5], "%H:%M").time()
@@ -2049,11 +2796,17 @@ def _execute_reschedule(
             create_yclients_record_for_booking(conn, booking=updated_booking)
         except Exception as exc:
             logger.exception("Failed to create YCLIENTS record after reschedule booking_id=%s", booking.get("id"))
-            bookings_repo.mark_yclients_create_error(
-                conn,
-                booking_id=int(booking["id"]),
-                error=str(exc),
-            )
+            restored = _restore_booking_after_failed_reschedule(conn, old_booking)
+            if restored:
+                return (
+                    "Новое время не получилось закрепить в журнале: похоже, слот уже занят или недоступен.\n\n"
+                    f"Старую бронь восстановила: {_booking_line_short(restored)}.\n\n"
+                    "Напишите другую дату или время — проверю ещё раз.",
+                    "payment_paid",
+                    "reserved",
+                    "payment_status",
+                    {**form_data, "reschedule_flow": None},
+                )
             user = users_repo.get_by_id(conn, int(conversation["user_id"]))
             if user:
                 _start_user_handoff(
@@ -2062,7 +2815,7 @@ def _execute_reschedule(
                     conversation_id=conversation["id"],
                     text=f"перенос брони #{booking.get('id')}",
                     now=_now_local(),
-                    reason="не удалось автоматически создать новую запись в журнале при переносе",
+                    reason="не удалось восстановить старую запись после ошибки переноса",
                 )
             return _handoff_reply(), "handoff", "handoff", "handoff", form_data
     cleared = {**form_data, "date": target_date, "time": target_time, "duration": target_duration, "reschedule_flow": None}
@@ -2073,6 +2826,34 @@ def _execute_reschedule(
         "payment_status",
         cleared,
     )
+
+
+def _restore_booking_after_failed_reschedule(conn, old_booking: dict[str, Any]) -> dict[str, Any] | None:
+    old_date = old_booking.get("booking_date")
+    old_time = old_booking.get("booking_time")
+    old_duration = old_booking.get("duration_minutes")
+    if not old_date or not old_time:
+        return None
+    restored = bookings_repo.update_schedule(
+        conn,
+        booking_id=int(old_booking["id"]),
+        booking_date=old_date,
+        booking_time=old_time,
+        duration_minutes=old_duration,
+    )
+    if not restored:
+        return None
+    restored = {
+        **restored,
+        "hold_yclients_service_id": old_booking.get("hold_yclients_service_id"),
+    }
+    try:
+        create_yclients_record_for_booking(conn, booking=restored)
+    except Exception:
+        logger.exception("Failed to restore old YCLIENTS record booking_id=%s", old_booking.get("id"))
+        upsert_local_busy_interval_for_booking(conn, booking=restored)
+        return restored
+    return bookings_repo.get_by_id(conn, booking_id=int(old_booking["id"])) or restored
 
 
 def _reschedule_target_date_patch(text: str, now: datetime, booking: dict[str, Any]) -> dict[str, str]:
@@ -2241,6 +3022,13 @@ def _ordinal_index(text: str) -> int | None:
 
 def _form_data_for_booking_reschedule(form_data: dict[str, Any], booking: dict[str, Any], flow: dict[str, Any]) -> dict[str, Any]:
     service_type = booking.get("service_type")
+    ignore_source_record_ids = {
+        str(item)
+        for item in (form_data.get("ignore_source_record_ids") or [])
+        if item
+    }
+    if booking.get("yclients_record_id"):
+        ignore_source_record_ids.add(str(booking.get("yclients_record_id")))
     updated = {
         **form_data,
         "service_type": service_type,
@@ -2248,6 +3036,7 @@ def _form_data_for_booking_reschedule(form_data: dict[str, Any], booking: dict[s
         "time": flow.get("time"),
         "duration": flow.get("duration"),
         "guests_count": booking.get("guests_count") or form_data.get("guests_count"),
+        "ignore_source_record_ids": sorted(ignore_source_record_ids),
     }
     if service_type == "gazebo":
         updated["service_variant"] = _booking_object_title(booking)
@@ -2539,6 +3328,17 @@ def _last_assistant_asked_upsell(history: list[dict[str, Any]]) -> bool:
     return False
 
 
+def _last_assistant_asked_name_correction(history: list[dict[str, Any]]) -> bool:
+    for item in reversed(history):
+        if item.get("sender") == SENDER_USER:
+            continue
+        if item.get("sender") != SENDER_ASSISTANT:
+            continue
+        text = str(item.get("text") or "").lower().replace("ё", "е")
+        return "какое имя указать" in text or "как имя указать" in text
+    return False
+
+
 def _is_waitlist_decline(text: str) -> bool:
     normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
     return any(
@@ -2781,21 +3581,15 @@ def _gazebo_selection_text(form_data: dict[str, Any]) -> str:
                 lines.append(f"Я бы выбирал из них. Какую закрепляем: {names}?")
             return "\n".join(lines)
 
-    intro = "Да, беседок несколько, лучше сначала подобрать подходящую."
     if guests:
-        intro = f"Для {guests} гостей можно подобрать несколько вариантов беседок."
-    text = (
-        f"{intro}\n\n"
-        "Коротко по вариантам:\n"
-        "- небольшая: беседка №5, до 10 человек, компактная, с мангалом;\n"
-        "- простые: №2, №4, №6, обычно для компаний до 15 человек;\n"
-        "- комфортнее: №3, №8 или крытая беседка — больше подходят для вечера, света и розеток;\n"
-        "- большая: №1, если компания крупная или праздник.\n\n"
-        "Что вам важнее: простая с мангалом, со светом/розетками, крытая или конкретный номер?"
+        return (
+            f"Для {guests} гостей подберу беседку только из реально свободных вариантов ✅\n\n"
+            "Напишите, пожалуйста, дату отдыха — проверю журнал и покажу свободные беседки с фото."
+        )
+    return (
+        "Беседки подбираю по свободности в журнале, чтобы не предлагать занятые варианты ✅\n\n"
+        "Напишите, пожалуйста, дату отдыха — проверю свободные беседки."
     )
-    if not guests:
-        text += "\n\nНапишите, пожалуйста, сколько вас будет человек — я подскажу самый подходящий вариант."
-    return text
 
 
 def _normalize_gazebo_title(value: Any) -> str:
@@ -2966,12 +3760,21 @@ def _selected_variant_config(form_data: dict[str, Any]) -> dict[str, Any]:
 def _normalize_gazebo_variant(form_data: dict[str, Any]) -> dict[str, Any]:
     if form_data.get("service_type") != "gazebo":
         return form_data
-    if form_data.get("service_variant"):
-        return form_data
-    guests = int(form_data.get("guests_count") or 0)
-    if guests > 20:
-        return {**form_data, "service_variant": "Беседка №1"}
+    variant = str(form_data.get("service_variant") or "").strip()
+    if variant:
+        if _is_concrete_gazebo_variant(variant):
+            return form_data
+        updated = dict(form_data)
+        updated["service_variant"] = None
+        updated["preferences"] = _join_preferences(updated.get("preferences"), variant)
+        return updated
     return form_data
+
+
+def _is_concrete_gazebo_variant(value: str) -> bool:
+    normalized = _normalize_gazebo_title(value)
+    variants = (load_services_map().get("gazebo") or {}).get("variants") or []
+    return any(_normalize_gazebo_title(variant.get("title")) == normalized for variant in variants)
 
 
 def _booking_ready(form_data: dict[str, Any]) -> bool:
@@ -3113,8 +3916,17 @@ def _ai_first_patch(
         "other",
     }
     if action == "answer_info" or (info_like and intent in info_intents):
+        if _looks_like_booking_request_with_date(text, detected_patch):
+            return ai_patch | detected_patch
         return ai_patch | {key: value for key, value in detected_patch.items() if key in ai_patch}
     return ai_patch | detected_patch
+
+
+def _looks_like_booking_request_with_date(text: str, detected_patch: dict[str, Any]) -> bool:
+    if not detected_patch.get("service_type") or not detected_patch.get("date"):
+        return False
+    normalized = text.lower().replace("ё", "е")
+    return any(marker in normalized for marker in ("заброн", "брон", "нужн", "хочу", "давай", "можно", "бесед", "бан", "дом"))
 
 
 def _filter_new_booking_patch_to_current_message(
@@ -3125,8 +3937,9 @@ def _filter_new_booking_patch_to_current_message(
     allowed: set[str] = set()
     if _service_type_patch(text):
         allowed.update({"service_type", "preferences"})
-    if _service_variant_patch(text):
-        allowed.add("service_variant")
+    variant_patch = _service_variant_patch(text)
+    if variant_patch:
+        allowed.update(key for key in ("service_variant", "preferences") if key in variant_patch)
     if _relative_date_patch(text, now) or _bare_day_patch(text, now, "date") or _has_date_signal(text):
         allowed.add("date")
     if _time_period_patch(text):
@@ -3398,7 +4211,7 @@ def handle_incoming(message: IncomingMessage) -> str:
             return weekday_confirmation
 
         started_new_booking = False
-        hold_command = _handle_reserved_hold_command(conn, conversation, message.text, now)
+        hold_command = _handle_reserved_hold_command(conn, conversation, message.text, now, history)
         if hold_command is not None:
             reply, status, current_step, next_key, form_data = hold_command
             messages_repo.create(
@@ -3447,6 +4260,48 @@ def handle_incoming(message: IncomingMessage) -> str:
 
         if conversation.get("current_step") == "awaiting_confirmation":
             form_data = conversation.get("form_data") or {}
+            correction_patch = _form_detail_correction_patch(message.text, form_data)
+            if not correction_patch and _last_assistant_asked_name_correction(history) and _looks_like_name(message.text):
+                correction_patch = {"client_name": message.text.strip().title()}
+            if correction_patch:
+                form_data = merge_form_data(form_data, correction_patch)
+                reply = f"{_correction_ack_text(correction_patch)}\n\n{_confirmation_reply_text(form_data)}"
+                messages_repo.create(
+                    conn,
+                    conversation_id=conversation["id"],
+                    sender=SENDER_ASSISTANT,
+                    text=reply,
+                )
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status="awaiting_confirmation",
+                    intent="change_booking",
+                    current_step="awaiting_confirmation",
+                    next_step="confirmation",
+                    form_data=form_data,
+                )
+                return reply
+            if _maybe_name_correction_without_value(message.text):
+                reply = "Поняла, поправим имя ✅\n\nКакое имя указать в брони?"
+                messages_repo.create(
+                    conn,
+                    conversation_id=conversation["id"],
+                    sender=SENDER_ASSISTANT,
+                    text=reply,
+                )
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status="awaiting_confirmation",
+                    intent="change_booking",
+                    current_step="awaiting_confirmation",
+                    next_step="confirmation",
+                    form_data=form_data,
+                )
+                return reply
             if _confirmation_yes(message.text):
                 availability = check_availability(conn, form_data=form_data, now=now)
                 if availability.ok and availability.slots:
@@ -3574,7 +4429,7 @@ def handle_incoming(message: IncomingMessage) -> str:
             }
             started_new_booking = True
 
-        hold_command = _handle_reserved_hold_command(conn, conversation, message.text, now)
+        hold_command = _handle_reserved_hold_command(conn, conversation, message.text, now, history)
         if hold_command is not None:
             reply, status, current_step, next_key, form_data = hold_command
             messages_repo.create(
@@ -3962,6 +4817,7 @@ def handle_incoming(message: IncomingMessage) -> str:
                 form_data.get("service_type") == "gazebo"
                 and not form_data.get("service_variant")
                 and "service_type" in changed_fields
+                and not form_data.get("date")
             ):
                 required = _gazebo_selection_text(form_data)
                 reply = _ai_process_reply(
@@ -3992,8 +4848,19 @@ def handle_incoming(message: IncomingMessage) -> str:
                 )
                 return reply
             expected_key_now = next_question(form_data)[0]
+            effective_action = (
+                "check_availability"
+                if _looks_like_booking_request_with_date(
+                    message.text,
+                    {
+                        "service_type": form_data.get("service_type"),
+                        "date": form_data.get("date"),
+                    },
+                )
+                else ai_result.action
+            )
             if (
-                ai_result.action == "answer_info"
+                effective_action == "answer_info"
                 or (
                     (
                         _looks_like_info_question(
@@ -4082,7 +4949,7 @@ def handle_incoming(message: IncomingMessage) -> str:
                 )
                 return reply
             if _should_check_availability(
-                ai_result.action,
+                effective_action,
                 list(changed_fields),
                 form_data,
             ):
@@ -4122,7 +4989,7 @@ def handle_incoming(message: IncomingMessage) -> str:
             else:
                 reply, next_key = _build_reply(
                     ai_result.reply_to_user,
-                    ai_result.action,
+                    effective_action,
                     form_data,
                 )
                 reply, next_key = _safe_reply_without_availability_claim(

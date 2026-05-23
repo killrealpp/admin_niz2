@@ -201,6 +201,32 @@ def delete_busy_interval(
         return cur.rowcount
 
 
+def has_active_busy_interval_for_booking(
+    conn: PgConnection,
+    *,
+    booking_id: int,
+    yclients_record_id: str | None = None,
+) -> bool:
+    record_id = str(yclients_record_id or "").strip()
+    params: list[Any] = [str(booking_id), record_id]
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM resource_busy_intervals
+            WHERE status = 'active'
+              AND (
+                  (source = 'bot_booking' AND source_record_id = %s)
+                  OR (source = 'yclients' AND source_record_id = %s)
+                  OR raw_payload ->> 'yclients_record_id' = %s
+              )
+            LIMIT 1
+            """,
+            params + [record_id],
+        )
+        return cur.fetchone() is not None
+
+
 def list_busy_intervals(
     conn: PgConnection,
     *,

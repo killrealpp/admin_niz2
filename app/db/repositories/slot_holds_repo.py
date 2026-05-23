@@ -150,6 +150,27 @@ def cancel_matching(
         return cur.rowcount
 
 
+def cancel_ids(
+    conn: PgConnection,
+    *,
+    hold_ids: list[int],
+    now: datetime,
+) -> int:
+    if not hold_ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE slot_holds
+            SET status = 'cancelled', updated_at = %s
+            WHERE id = ANY(%s)
+              AND status = 'active'
+            """,
+            (now, hold_ids),
+        )
+        return cur.rowcount
+
+
 def get_by_id(conn: PgConnection, hold_id: int) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(

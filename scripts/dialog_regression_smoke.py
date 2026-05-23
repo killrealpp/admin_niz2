@@ -162,6 +162,23 @@ def _holds_count(user_suffix: str) -> int:
             return int(cur.fetchone()["total"])
 
 
+def _active_holds_count(user_suffix: str) -> int:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT count(1) AS total
+                FROM slot_holds sh
+                JOIN conversations c ON c.id = sh.conversation_id
+                JOIN users u ON u.id = c.user_id
+                WHERE u.external_id = %s
+                  AND sh.status = 'active'
+                """,
+                (TEST_PREFIX + user_suffix,),
+            )
+            return int(cur.fetchone()["total"])
+
+
 def _bookings_count(user_suffix: str) -> int:
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -233,10 +250,16 @@ def main() -> None:
         _send("info_confirm", "с 12 до 18", now)
         _send("info_confirm", "8", now)
         _send("info_confirm", "день рождения", now)
+        reply = _send("info_confirm", "нет", now)
+        checks.append(_expect("first upsell no gets push", reply, "если точно ничего", "нет"))
         _send("info_confirm", "нет", now)
         _send("info_confirm", "Иван", now)
         reply = _send("info_confirm", "+79968533502", now)
         checks.append(_expect_any("confirmation reached", reply, "Подтверждаете бронь", "всё верно", "все верно"))
+        reply = _send("info_confirm", "Меня зовут не Иван", now)
+        checks.append(_expect("name correction asks value", reply, "Какое имя"))
+        reply = _send("info_confirm", "Имя Петя", now)
+        checks.append(_expect("name correction updates confirmation", reply, "Петя", "Подтверждаете"))
         reply = _send("info_confirm", "а там есть мангал?", now)
         checks.append(_expect("info question during confirmation", reply, "мангал", "напишите"))
         reply = _send("info_confirm", "да", now)
@@ -246,6 +269,15 @@ def main() -> None:
                 name="hold without booking before payment",
                 ok=_holds_count("info_confirm") > 0 and _bookings_count("info_confirm") == 0,
                 details=f"holds={_holds_count('info_confirm')}, bookings={_bookings_count('info_confirm')}",
+            )
+        )
+        reply = _send("info_confirm", "А можно имя заменить на Сергей", now)
+        checks.append(_expect("reserved name change keeps hold", reply, "обновила имя", "Резерв оставила активным"))
+        checks.append(
+            Check(
+                name="reserved name change does not cancel hold",
+                ok=_active_holds_count("info_confirm") == 1,
+                details=f"active_holds={_active_holds_count('info_confirm')}",
             )
         )
         reply = _send("info_confirm", "хорошо, а есть бани?", now)

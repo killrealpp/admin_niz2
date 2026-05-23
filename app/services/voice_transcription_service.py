@@ -88,32 +88,87 @@ def _transcribe_audio_openrouter(
     url = base_url.rstrip("/") + "/audio/transcriptions"
     audio_bytes = audio.getvalue()
     audio_format = _audio_format(getattr(audio, "name", "voice.ogg"))
-    payload: dict[str, object] = {
-        "model": model,
-        "input_audio": {
-            "data": base64.b64encode(audio_bytes).decode("ascii"),
-            "format": audio_format,
-        },
-    }
-    if language:
-        payload["language"] = language
+    audio_data = base64.b64encode(audio_bytes).decode("ascii")
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://t.me/fnsmvsvmpvpovbot",
         "X-Title": "Booking Bot Voice Transcription",
     }
+    formats = _openrouter_format_candidates(audio_format)
+    models = _unique([model, "openai/whisper-1"])
+    last_response: httpx.Response | None = None
     with httpx.Client(timeout=60.0) as client:
-        response = client.post(url, headers=headers, json=payload)
-        if response.status_code >= 500 and model != "openai/whisper-1":
-            payload["model"] = "openai/whisper-1"
-            response = client.post(url, headers=headers, json=payload)
-    if response.status_code >= 400:
+        for candidate_model in models:
+            for candidate_format in formats:
+                payload: dict[str, object] = {
+                    "model": candidate_model,
+                    "input_audio": {
+                        "data": audio_data,
+                        "format": candidate_format,
+                    },
+                }
+                if language:
+                    payload["language"] = language
+                response = client.post(url, headers=headers, json=payload)
+                last_response = response
+                if response.status_code < 400:
+                    try:
+                        result = response.json()
+                    except ValueError as exc:
+                        raise VoiceTranscriptionError(
+                            f"OpenRouter transcription returned invalid JSON: {response.text[:500]}"
+                        ) from exc
+                    text = str(result.get("text") or "").strip()
+                    if not text:
+                        text = _text_from_chat_completion_shape(result)
+                    return text
+                if response.status_code in {401, 402, 403, 429}:
+                    raise VoiceTranscriptionError(
+                        f"OpenRouter transcription failed {response.status_code}: {response.text[:500]}"
+                    )
+    if last_response is not None:
         raise VoiceTranscriptionError(
-            f"OpenRouter transcription failed {response.status_code}: {response.text[:500]}"
+            f"OpenRouter transcription failed {last_response.status_code}: {last_response.text[:500]}"
         )
-    payload = response.json()
-    return str(payload.get("text") or "").strip()
+    raise VoiceTranscriptionError("OpenRouter transcription failed without response")
+
+
+def _openrouter_format_candidates(audio_format: str) -> list[str]:
+    candidates = [audio_format]
+    if audio_format == "ogg":
+        candidates.extend(["opus", "webm"])
+    return _unique(candidates)
+
+
+def _unique(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _text_from_chat_completion_shape(result: dict) -> str:
+    choices = result.get("choices") if isinstance(result, dict) else None
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first = choices[0]
+    if not isinstance(first, dict):
+        return ""
+    message = first.get("message") or {}
+    if not isinstance(message, dict):
+        return ""
+    content = message.get("content")
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                parts.append(item["text"])
+        return " ".join(parts).strip()
+    return ""
 
 
 def _audio_format(filename: str) -> str:

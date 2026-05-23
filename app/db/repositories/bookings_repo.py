@@ -118,9 +118,13 @@ def list_active_for_conversation(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            SELECT b.*,
+                   sh.yclients_service_id AS hold_yclients_service_id,
+                   yr.yclients_record_id AS synced_yclients_record_id,
+                   yr.status AS synced_yclients_status
             FROM bookings b
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
+            LEFT JOIN yclients_records yr ON yr.yclients_record_id = b.yclients_record_id
             WHERE b.conversation_id = %s
               AND b.status NOT IN ('cancelled')
             ORDER BY b.id ASC
@@ -146,9 +150,13 @@ def list_active_for_user(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            SELECT b.*,
+                   sh.yclients_service_id AS hold_yclients_service_id,
+                   yr.yclients_record_id AS synced_yclients_record_id,
+                   yr.status AS synced_yclients_status
             FROM bookings b
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
+            LEFT JOIN yclients_records yr ON yr.yclients_record_id = b.yclients_record_id
             WHERE (b.user_id = %s{phone_filter})
               AND b.status NOT IN ('cancelled')
             ORDER BY b.booking_date ASC, b.booking_time ASC, b.id ASC
@@ -177,9 +185,13 @@ def list_future_active_for_user(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            SELECT b.*,
+                   sh.yclients_service_id AS hold_yclients_service_id,
+                   yr.yclients_record_id AS synced_yclients_record_id,
+                   yr.status AS synced_yclients_status
             FROM bookings b
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
+            LEFT JOIN yclients_records yr ON yr.yclients_record_id = b.yclients_record_id
             WHERE (b.user_id = %s{phone_filter})
               AND b.status NOT IN ('cancelled')
               AND b.booking_date >= %s
@@ -251,7 +263,7 @@ def cancel_by_id(
             SET status = 'cancelled',
                 updated_at = %s
             WHERE id = %s
-              AND status NOT IN ('cancelled')
+              AND status NOT IN ('cancelled', 'journal_missing')
             RETURNING *
             """,
             (now, booking_id),
@@ -275,9 +287,56 @@ def update_payment_status_by_ids(
             SET payment_status = %s,
                 updated_at = NOW()
             WHERE id = ANY(%s)
-              AND status NOT IN ('cancelled')
+              AND status NOT IN ('cancelled', 'journal_missing')
             """,
             (payment_status, booking_ids),
+        )
+        return cur.rowcount
+
+
+def mark_journal_missing_by_ids(
+    conn: PgConnection,
+    *,
+    booking_ids: list[int],
+    now: datetime,
+) -> int:
+    if not booking_ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE bookings
+            SET status = 'journal_missing',
+                updated_at = %s
+            WHERE id = ANY(%s)
+              AND status NOT IN ('cancelled', 'journal_missing')
+            """,
+            (now, booking_ids),
+        )
+        return cur.rowcount
+
+
+def mark_journal_present_by_ids(
+    conn: PgConnection,
+    *,
+    booking_ids: list[int],
+    now: datetime,
+) -> int:
+    if not booking_ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE bookings
+            SET status = CASE
+                    WHEN status = 'journal_missing' THEN 'created_in_yclients'
+                    ELSE status
+                END,
+                updated_at = %s
+            WHERE id = ANY(%s)
+              AND status NOT IN ('cancelled')
+            """,
+            (now, booking_ids),
         )
         return cur.rowcount
 
@@ -293,7 +352,7 @@ def list_admin_unnotified(
             SELECT *
             FROM bookings
             WHERE admin_notified_at IS NULL
-              AND status NOT IN ('cancelled')
+              AND status NOT IN ('cancelled', 'journal_missing')
             ORDER BY created_at ASC, id ASC
             LIMIT %s
             """,
@@ -339,7 +398,7 @@ def list_paid_without_yclients_record(
                   b.yclients_create_error IS NULL
                   OR b.updated_at < NOW() - INTERVAL '5 minutes'
               )
-              AND b.status NOT IN ('cancelled')
+              AND b.status NOT IN ('cancelled', 'journal_missing')
             ORDER BY b.updated_at ASC, b.id ASC
             LIMIT %s
             """,

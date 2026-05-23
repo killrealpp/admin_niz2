@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from psycopg2.extensions import connection as PgConnection
 
@@ -231,13 +232,17 @@ def sync_payment_statuses(conn: PgConnection, *, limit: int = 50) -> dict[str, i
 
     client = YooKassaClient()
     candidates = payments_repo.list_sync_candidates(conn, provider="yookassa", limit=limit)
-    result = {"checked": 0, "updated": 0, "paid": 0, "canceled": 0}
+    result = {"checked": 0, "updated": 0, "paid": 0, "canceled": 0, "failed": 0}
     for payment in candidates:
         provider_payment_id = payment.get("provider_payment_id")
         if not provider_payment_id:
             continue
         result["checked"] += 1
-        response = client.get_payment(str(provider_payment_id))
+        try:
+            response = client.get_payment(str(provider_payment_id))
+        except YooKassaError:
+            result["failed"] += 1
+            continue
         provider_status = str(response.get("status") or payment.get("status") or "pending")
         paid = bool(response.get("paid"))
         normalized_status = "paid" if paid or provider_status == "succeeded" else provider_status
@@ -271,6 +276,8 @@ def sync_payment_statuses(conn: PgConnection, *, limit: int = 50) -> dict[str, i
                     booking_ids=booking_ids,
                     payment_status="payment_canceled",
                 )
+            else:
+                _cancel_payment_holds(conn, payment)
     return result
 
 
@@ -292,6 +299,16 @@ def process_yookassa_notification(
         return {"ok": False, "reason": "missing_payment_id", "is_new": is_new}
     if not is_new:
         return {"ok": True, "reason": "duplicate", "is_new": False}
+    if not event_type.startswith("payment."):
+        if saved_event:
+            webhook_events_repo.mark_processed(conn, event_id=saved_event["id"])
+        return {
+            "ok": True,
+            "reason": "ignored_event",
+            "event": event_type,
+            "provider_object_id": provider_payment_id,
+            "is_new": True,
+        }
 
     payment = payments_repo.find_by_provider_payment_id(
         conn,
@@ -332,6 +349,8 @@ def process_yookassa_notification(
                 booking_ids=booking_ids,
                 payment_status="payment_canceled",
             )
+        else:
+            _cancel_payment_holds(conn, updated_payment)
 
     if saved_event:
         webhook_events_repo.mark_processed(conn, event_id=saved_event["id"])
@@ -342,6 +361,22 @@ def process_yookassa_notification(
         "booking_ids": booking_ids,
         "is_new": True,
     }
+
+
+def _cancel_payment_holds(conn: PgConnection, payment: dict[str, Any]) -> int:
+    hold_ids = _hold_ids(payment)
+    if not hold_ids:
+        return 0
+    raw = payment.get("raw_payload") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    canceled_at = raw.get("canceled_at") if isinstance(raw, dict) else None
+    settings = get_settings()
+    now = _parse_yookassa_datetime(canceled_at) or datetime.now(ZoneInfo(settings.app_timezone))
+    return slot_holds_repo.cancel_ids(conn, hold_ids=hold_ids, now=now)
 
 
 def _hold_ids(payment: dict[str, Any]) -> list[int]:

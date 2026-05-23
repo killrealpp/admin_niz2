@@ -3,6 +3,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.types import FSInputFile
+from aiogram.utils.media_group import MediaGroupBuilder
 
 from app.core.config import get_settings
 from app.db.connection import get_connection
@@ -14,6 +15,7 @@ from app.services.payment_service import sync_payment_statuses
 from app.services.yclients_record_service import create_missing_yclients_records
 
 logger = logging.getLogger(__name__)
+MEDIA_SEND_TIMEOUT_SECONDS = 45
 
 
 async def run_payment_status_loop(bot: Bot | None = None) -> None:
@@ -83,8 +85,7 @@ async def notify_paid_payments_once(bot: Bot) -> None:
         media_paths = media_for_bookings(bookings)
         try:
             await bot.send_message(chat_id=chat_id, text=text)
-            for path in media_paths:
-                await bot.send_photo(chat_id=chat_id, photo=FSInputFile(path))
+            await _send_booking_media(bot, chat_id=chat_id, media_paths=media_paths)
         except Exception:
             logger.exception(
                 "Failed to notify paid payment payment_id=%s chat_id=%s",
@@ -118,6 +119,28 @@ async def notify_paid_payments_once(bot: Bot) -> None:
                 "Если запись в YCLIENTS не создалась автоматически, проверьте карточку заявки."
             ),
         )
+
+
+async def _send_booking_media(bot: Bot, *, chat_id: str, media_paths: list) -> None:
+    if not media_paths:
+        return
+    try:
+        await asyncio.wait_for(
+            _send_booking_media_inner(bot, chat_id=chat_id, media_paths=media_paths),
+            timeout=MEDIA_SEND_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("Paid booking media send timed out chat_id=%s count=%s", chat_id, len(media_paths))
+
+
+async def _send_booking_media_inner(bot: Bot, *, chat_id: str, media_paths: list) -> None:
+    if len(media_paths) == 1:
+        await bot.send_photo(chat_id=chat_id, photo=FSInputFile(media_paths[0]))
+        return
+    builder = MediaGroupBuilder()
+    for path in media_paths[:10]:
+        builder.add_photo(media=FSInputFile(path))
+    await bot.send_media_group(chat_id=chat_id, media=builder.build())
 
 
 async def notify_admin_about_ai_provider_issues(bot: Bot) -> None:

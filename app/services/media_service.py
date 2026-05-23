@@ -13,6 +13,7 @@ GAZEBO_IMAGE_BY_VARIANT = {
     "Беседка №2": IMAGES_DIR / "besedka2.jpg",
     "Беседка №3": IMAGES_DIR / "besedka3.jpg",
     "Беседка №4": IMAGES_DIR / "besedka4.jpg",
+    "Беседка №5": IMAGES_DIR / "besedka5.jpg",
     "Беседка №6": IMAGES_DIR / "besedka6.jpg",
     "Беседка №8": IMAGES_DIR / "besedka8png.png",
     "Крытая беседка": IMAGES_DIR / "besedka_krytaya.jpg",
@@ -22,24 +23,54 @@ GAZEBO_IMAGE_BY_VARIANT = {
 def media_for_client_message(text: str, reply: str) -> list[Path]:
     normalized_text = _normalize(text)
     normalized_reply = _normalize(reply)
-    combined = f"{normalized_text}\n{normalized_reply}"
-    if not _mentions_gazebo(combined):
+    if not _mentions_gazebo(f"{normalized_text}\n{normalized_reply}"):
         return []
 
-    variants = _gazebo_variants_from_text(normalized_text)
-    if variants:
-        return _existing([GAZEBO_IMAGE_BY_VARIANT[item] for item in variants if item in GAZEBO_IMAGE_BY_VARIANT])
+    explicit_photo_request = is_explicit_photo_request(text)
+    if explicit_photo_request:
+        requested_variants = _gazebo_variants_from_text(normalized_text)
+        if requested_variants:
+            return media_for_gazebo_titles(requested_variants)
+        reply_variants = _gazebo_variants_from_text(normalized_reply)
+        if reply_variants:
+            return media_for_gazebo_titles(reply_variants)
 
-    if _asks_all_gazebos(normalized_text):
-        return _existing(list(GAZEBO_IMAGE_BY_VARIANT.values()))
-
-    variants = _gazebo_variants_from_text(normalized_reply)
-    if variants:
-        return _existing([GAZEBO_IMAGE_BY_VARIANT[item] for item in variants if item in GAZEBO_IMAGE_BY_VARIANT])
-
-    if _asks_photo(normalized_text):
-        return _existing(list(GAZEBO_IMAGE_BY_VARIANT.values()))
+    reply_variants = _gazebo_variants_from_text(normalized_reply)
+    if reply_variants and _reply_has_concrete_gazebo_context(normalized_reply):
+        return media_for_gazebo_titles(reply_variants)
     return []
+
+
+def is_explicit_photo_request(text: str) -> bool:
+    normalized = _normalize(text)
+    return any(
+        marker in normalized
+        for marker in (
+            "фото",
+            "фотку",
+            "фотки",
+            "фотограф",
+            "картин",
+            "изображ",
+            "покажи",
+            "показать",
+            "скинь",
+            "скинуть",
+            "пришли",
+            "отправь",
+            "как выглядит",
+        )
+    )
+
+
+def media_for_gazebo_titles(titles: list[str]) -> list[Path]:
+    return _existing(
+        [
+            path
+            for title in titles
+            if (path := GAZEBO_IMAGE_BY_VARIANT.get(_canonical_gazebo_title(title)))
+        ]
+    )
 
 
 def media_for_bookings(bookings: list[dict[str, Any]]) -> list[Path]:
@@ -65,50 +96,89 @@ def _booking_title(booking: dict[str, Any]) -> str:
     if "крыт" in title.lower().replace("ё", "е"):
         return "Крытая беседка"
     service_id = str(booking.get("hold_yclients_service_id") or "")
-    for name, path in GAZEBO_IMAGE_BY_VARIANT.items():
+    for name in GAZEBO_IMAGE_BY_VARIANT:
         number = re.search(r"№(\d+)", name)
         if number and number.group(1) in title:
             return name
     service_to_title = {
         "18201055": "Беседка №1",
         "18201056": "Беседка №2",
-        "18201057": "Беседка №3",
-        "18201058": "Беседка №4",
-        "18201060": "Беседка №6",
-        "18201062": "Беседка №8",
-        "18201063": "Крытая беседка",
+        "18201059": "Беседка №3",
+        "18201061": "Беседка №4",
+        "18201062": "Беседка №5",
+        "18201063": "Беседка №6",
+        "18201065": "Беседка №8",
+        "19196656": "Крытая беседка",
     }
     return service_to_title.get(service_id, title)
 
 
 def _gazebo_variants_from_text(text: str) -> list[str]:
     variants: list[str] = []
-    for match in re.finditer(r"(?:беседк[аиуы]?\s*)?(?:№|номер\s*)?([1-8])\b", text):
-        variant = f"Беседка №{match.group(1)}"
-        if variant not in variants:
-            variants.append(variant)
-    if "крыт" in text and "Крытая беседка" not in variants:
+    patterns = (
+        r"\bбеседк[а-яё]*\s*(?:№|номер\s*)?([1-8])\b",
+        r"(?:№|номер\s*)([1-8])\b",
+        r"\b([1-8])\s*(?:-?\s*)?(?:ю|ую|ая|я)?\s+беседк[а-яё]*",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text):
+            variant = f"Беседка №{match.group(1)}"
+            if variant not in variants:
+                variants.append(variant)
+    for match in re.finditer(r"\b(?:первая|первую|вторая|вторую|третья|третью|четвертая|четвертую|пятая|пятую|шестая|шестую|восьмая|восьмую)\s+беседк[а-яё]*", text):
+        number = {
+            "первая": "1",
+            "первую": "1",
+            "вторая": "2",
+            "вторую": "2",
+            "третья": "3",
+            "третью": "3",
+            "четвертая": "4",
+            "четвертую": "4",
+            "пятая": "5",
+            "пятую": "5",
+            "шестая": "6",
+            "шестую": "6",
+            "восьмая": "8",
+            "восьмую": "8",
+        }.get(match.group(0).split()[0])
+        if number:
+            variant = f"Беседка №{number}"
+            if variant not in variants:
+                variants.append(variant)
+    if "крыт" in text and "бесед" in text and "Крытая беседка" not in variants:
         variants.append("Крытая беседка")
     return variants
 
 
-def _asks_all_gazebos(text: str) -> bool:
+def _canonical_gazebo_title(title: str) -> str:
+    normalized = _normalize(title)
+    if "крыт" in normalized and "бесед" in normalized:
+        return "Крытая беседка"
+    match = re.search(r"№\s*([1-8])\b", normalized) or re.search(r"\bбеседк[а-яё]*\s*([1-8])\b", normalized)
+    if match:
+        return f"Беседка №{match.group(1)}"
+    return title
+
+
+def _reply_has_concrete_gazebo_context(text: str) -> bool:
     return any(
         marker in text
         for marker in (
-            "какие бесед",
-            "какие есть бесед",
-            "все бесед",
-            "варианты бесед",
-            "выбор бесед",
-            "покажи бесед",
-            "фото бесед",
+            "свобод",
+            "выбранную дату",
+            "подходит",
+            "подойдут",
+            "подойдет",
+            "подойдёт",
+            "закрепляем",
+            "выбрали",
+            "выбрана",
+            "выбран",
+            "бронь",
+            "заброниров",
         )
     )
-
-
-def _asks_photo(text: str) -> bool:
-    return any(marker in text for marker in ("фото", "фотк", "картин", "покажи"))
 
 
 def _mentions_gazebo(text: str) -> bool:

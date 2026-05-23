@@ -26,7 +26,7 @@ from app.ai.errors import AIProviderUnavailable  # noqa: E402
 from app.ai.schemas import AIResponse, PostBookingResponse  # noqa: E402
 from app.core.config import get_settings  # noqa: E402
 from app.db.connection import get_connection  # noqa: E402
-from app.db.repositories import bookings_repo, conversations_repo, payments_repo, slot_holds_repo, users_repo  # noqa: E402
+from app.db.repositories import bookings_repo, conversations_repo, payments_repo, slot_holds_repo, users_repo, yclients_records_repo  # noqa: E402
 from app.services.availability_service import AvailabilityResult  # noqa: E402
 from app.services import message_handler  # noqa: E402
 from app.services.media_service import media_for_client_message  # noqa: E402
@@ -71,6 +71,8 @@ def _cleanup() -> None:
                 cur.execute("DELETE FROM conversations WHERE id = ANY(%s)", (conversation_ids,))
             if user_ids:
                 cur.execute("DELETE FROM users WHERE id = ANY(%s)", (user_ids,))
+            cur.execute("DELETE FROM resource_busy_intervals WHERE source_record_id LIKE 'local_%'")
+            cur.execute("DELETE FROM yclients_records WHERE yclients_record_id LIKE 'local_%'")
 
 
 def _base_form(**overrides: Any) -> dict[str, Any]:
@@ -549,6 +551,30 @@ def _test_single_available_gazebo_is_auto_selected() -> Check:
     return Check("single available gazebo is auto selected", ok, f"{reply} | {form}")
 
 
+def _test_gazebo_variant_is_not_guessed() -> Check:
+    guests_only = message_handler._normalize_gazebo_variant(
+        _base_form(
+            service_type="gazebo",
+            service_variant=None,
+            guests_count=30,
+        )
+    )
+    broad_choice = message_handler._normalize_gazebo_variant(
+        _base_form(
+            service_type="gazebo",
+            service_variant="Большая беседка",
+            guests_count=30,
+            preferences=None,
+        )
+    )
+    ok = (
+        not guests_only.get("service_variant")
+        and not broad_choice.get("service_variant")
+        and "большая беседка" in str(broad_choice.get("preferences") or "").lower()
+    )
+    return Check("gazebo variant is not guessed", ok, f"{guests_only} | {broad_choice}")
+
+
 def _test_booking_summary_counts_all_bookings(now: datetime) -> Check:
     suffix = "booking_summary"
     created = _create_reserved_conversation(suffix, now)
@@ -956,18 +982,25 @@ def _test_location_question_does_not_handoff() -> Check:
 
 
 def _test_gazebo_media_selection() -> Check:
-    all_media = media_for_client_message("какие беседки есть?", "Беседка №1, Беседка №2, Беседка №8")
+    general = media_for_client_message("какие беседки есть?", "Напишите дату — проверю свободные беседки и отправлю фото.")
+    free = media_for_client_message("нас 10", "На 25 июня свободны: Беседка №4, Беседка №6.")
     specific = media_for_client_message("покажи беседку 8", "Вот беседка №8")
+    time_reply = media_for_client_message("на 18:00", "Беседка №4: с 18:00 до 00:00 свободно.")
     location = media_for_client_message("где вы находитесь?", "Адрес: Выкса")
     ok = (
-        len(all_media) >= 6
+        not general
+        and [path.name for path in free] == ["besedka4.jpg", "besedka6.jpg"]
         and [path.name for path in specific] == ["besedka8png.png"]
+        and [path.name for path in time_reply] == ["besedka4.jpg"]
         and not location
     )
     return Check(
         "gazebo media selection",
         ok,
-        f"all={len(all_media)}, specific={[path.name for path in specific]}, location={location}",
+        (
+            f"general={general}, free={[path.name for path in free]}, "
+            f"specific={[path.name for path in specific]}, time={[path.name for path in time_reply]}, location={location}"
+        ),
     )
 
 
@@ -1012,7 +1045,79 @@ def _add_paid_booking(
             payment_status="paid",
         )
         bookings_repo.mark_yclients_created(conn, booking_id=booking["id"], yclients_record_id=provider_record_id)
+        _upsert_test_yclients_record(
+            conn,
+            now=now,
+            record_id=provider_record_id,
+            service_type=service_type,
+            yclients_service_id=service_id,
+            start_date=booking_date,
+            start_time=time(18, 0),
+            duration_minutes=360,
+            phone="+79990000007",
+        )
         slot_holds_repo.mark_converted(conn, hold_id=hold["id"], now=now)
+
+
+def _upsert_test_yclients_record(
+    conn,
+    *,
+    now: datetime,
+    record_id: str,
+    service_type: str,
+    yclients_service_id: str,
+    start_date: date,
+    start_time: time,
+    duration_minutes: int,
+    phone: str,
+) -> None:
+    tz = ZoneInfo(get_settings().app_timezone)
+    start_at = datetime.combine(start_date, start_time, tzinfo=tz)
+    end_at = start_at + timedelta(minutes=duration_minutes)
+    service_title = "Беседка №8" if service_type == "gazebo" else "Баня с бассейном"
+    raw_payload = {
+        "id": record_id,
+        "deleted": False,
+        "comment": "local regression Telegram record",
+        "client": {"name": "Кирилл", "phone": phone},
+        "services": [{"id": yclients_service_id, "title": service_title}],
+    }
+    record = {
+        "yclients_record_id": record_id,
+        "company_id": "local",
+        "service_type": service_type,
+        "yclients_service_id": yclients_service_id,
+        "yclients_staff_id": "local_staff",
+        "service_title": service_title,
+        "staff_title": service_title,
+        "client_name": "Кирилл",
+        "client_phone": phone,
+        "status": "active",
+        "attendance": 0,
+        "start_at": start_at,
+        "end_at": end_at,
+        "duration_minutes": duration_minutes,
+        "raw_payload": raw_payload,
+        "synced_at": now,
+        "updated_at": now,
+    }
+    yclients_records_repo.upsert_record(conn, record)
+    yclients_records_repo.upsert_busy_interval(
+        conn,
+        {
+            "source": "yclients",
+            "source_record_id": record_id,
+            "service_type": service_type,
+            "yclients_service_id": yclients_service_id,
+            "yclients_staff_id": "local_staff",
+            "title": service_title,
+            "start_at": start_at,
+            "end_at": end_at,
+            "status": "active",
+            "raw_payload": raw_payload,
+            "updated_at": now,
+        },
+    )
 
 
 def _test_post_booking_summary_always_uses_db(now: datetime) -> Check:
@@ -1174,6 +1279,113 @@ def _test_reschedule_typo_pernesti_uses_target_date(now: datetime) -> Check:
         message_handler.create_missing_yclients_records = original_create_missing
 
 
+def _test_reschedule_flow_answers_options_instead_of_loop(now: datetime) -> Check:
+    suffix = "reschedule_options_no_loop"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 26),
+        yclients_service_id="18201061",
+        provider_record_id="local_reschedule_options_gazebo1",
+        phone="+79990000013",
+    )
+    _add_paid_booking(created, now, service_type="gazebo", booking_date=date(2026, 6, 26), provider_record_id="local_reschedule_options_gazebo2")
+    original_create_missing = message_handler.create_missing_yclients_records
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    with get_connection() as conn:
+        conversation = conversations_repo.get_by_id(conn, created["conversation"]["id"])
+        form = dict((conversation or {}).get("form_data") or {})
+        form["reschedule_flow"] = {"stage": "reschedule", "booking_id": None}
+        conversations_repo.update_after_message(conn, created["conversation"]["id"], now, form_data=form)
+    try:
+        reply = _send(suffix, "а как я еще могу перенести", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        ok = (
+            "можно перенести" in reply.lower()
+            and "обе брони" in reply.lower()
+            and "какую бронь переносим" not in reply.lower()
+            and not form.get("reschedule_flow")
+            and (form.get("swap_reschedule_flow") or {}).get("stage") == "collect_swap"
+        )
+        return Check("reschedule flow answers options instead of loop", ok, f"{reply} | {form}")
+    finally:
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_reschedule_flow_answers_info_question(now: datetime) -> Check:
+    suffix = "reschedule_info_question"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 26),
+        yclients_service_id="18201061",
+        provider_record_id="local_reschedule_info_gazebo1",
+        phone="+79990000014",
+    )
+    _add_paid_booking(created, now, service_type="gazebo", booking_date=date(2026, 6, 26), provider_record_id="local_reschedule_info_gazebo2")
+    original_create_missing = message_handler.create_missing_yclients_records
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    with get_connection() as conn:
+        conversation = conversations_repo.get_by_id(conn, created["conversation"]["id"])
+        form = dict((conversation or {}).get("form_data") or {})
+        form["reschedule_flow"] = {"stage": "reschedule", "booking_id": None}
+        conversations_repo.update_after_message(conn, created["conversation"]["id"], now, form_data=form)
+    try:
+        reply = _send(suffix, "а есть парковка у вас", now)
+        ok = "парковка есть" in reply.lower() and "какую бронь переносим" not in reply.lower()
+        return Check("reschedule flow answers info question", ok, reply)
+    finally:
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_multi_reschedule_same_date_for_all_bookings(now: datetime) -> Check:
+    suffix = "multi_reschedule_same_date"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 26),
+        yclients_service_id="18201061",
+        provider_record_id="local_multi_reschedule_gazebo1",
+        phone="+79990000015",
+    )
+    _add_paid_booking(created, now, service_type="gazebo", booking_date=date(2026, 6, 26), provider_record_id="local_multi_reschedule_gazebo2")
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+    seen: list[dict[str, Any]] = []
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        seen.append(kwargs.get("form_data") or {})
+        return AvailabilityResult(True, "ok", ["Беседка: свободно"])
+
+    message_handler.check_availability = fake_availability
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "хочу перенести обе брони на 27 число", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        flow = form.get("swap_reschedule_flow") or {}
+        assignments = flow.get("assignments") or []
+        ignored = set()
+        for item in seen:
+            ignored.update(item.get("ignore_source_record_ids") or [])
+        ok = (
+            "27 июня" in reply
+            and "подтверждаете перенос" in reply.lower()
+            and flow.get("stage") == "confirm_swap"
+            and len(assignments) == 2
+            and {item.get("date") for item in assignments} == {"2026-06-27"}
+            and {"local_multi_reschedule_gazebo1", "local_multi_reschedule_gazebo2"} <= ignored
+        )
+        return Check("multi reschedule same date for all bookings", ok, f"{reply} | {flow} | ignored={ignored}")
+    finally:
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
 def _create_paid_booking_for_action(
     suffix: str,
     now: datetime,
@@ -1238,6 +1450,17 @@ def _create_paid_booking_for_action(
             payment_status="paid",
         )
         bookings_repo.mark_yclients_created(conn, booking_id=booking["id"], yclients_record_id=provider_record_id)
+        _upsert_test_yclients_record(
+            conn,
+            now=now,
+            record_id=provider_record_id,
+            service_type=service_type,
+            yclients_service_id=yclients_service_id,
+            start_date=booking_date,
+            start_time=time(18, 0),
+            duration_minutes=360,
+            phone=phone,
+        )
         slot_holds_repo.mark_converted(conn, hold_id=hold["id"], now=now)
     return created
 
@@ -1501,6 +1724,7 @@ def main() -> None:
         checks.append(_test_deterministic_date_beats_stale_ai(now))
         checks.append(_test_gazebo_recommendations_use_only_available())
         checks.append(_test_single_available_gazebo_is_auto_selected())
+        checks.append(_test_gazebo_variant_is_not_guessed())
         checks.append(_test_booking_summary_counts_all_bookings(now))
         checks.append(_test_new_conversation_sees_old_user_booking(now))
         checks.append(_test_new_conversation_sees_old_summary(now))
@@ -1519,6 +1743,9 @@ def main() -> None:
         checks.append(_test_reschedule_selects_service_after_list(now))
         checks.append(_test_reschedule_uses_target_date_not_source_date(now))
         checks.append(_test_reschedule_typo_pernesti_uses_target_date(now))
+        checks.append(_test_reschedule_flow_answers_options_instead_of_loop(now))
+        checks.append(_test_reschedule_flow_answers_info_question(now))
+        checks.append(_test_multi_reschedule_same_date_for_all_bookings(now))
         checks.append(_test_paid_cancel_asks_confirmation(now))
         checks.append(_test_paid_bathhouse_cancel_without_hold(now))
         checks.append(_test_ai_change_type_cancel_starts_flow(now))

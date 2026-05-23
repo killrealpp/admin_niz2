@@ -35,6 +35,7 @@ def main() -> None:
     parser.add_argument("--days-back", type=int, default=1)
     parser.add_argument("--days-forward", type=int, default=60)
     parser.add_argument("--loop", action="store_true")
+    parser.add_argument("--once", action="store_true", help="Run one sync and exit. Kept for explicitness; this is the default.")
     parser.add_argument("--interval-seconds", type=int, default=60)
     args = parser.parse_args()
 

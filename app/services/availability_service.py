@@ -60,6 +60,7 @@ def check_availability(
         form_data.get("guests_count"),
         form_data.get("time"),
         form_data.get("duration"),
+        tuple(sorted(str(item) for item in (form_data.get("ignore_source_record_ids") or []) if item)),
     )
     cached = _availability_cache.get(cache_key)
     if cached and time_module.monotonic() - cached[0] < AVAILABILITY_CACHE_TTL_SECONDS:
@@ -147,6 +148,11 @@ def _check_local_availability(
     requested_minutes = _duration_minutes(form_data.get("duration"))
     requested_time = _requested_time(form_data.get("time"))
     variant_filter = _variant_filter(form_data)
+    ignored_source_record_ids = {
+        str(item)
+        for item in (form_data.get("ignore_source_record_ids") or [])
+        if item
+    }
     active_holds = slot_holds_repo.list_active_for_slot(
         conn,
         service_type=service_type,
@@ -162,10 +168,13 @@ def _check_local_availability(
         )
     if service_config.get("block_full_day_on_any_booking"):
         overnight_records = _filter_intervals_by_variant(
-            yclients_records_repo.list_busy_intervals_crossing_service_time(
-                conn,
-                service_type=service_type,
-                moment=day_start,
+            _filter_ignored_intervals(
+                yclients_records_repo.list_busy_intervals_crossing_service_time(
+                    conn,
+                    service_type=service_type,
+                    moment=day_start,
+                ),
+                ignored_source_record_ids,
             ),
             variant_filter,
         )
@@ -176,11 +185,14 @@ def _check_local_availability(
                 [],
             )
         day_records = _filter_intervals_by_variant(
-            yclients_records_repo.list_busy_intervals_starting_on_service_date(
-                conn,
-                service_type=service_type,
-                start_at=day_start,
-                end_at=day_end,
+            _filter_ignored_intervals(
+                yclients_records_repo.list_busy_intervals_starting_on_service_date(
+                    conn,
+                    service_type=service_type,
+                    start_at=day_start,
+                    end_at=day_end,
+                ),
+                ignored_source_record_ids,
             ),
             variant_filter,
         )
@@ -261,6 +273,7 @@ def _check_local_availability(
             start_at=day_start,
             end_at=day_end,
         )
+        intervals = _filter_ignored_intervals(intervals, ignored_source_record_ids)
         busy = [(item["start_at"], item["end_at"]) for item in intervals]
         windows = _free_windows(day_start, day_end, busy)
         if requested_time and requested_minutes:
@@ -324,6 +337,16 @@ def _variant_filter(form_data: dict[str, Any]) -> dict[str, str] | None:
                     "yclients_service_id": str(variant.get("yclients_service_id") or ""),
                 }
     return None
+
+
+def _filter_ignored_intervals(intervals: list[dict[str, Any]], ignored_source_record_ids: set[str]) -> list[dict[str, Any]]:
+    if not ignored_source_record_ids:
+        return intervals
+    return [
+        item
+        for item in intervals
+        if str(item.get("source_record_id") or "") not in ignored_source_record_ids
+    ]
 
 
 def _filter_intervals_by_variant(

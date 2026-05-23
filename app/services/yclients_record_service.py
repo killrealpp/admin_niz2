@@ -23,14 +23,16 @@ def create_yclients_record_for_booking(
     record_id = _extract_record_id(response)
     if not record_id:
         raise RuntimeError(f"YCLIENTS did not return record id: {response}")
-    bookings_repo.mark_yclients_created(
+    updated_booking = bookings_repo.mark_yclients_created(
         conn,
         booking_id=booking["id"],
         yclients_record_id=record_id,
     )
+    local_booking = {**booking, **(updated_booking or {}), "yclients_record_id": record_id}
+    upsert_local_yclients_record_for_booking(conn, booking=local_booking)
     upsert_local_busy_interval_for_booking(
         conn,
-        booking={**booking, "yclients_record_id": record_id},
+        booking=local_booking,
         source="bot_booking",
     )
     return response
@@ -150,6 +152,50 @@ def upsert_local_busy_interval_for_booking(
     )
 
 
+def upsert_local_yclients_record_for_booking(
+    conn: PgConnection,
+    *,
+    booking: dict[str, Any],
+) -> None:
+    record_id = str(booking.get("yclients_record_id") or "").strip()
+    if not record_id:
+        return
+    service_id, staff_id = _resolve_yclients_ids(booking)
+    if not service_id or not staff_id:
+        return
+    start_at = _booking_datetime(booking)
+    duration = int(booking.get("duration_minutes") or 60)
+    end_at = start_at + timedelta(minutes=duration)
+    settings = get_settings()
+    service_title = _service_title_for_booking(booking, service_id)
+    yclients_records_repo.upsert_record(
+        conn,
+        {
+            "yclients_record_id": record_id,
+            "company_id": str(settings.yclients_company_id or ""),
+            "service_type": str(booking.get("service_type") or "unknown"),
+            "yclients_service_id": service_id,
+            "yclients_staff_id": staff_id,
+            "service_title": service_title,
+            "staff_title": service_title,
+            "client_name": str(booking.get("client_name") or ""),
+            "client_phone": _digits_phone(str(booking.get("phone") or "")),
+            "status": "active",
+            "attendance": None,
+            "start_at": start_at,
+            "end_at": end_at,
+            "duration_minutes": duration,
+            "raw_payload": {
+                "source": "bot_booking",
+                "booking_id": booking.get("id"),
+                "yclients_record_id": record_id,
+            },
+            "synced_at": datetime.now(start_at.tzinfo),
+            "updated_at": datetime.now(start_at.tzinfo),
+        },
+    )
+
+
 def _resolve_yclients_ids(booking: dict[str, Any]) -> tuple[str, str]:
     service_type = booking.get("service_type")
     config = load_services_map().get(service_type) or {}
@@ -182,6 +228,15 @@ def _resolve_yclients_ids(booking: dict[str, Any]) -> tuple[str, str]:
         str(selected.get("yclients_service_id") or config.get("yclients_service_id") or ""),
         str(selected.get("yclients_staff_id") or config.get("yclients_staff_id") or ""),
     )
+
+
+def _service_title_for_booking(booking: dict[str, Any], service_id: str) -> str:
+    service_type = booking.get("service_type")
+    config = load_services_map().get(service_type) or {}
+    for variant in config.get("variants") or []:
+        if str(variant.get("yclients_service_id") or "") == str(service_id):
+            return str(variant.get("title") or config.get("title") or service_type or "")
+    return str(config.get("title") or service_type or "")
 
 
 def _booking_datetime(booking: dict[str, Any]) -> datetime:
