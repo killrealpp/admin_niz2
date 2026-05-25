@@ -65,12 +65,19 @@ CREATE TABLE IF NOT EXISTS slot_holds (
     duration_minutes INT,
     status VARCHAR(32) NOT NULL DEFAULT 'active',
     expires_at TIMESTAMPTZ NOT NULL,
+    expired_notified_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+ALTER TABLE slot_holds
+    ADD COLUMN IF NOT EXISTS expired_notified_at TIMESTAMPTZ;
+
 CREATE INDEX IF NOT EXISTS idx_slot_holds_lookup
     ON slot_holds (service_type, slot_date, slot_time, status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_slot_holds_expired_notifications
+    ON slot_holds (status, expired_notified_at, expires_at);
 
 CREATE TABLE IF NOT EXISTS bookings (
     id BIGSERIAL PRIMARY KEY,

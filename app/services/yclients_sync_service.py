@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 from psycopg2.extensions import connection as PgConnection
 
 from app.core.config import get_settings
+from app.db.connection import get_connection
 from app.db.repositories import yclients_records_repo
 from app.integrations.yclients_client import YClientsClient, YClientsError
 from app.services.availability_service import load_services_map
@@ -78,17 +79,38 @@ def sync_records(
             records_upserted=upserted,
         )
     except Exception as exc:
-        yclients_records_repo.mark_sync_finished(
-            conn,
+        _mark_sync_failed_safely(
             sync_name=SYNC_NAME,
             now=now,
-            success=False,
             records_seen=seen,
             records_upserted=upserted,
             error=str(exc),
         )
         raise
     return SyncResult(records_seen=seen, records_upserted=upserted)
+
+
+def _mark_sync_failed_safely(
+    *,
+    sync_name: str,
+    now: datetime,
+    records_seen: int,
+    records_upserted: int,
+    error: str,
+) -> None:
+    try:
+        with get_connection() as error_conn:
+            yclients_records_repo.mark_sync_finished(
+                error_conn,
+                sync_name=sync_name,
+                now=now,
+                success=False,
+                records_seen=records_seen,
+                records_upserted=records_upserted,
+                error=error,
+            )
+    except Exception:
+        logger.exception("Failed to persist YCLIENTS sync error state")
 
 
 def normalize_record(

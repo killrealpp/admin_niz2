@@ -233,6 +233,41 @@ def mark_converted(conn: PgConnection, *, hold_id: int, now: datetime) -> None:
         )
 
 
+def list_expired_unnotified(conn: PgConnection, *, limit: int = 50) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                sh.*,
+                u.external_id AS user_external_id,
+                u.name AS user_name
+            FROM slot_holds sh
+            JOIN users u ON u.id = sh.user_id
+            LEFT JOIN bookings b ON b.slot_hold_id = sh.id
+            WHERE sh.status = 'expired'
+              AND sh.expired_notified_at IS NULL
+              AND b.id IS NULL
+            ORDER BY sh.expires_at ASC, sh.id ASC
+            LIMIT %s
+            """,
+            (limit,),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def mark_expired_notified(conn: PgConnection, *, hold_id: int, now: datetime) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE slot_holds
+            SET expired_notified_at = %s,
+                updated_at = %s
+            WHERE id = %s
+            """,
+            (now, now, hold_id),
+        )
+
+
 def expire_old(conn: PgConnection, now: datetime) -> int:
     with conn.cursor() as cur:
         cur.execute(

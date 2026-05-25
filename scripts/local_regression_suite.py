@@ -68,6 +68,36 @@ def _cleanup() -> None:
                 cur.execute("DELETE FROM system_logs WHERE conversation_id = ANY(%s)", (conversation_ids,))
                 cur.execute("DELETE FROM messages WHERE conversation_id = ANY(%s)", (conversation_ids,))
                 cur.execute("DELETE FROM conversation_summaries WHERE conversation_id = ANY(%s)", (conversation_ids,))
+                cur.execute(
+                    """
+                    DELETE FROM slot_holds sh
+                    USING conversations c, users u
+                    WHERE sh.conversation_id = c.id
+                      AND c.user_id = u.id
+                      AND u.external_id LIKE %s
+                    """,
+                    (TEST_PREFIX + "%",),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM messages m
+                    USING conversations c, users u
+                    WHERE m.conversation_id = c.id
+                      AND c.user_id = u.id
+                      AND u.external_id LIKE %s
+                    """,
+                    (TEST_PREFIX + "%",),
+                )
+                cur.execute(
+                    """
+                    DELETE FROM conversation_summaries cs
+                    USING conversations c, users u
+                    WHERE cs.conversation_id = c.id
+                      AND c.user_id = u.id
+                      AND u.external_id LIKE %s
+                    """,
+                    (TEST_PREFIX + "%",),
+                )
                 cur.execute("DELETE FROM conversations WHERE id = ANY(%s)", (conversation_ids,))
             if user_ids:
                 cur.execute("DELETE FROM users WHERE id = ANY(%s)", (user_ids,))
@@ -723,6 +753,29 @@ def _test_explicit_photo_request_ignores_availability_text() -> Check:
     return Check("explicit photo request ignores availability text", ok, f"{reply} | {[p.name for p in paths]}")
 
 
+def _test_explicit_photo_request_bypasses_ai(now: datetime) -> Check:
+    suffix = "explicit_photo_bypass_ai"
+    original_call_ai = message_handler.call_ai
+
+    def fail_call_ai(**_: Any) -> AIResponse:
+        raise AssertionError("AI must not be called for explicit photo request")
+
+    message_handler.call_ai = fail_call_ai
+    try:
+        reply = _send(suffix, "а можете показать беседку 3", now)
+        paths = media_for_client_message("а можете показать беседку 3", reply)
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "сейчас отправлю" in lowered
+            and "беседка №3" in lowered
+            and "не могу" not in lowered
+            and [path.name for path in paths] == ["besedka3.jpg"]
+        )
+        return Check("explicit photo request bypasses ai", ok, f"{reply} | {[p.name for p in paths]}")
+    finally:
+        message_handler.call_ai = original_call_ai
+
+
 def _test_price_question_during_form_not_booking_summary(now: datetime) -> Check:
     suffix = "price_during_form"
     created = _create_reserved_conversation(
@@ -1327,6 +1380,18 @@ def _test_gazebo_media_selection() -> Check:
     specific = media_for_client_message("покажи беседку 8", "Вот беседка №8")
     time_reply = media_for_client_message("на 18:00", "Беседка №4: с 18:00 до 00:00 свободно.")
     location = media_for_client_message("где вы находитесь?", "Адрес: Выкса")
+    nearest = media_for_client_message(
+        "нас 25",
+        (
+            "Беседка №2 рассчитана до 15 человек, а вас будет 25.\n"
+            "Чтобы не было тесно, эту беседку не закрепляю.\n\n"
+            "Сейчас не вижу подходящих свободных вариантов для такого количества гостей на выбранную дату.\n\n"
+            "Ближайшие даты, где есть беседки для 25 гостей:\n"
+            "- 1 июня: Беседка №1\n"
+            "- 2 июня: Беседка №1\n\n"
+            "Какую дату выбираете?"
+        ),
+    )
     ok = (
         not general
         and not date_only
@@ -1335,6 +1400,7 @@ def _test_gazebo_media_selection() -> Check:
         and [path.name for path in specific] == ["besedka8png.png"]
         and not time_reply
         and not location
+        and [path.name for path in nearest] == ["besedka1.jpg"]
     )
     return Check(
         "gazebo media selection",
@@ -1342,7 +1408,7 @@ def _test_gazebo_media_selection() -> Check:
         (
             f"general={general}, date_only={date_only}, free={[path.name for path in free]}, "
             f"rejected={[path.name for path in rejected]}, specific={[path.name for path in specific]}, "
-            f"time={[path.name for path in time_reply]}, location={location}"
+            f"time={[path.name for path in time_reply]}, location={location}, nearest={[path.name for path in nearest]}"
         ),
     )
 
@@ -1476,6 +1542,7 @@ def _test_post_booking_summary_always_uses_db(now: datetime) -> Check:
     )
     _add_paid_booking(created, now, service_type="gazebo", booking_date=date(2026, 6, 25), provider_record_id="local_summary_gazebo")
     original_classifier = message_handler.classify_post_booking_message
+    original_create_missing = message_handler.create_missing_yclients_records
     called = {"value": False}
 
     def fake_classifier(*_args: Any, **_kwargs: Any) -> PostBookingResponse:
@@ -1483,6 +1550,7 @@ def _test_post_booking_summary_always_uses_db(now: datetime) -> Check:
         return PostBookingResponse(intent="current_booking_question", reply_to_user="У вас одна бронь")
 
     message_handler.classify_post_booking_message = fake_classifier
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
     try:
         reply = _send(suffix, "какие теперь у меня есть брони?", now)
         reply2 = _send(suffix, "и это все?", now)
@@ -1496,6 +1564,32 @@ def _test_post_booking_summary_always_uses_db(now: datetime) -> Check:
         return Check("post booking summary always uses db", ok, f"{reply} | {reply2}")
     finally:
         message_handler.classify_post_booking_message = original_classifier
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_booking_summary_does_not_merge_shared_phone(now: datetime) -> Check:
+    shared_phone = "+79968533502"
+    _create_paid_booking_for_action(
+        "shared_phone_a",
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 5, 30),
+        yclients_service_id="18201063",
+        provider_record_id="local_shared_phone_a",
+        phone=shared_phone,
+    )
+    _create_paid_booking_for_action(
+        "shared_phone_b",
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 1),
+        yclients_service_id="18201055",
+        provider_record_id="local_shared_phone_b",
+        phone=shared_phone,
+    )
+    reply = _send("shared_phone_b", "какие у меня сейчас брони?", now)
+    ok = "1 бронь" in reply and "1 июня" in reply and "30 мая" not in reply
+    return Check("booking summary does not merge shared phone", ok, reply)
 
 
 def _test_reschedule_selects_service_after_list(now: datetime) -> Check:
@@ -1950,6 +2044,58 @@ def _test_paid_cancel_asks_confirmation(now: datetime) -> Check:
         message_handler.create_missing_yclients_records = original_create_missing
 
 
+def _test_paid_cancel_all_asks_single_confirmation(now: datetime) -> Check:
+    suffix = "paid_cancel_all"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 5, 27),
+        yclients_service_id="18201055",
+        provider_record_id="local_cancel_all_gazebo1",
+        phone="+79990000018",
+    )
+    _add_paid_booking(
+        created,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 1),
+        provider_record_id="local_cancel_all_gazebo2",
+        yclients_service_id="18201056",
+    )
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_create_missing = message_handler.create_missing_yclients_records
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "удали все брони", now)
+        done = _send(suffix, "да", now)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT count(*) AS active_count
+                    FROM bookings b
+                    JOIN conversations c ON c.id = b.conversation_id
+                    JOIN users u ON u.id = c.user_id
+                    WHERE u.external_id = %s
+                      AND b.status != 'cancelled'
+                    """,
+                    (TEST_PREFIX + suffix,),
+                )
+                active_count = cur.fetchone()["active_count"]
+        ok = (
+            "могу отменить эти брони" in reply.lower()
+            and "авансы" in reply.lower()
+            and "отменила брони" in done.lower()
+            and active_count == 0
+        )
+        return Check("paid cancel all asks single confirmation", ok, f"{reply} | {done} | active={active_count}")
+    finally:
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
 def _test_paid_bathhouse_cancel_without_hold(now: datetime) -> Check:
     suffix = "paid_bath_cancel_no_hold"
     _create_paid_booking_for_action(
@@ -2149,6 +2295,186 @@ def _test_paid_reschedule_asks_confirmation(now: datetime) -> Check:
         message_handler.create_yclients_record_for_booking = original_create_record
 
 
+def _test_generic_second_booking_keeps_only_contact(now: datetime) -> Check:
+    suffix = "generic_second_booking"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №5",
+            date="2026-06-21",
+            time="12:00",
+            duration=20,
+            guests_count=15,
+            client_name="Евгений",
+            phone="+79875426252",
+        ),
+    )
+    _create_active_hold(created["conversation"], created["user"], now)
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="booking_request",
+            action="ask_next_question",
+            current_step="service_type",
+            changed_fields=[],
+            form_data_patch={},
+            reply_to_user="",
+        )
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    try:
+        _send(suffix, "еще одну надо", now)
+        reply = _send(suffix, "баню", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        ok = (
+            form.get("client_name") == "Евгений"
+            and form.get("phone") == "+79875426252"
+            and form.get("service_type") == "bathhouse"
+            and not form.get("date")
+            and not form.get("time")
+            and not form.get("duration")
+            and "21 июня" not in reply
+            and "12:00" not in reply
+        )
+        return Check("generic second booking keeps only contact", ok, f"{reply} | {form}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+
+
+def _test_price_replies_use_service_map() -> Check:
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-07-18",
+        time="17:00",
+        duration=5,
+    )
+    reply = message_handler._price_reply_if_known("а сколько денег стоит баня", form)
+    ok = bool(reply and "13 250 ₽" in reply and "3 000" not in reply)
+    return Check("price replies use service map", ok, str(reply))
+
+
+def _test_addon_price_question_does_not_add_item() -> Check:
+    form = _base_form(service_type="gazebo", service_variant="Беседка №6")
+    patch = message_handler._upsell_items_patch("а скольок стоит решетка?")
+    reply = message_handler._price_reply_if_known("а скольок стоит решетка?", form)
+    ok = patch == {} and bool(reply and "500 ₽" in reply and "добавим" not in reply.lower())
+    return Check("addon price question does not add item", ok, f"{patch} | {reply}")
+
+
+def _test_prepayment_price_question_not_addons() -> Check:
+    form = _base_form(service_type="gazebo", service_variant="Беседка №6")
+    reply = message_handler._price_reply_if_known("а сколько стоит предоплата", form)
+    ok = bool(reply and "Предоплата" in reply and "Кальян" not in reply and "Мангальный" not in reply)
+    return Check("prepayment price question not addons", ok, str(reply))
+
+
+def _test_brooms_are_forbidden() -> Check:
+    form = _base_form(service_type="bathhouse")
+    patch = message_handler._upsell_items_patch("веники надо")
+    reply = message_handler._deterministic_info_reply("веники надо", form)
+    ok = patch == {} and bool(reply and "нельзя" in reply.lower() and "штраф" in reply.lower())
+    return Check("brooms are forbidden", ok, f"{patch} | {reply}")
+
+
+def _test_mosquito_question_during_confirmation() -> Check:
+    form = _base_form(service_type="gazebo", service_variant="Крытая беседка")
+    reply = message_handler._awaiting_confirmation_side_reply(
+        text="а каморов там много",
+        form_data=form,
+        history=[],
+    )
+    ok = "раз в неделю" in reply.lower() and "репеллент" in reply.lower()
+    return Check("mosquito question during confirmation", ok, reply)
+
+
+def _test_bare_duration_answer() -> Check:
+    patch = message_handler._current_step_patch("на 5", "duration", None)
+    ok = patch.get("duration") == 5
+    return Check("bare duration answer", ok, str(patch))
+
+
+def _test_confirmation_time_correction_rechecks(now: datetime) -> Check:
+    suffix = "confirmation_time_correction"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(service_type="bathhouse", date="2026-06-21", time="12:00", duration=20),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="awaiting_confirmation",
+            current_step="awaiting_confirmation",
+            next_step="confirmation",
+        )
+    original_availability = message_handler.check_availability
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(
+        True,
+        "ok",
+        ["Баня: свободно"],
+    )
+    try:
+        reply = _send(suffix, "нет 18 июля с 17 до 22", now)
+        form = _latest_state(suffix).get("form_data") or {}
+        ok = (
+            form.get("date") == "2026-07-18"
+            and form.get("time") == "17:00"
+            and form.get("duration") == 5
+            and "проверяю" not in reply.lower()
+            and "подтверждаете" in reply.lower()
+        )
+        return Check("confirmation time correction rechecks", ok, f"{reply} | {form}")
+    finally:
+        message_handler.check_availability = original_availability
+
+
+def _test_gazebo_selected_variant_capacity_uses_known_free_list(now: datetime) -> Check:
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №5",
+        date="2026-05-30",
+        time="18:00",
+        duration=6,
+        guests_count=25,
+    )
+    form["last_available_gazebo_variants"] = ["Беседка №5", "Беседка №2", "Беседка №4"]
+    original_next_free = message_handler._next_free_dates_reply
+    message_handler._next_free_dates_reply = lambda *_args, **_kwargs: "1 июня: Беседка №1\nКакую дату выбираете?"
+    try:
+        with get_connection() as conn:
+            result = message_handler._gazebo_capacity_mismatch_reply(
+                conn,
+                {"id": 1, "user_id": 1},
+                form,
+                now,
+            )
+        if not result:
+            return Check("gazebo selected variant capacity uses known free list", False, "no mismatch")
+        reply, current_step, next_key, updated = result
+        ok = (
+            "до 10 человек" in reply
+            and "25" in reply
+            and "Беседка №8" not in reply
+            and "Беседка №1" in reply
+            and current_step == "awaiting_new_date"
+            and next_key == "date"
+            and not updated.get("service_variant")
+        )
+        return Check("gazebo selected variant capacity uses known free list", ok, f"{reply} | {updated}")
+    finally:
+        message_handler._next_free_dates_reply = original_next_free
+
+
 def main() -> None:
     settings = get_settings()
     now = datetime(2026, 5, 20, 12, 0, tzinfo=ZoneInfo(settings.app_timezone))
@@ -2175,6 +2501,7 @@ def main() -> None:
         checks.append(_test_gazebo_open_ended_duration_overrides_ai_guess())
         checks.append(_test_media_waits_for_date_and_guests())
         checks.append(_test_explicit_photo_request_ignores_availability_text())
+        checks.append(_test_explicit_photo_request_bypasses_ai(now))
         checks.append(_test_price_question_during_form_not_booking_summary(now))
         checks.append(_test_single_available_gazebo_is_auto_selected())
         checks.append(_test_gazebo_variant_is_not_guessed())
@@ -2195,6 +2522,7 @@ def main() -> None:
         checks.append(_test_location_question_does_not_handoff())
         checks.append(_test_gazebo_media_selection())
         checks.append(_test_post_booking_summary_always_uses_db(now))
+        checks.append(_test_booking_summary_does_not_merge_shared_phone(now))
         checks.append(_test_reschedule_selects_service_after_list(now))
         checks.append(_test_reschedule_uses_target_date_not_source_date(now))
         checks.append(_test_reschedule_typo_pernesti_uses_target_date(now))
@@ -2204,10 +2532,20 @@ def main() -> None:
         checks.append(_test_reschedule_flow_answers_info_question(now))
         checks.append(_test_multi_reschedule_same_date_for_all_bookings(now))
         checks.append(_test_paid_cancel_asks_confirmation(now))
+        checks.append(_test_paid_cancel_all_asks_single_confirmation(now))
         checks.append(_test_paid_bathhouse_cancel_without_hold(now))
         checks.append(_test_ai_change_type_cancel_starts_flow(now))
         checks.append(_test_ai_change_type_reschedule_starts_flow(now))
         checks.append(_test_paid_reschedule_asks_confirmation(now))
+        checks.append(_test_generic_second_booking_keeps_only_contact(now))
+        checks.append(_test_price_replies_use_service_map())
+        checks.append(_test_addon_price_question_does_not_add_item())
+        checks.append(_test_prepayment_price_question_not_addons())
+        checks.append(_test_brooms_are_forbidden())
+        checks.append(_test_mosquito_question_during_confirmation())
+        checks.append(_test_bare_duration_answer())
+        checks.append(_test_confirmation_time_correction_rechecks(now))
+        checks.append(_test_gazebo_selected_variant_capacity_uses_known_free_list(now))
     finally:
         message_handler.create_missing_yclients_records = original_create_missing
         _cleanup()

@@ -1,15 +1,19 @@
 import asyncio
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import FSInputFile
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from app.core.config import get_settings
 from app.db.connection import get_connection
-from app.db.repositories import bookings_repo, conversations_repo, messages_repo, payments_repo, system_logs_repo
+from app.db.repositories import bookings_repo, conversations_repo, messages_repo, payments_repo, slot_holds_repo, system_logs_repo
 from app.db.repositories import users_repo
 from app.services.admin_telegram_service import notify_admin_about_new_bookings, notify_admin_text
+from app.services.availability_service import load_services_map
 from app.services.media_service import media_for_bookings
 from app.services.payment_service import sync_payment_statuses
 from app.services.yclients_record_service import create_missing_yclients_records
@@ -45,6 +49,7 @@ async def run_payment_status_loop(bot: Bot | None = None) -> None:
                 await notify_admin_about_handoffs(bot)
                 await notify_admin_about_new_bookings(bot)
                 await notify_paid_payments_once(bot)
+                await notify_expired_holds_once(bot)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -89,6 +94,14 @@ async def notify_paid_payments_once(bot: Bot) -> None:
         try:
             await bot.send_message(chat_id=chat_id, text=text)
             await _send_booking_media(bot, chat_id=chat_id, media_paths=media_paths)
+        except (TelegramBadRequest, TelegramForbiddenError):
+            logger.exception(
+                "Paid payment notification cannot be delivered payment_id=%s chat_id=%s",
+                payment.get("id"),
+                chat_id,
+            )
+            _mark_payment_notification_skipped(payment, "telegram_delivery_failed")
+            continue
         except Exception:
             logger.exception(
                 "Failed to notify paid payment payment_id=%s chat_id=%s",
@@ -124,6 +137,93 @@ async def notify_paid_payments_once(bot: Bot) -> None:
         )
 
 
+async def notify_expired_holds_once(bot: Bot) -> None:
+    settings = get_settings()
+    now = datetime.now(ZoneInfo(settings.app_timezone))
+    with get_connection() as conn:
+        holds = slot_holds_repo.list_expired_unnotified(conn, limit=50)
+
+    for hold in holds:
+        chat_id = str(hold.get("user_external_id") or "")
+        if not chat_id:
+            with get_connection() as conn:
+                slot_holds_repo.mark_expired_notified(conn, hold_id=hold["id"], now=now)
+            continue
+        text = _expired_hold_notification_text(hold)
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception:
+            logger.exception("Failed to notify expired hold hold_id=%s chat_id=%s", hold.get("id"), chat_id)
+            continue
+        with get_connection() as conn:
+            slot_holds_repo.mark_expired_notified(conn, hold_id=hold["id"], now=now)
+            messages_repo.create(
+                conn,
+                conversation_id=hold["conversation_id"],
+                sender="assistant",
+                text=text,
+                raw_payload={"event": "slot_hold_expired", "hold_id": hold["id"]},
+            )
+
+
+def _expired_hold_notification_text(hold: dict) -> str:
+    service_type = hold.get("service_type")
+    config = load_services_map().get(service_type) or {}
+    title = config.get("title") or service_type or "бронь"
+    service_id = str(hold.get("yclients_service_id") or "").strip()
+    for variant in config.get("variants") or []:
+        if service_id and str(variant.get("yclients_service_id") or "").strip() == service_id:
+            title = variant.get("title") or title
+            break
+    date_text = _format_date_short(hold.get("slot_date"))
+    time_text = str(hold.get("slot_time") or "")[:5]
+    duration = _format_duration_short(hold.get("duration_minutes"))
+    return (
+        f"Резерв на {title}, {date_text}, с {time_text} на {duration} истёк: "
+        "предоплата не поступила в течение 10 минут.\n\n"
+        "Слот снова доступен. Если всё ещё актуально, напишите — проверю свободность заново ✅"
+    )
+
+
+def _format_date_short(value) -> str:
+    try:
+        parsed = datetime.fromisoformat(str(value)).date()
+    except ValueError:
+        return str(value or "выбранную дату")
+    months = {
+        1: "января",
+        2: "февраля",
+        3: "марта",
+        4: "апреля",
+        5: "мая",
+        6: "июня",
+        7: "июля",
+        8: "августа",
+        9: "сентября",
+        10: "октября",
+        11: "ноября",
+        12: "декабря",
+    }
+    return f"{parsed.day} {months[parsed.month]}"
+
+
+def _format_duration_short(minutes) -> str:
+    try:
+        value = int(minutes)
+    except (TypeError, ValueError):
+        return "выбранное время"
+    if value % 60:
+        return f"{value} минут"
+    hours = value // 60
+    if hours % 10 == 1 and hours % 100 != 11:
+        suffix = "час"
+    elif hours % 10 in (2, 3, 4) and hours % 100 not in (12, 13, 14):
+        suffix = "часа"
+    else:
+        suffix = "часов"
+    return f"{hours} {suffix}"
+
+
 async def _notify_unfinalized_paid_payment(bot: Bot, payment: dict, *, chat_id: str) -> None:
     text = (
         "Оплата поступила ✅\n\n"
@@ -132,6 +232,14 @@ async def _notify_unfinalized_paid_payment(bot: Bot, payment: dict, *, chat_id: 
     )
     try:
         await bot.send_message(chat_id=chat_id, text=text)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        logger.exception(
+            "Unfinalized paid payment notification cannot be delivered payment_id=%s chat_id=%s",
+            payment.get("id"),
+            chat_id,
+        )
+        _mark_payment_notification_skipped(payment, "telegram_delivery_failed_unfinalized")
+        return
     except Exception:
         logger.exception(
             "Failed to notify unfinalized paid payment payment_id=%s chat_id=%s",
@@ -159,6 +267,23 @@ async def _notify_unfinalized_paid_payment(bot: Bot, payment: dict, *, chat_id: 
             "Проверьте слот и решите оплату вручную."
         ),
     )
+
+
+def _mark_payment_notification_skipped(payment: dict, reason: str) -> None:
+    with get_connection() as conn:
+        payments_repo.mark_payment_notified(conn, payment_id=payment["id"])
+        system_logs_repo.create(
+            conn,
+            level="warning",
+            event_type="payment_notification_skipped",
+            message=reason,
+            conversation_id=payment.get("conversation_id"),
+            payload={
+                "payment_id": payment.get("id"),
+                "provider_payment_id": payment.get("provider_payment_id"),
+                "user_external_id": payment.get("user_external_id"),
+            },
+        )
 
 
 async def _send_booking_media(bot: Bot, *, chat_id: str, media_paths: list) -> None:

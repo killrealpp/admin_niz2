@@ -35,13 +35,12 @@ def media_for_client_message(text: str, reply: str) -> list[Path]:
         if reply_variants:
             return media_for_gazebo_titles(reply_variants)
 
-    reply_variants = _gazebo_variants_from_text(normalized_reply)
+    reply_variants = _gazebo_variants_for_auto_media(normalized_reply)
     if (
         reply_variants
         and _reply_has_concrete_gazebo_context(normalized_reply)
         and _reply_lists_available_options(normalized_reply)
         and _reply_has_date_and_guest_count(normalized_reply)
-        and not _reply_rejects_capacity(normalized_reply)
     ):
         return media_for_gazebo_titles(reply_variants)
     return []
@@ -101,6 +100,90 @@ def media_for_gazebo_titles(titles: list[str]) -> list[Path]:
             for title in titles
             if (path := GAZEBO_IMAGE_BY_VARIANT.get(_canonical_gazebo_title(title)))
         ]
+    )
+
+
+def _gazebo_variants_for_auto_media(text: str) -> list[str]:
+    variants: list[str] = []
+    seen: set[str] = set()
+    alternatives_block = False
+    capacity_rejected = _reply_rejects_capacity(text) or any(
+        marker in text for marker in ("не закреп", "не вижу подход", "тесно")
+    )
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if any(marker in line for marker in ("ближайшие даты", "где есть беседки", "подходящие варианты")):
+            alternatives_block = True
+        line_variants = _gazebo_variants_from_text(line)
+        if not line_variants:
+            continue
+        if _line_rejects_gazebo_option(line):
+            continue
+        if capacity_rejected and not alternatives_block and not _line_has_suitable_capacity_claim(line):
+            continue
+        if not alternatives_block and not _line_supports_auto_media(line):
+            continue
+        for title in line_variants:
+            canonical = _canonical_gazebo_title(title)
+            if canonical not in seen:
+                variants.append(canonical)
+                seen.add(canonical)
+    if variants:
+        return variants
+    if capacity_rejected:
+        return []
+    return _gazebo_variants_from_text(text)
+
+
+def _line_has_suitable_capacity_claim(line: str) -> bool:
+    return any(
+        marker in line
+        for marker in (
+            "подойдет",
+            "подойдёт",
+            "подойдут",
+            "подходят",
+            "подходящие",
+        )
+    )
+
+
+def _line_supports_auto_media(line: str) -> bool:
+    return any(
+        marker in line
+        for marker in (
+            "свобод",
+            "подойдет",
+            "подойдёт",
+            "подойдут",
+            "подходят",
+            "подходящие",
+            "вариант",
+            "выбран",
+            "выбрали",
+            "закреп",
+        )
+    )
+
+
+def _line_rejects_gazebo_option(line: str) -> bool:
+    return any(
+        marker in line
+        for marker in (
+            "рассчитан",
+            "а вас будет",
+            "не закреп",
+            "не подходит",
+            "не подойдут",
+            "не подойдет",
+            "не подойдёт",
+            "не подходят",
+            "не вижу подход",
+            "тесно",
+            "тесноват",
+        )
     )
 
 
@@ -246,7 +329,9 @@ def _reply_rejects_capacity(text: str) -> bool:
             "не подходят",
             "не подойдет",
             "не подойдёт",
+            "не закреп",
             "тесноват",
+            "тесно",
             "по вместимости они могут",
             "по вместимости они не",
         )
