@@ -984,21 +984,23 @@ def _test_location_question_does_not_handoff() -> Check:
 def _test_gazebo_media_selection() -> Check:
     general = media_for_client_message("какие беседки есть?", "Напишите дату — проверю свободные беседки и отправлю фото.")
     free = media_for_client_message("нас 10", "На 25 июня свободны: Беседка №4, Беседка №6.")
+    single_free = media_for_client_message("завтра", "На 22 мая свободна: Беседка №6.")
     specific = media_for_client_message("покажи беседку 8", "Вот беседка №8")
     time_reply = media_for_client_message("на 18:00", "Беседка №4: с 18:00 до 00:00 свободно.")
     location = media_for_client_message("где вы находитесь?", "Адрес: Выкса")
     ok = (
         not general
         and [path.name for path in free] == ["besedka4.jpg", "besedka6.jpg"]
+        and [path.name for path in single_free] == ["besedka6.jpg"]
         and [path.name for path in specific] == ["besedka8png.png"]
-        and [path.name for path in time_reply] == ["besedka4.jpg"]
+        and not time_reply
         and not location
     )
     return Check(
         "gazebo media selection",
         ok,
         (
-            f"general={general}, free={[path.name for path in free]}, "
+            f"general={general}, free={[path.name for path in free]}, single_free={[path.name for path in single_free]}, "
             f"specific={[path.name for path in specific]}, time={[path.name for path in time_reply]}, location={location}"
         ),
     )
@@ -1229,7 +1231,7 @@ def _test_reschedule_uses_target_date_not_source_date(now: datetime) -> Check:
     message_handler.check_availability = fake_availability
     message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
     try:
-        reply = _send(suffix, "могу ли я беседку на 8 которая на 23 мая перенеси на 26 июня", now)
+        reply = _send(suffix, "могу ли я беседку на 8 которая на 23 мая перенеси на 26 июня на то же время", now)
         checked = seen[-1] if seen else {}
         ok = (
             "26 июня" in reply
@@ -1269,7 +1271,7 @@ def _test_reschedule_typo_pernesti_uses_target_date(now: datetime) -> Check:
     message_handler.check_availability = fake_availability
     message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
     try:
-        reply = _send(suffix, "тогда баня которая на 25 июня пернести на 26 июня", now)
+        reply = _send(suffix, "тогда баня которая на 25 июня пернести на 26 июня на то же время", now)
         checked = seen[-1] if seen else {}
         ok = "26 июня" in reply and checked.get("date") == "2026-06-26"
         return Check("reschedule typo pernesti uses target date", ok, f"{reply} | checked={checked}")
@@ -1277,6 +1279,106 @@ def _test_reschedule_typo_pernesti_uses_target_date(now: datetime) -> Check:
         message_handler.delete_yclients_record_for_booking = original_delete
         message_handler.check_availability = original_availability
         message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_reschedule_keeps_initial_date_after_selection(now: datetime) -> Check:
+    suffix = "reschedule_keeps_initial_date"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 29),
+        yclients_service_id="18201062",
+        provider_record_id="local_reschedule_initial_gazebo5",
+        phone="+79990000016",
+    )
+    _add_paid_booking(
+        created,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 29),
+        provider_record_id="local_reschedule_initial_gazebo2",
+        yclients_service_id="18201056",
+    )
+    original_create_missing = message_handler.create_missing_yclients_records
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        first = _send(suffix, "хочу перенести бронь на 30 июня", now)
+        second = _send(suffix, "вторую бронь", now)
+        state = _latest_state(suffix)
+        flow = (state.get("form_data") or {}).get("reschedule_flow") or {}
+        ok = (
+            "какую бронь переносим" in first.lower()
+            and "30 июня" in second
+            and "во сколько" in second.lower()
+            and "новую дату" not in second.lower()
+            and flow.get("date") == "2026-06-30"
+            and flow.get("booking_id")
+        )
+        return Check("reschedule keeps initial date after selection", ok, f"{first} | {second} | {flow}")
+    finally:
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_reschedule_can_change_gazebo_variant(now: datetime) -> Check:
+    suffix = "reschedule_change_gazebo_variant"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 29),
+        yclients_service_id="18201065",
+        provider_record_id="local_reschedule_change_gazebo8",
+        phone="+79990000017",
+    )
+    original_delete = message_handler.delete_yclients_record_for_booking
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+    original_create_record = message_handler.create_yclients_record_for_booking
+    seen: list[dict[str, Any]] = []
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        form = dict(kwargs.get("form_data") or {})
+        seen.append(form)
+        return AvailabilityResult(True, "ok", [f"{form.get('service_variant')}: свободно"])
+
+    message_handler.delete_yclients_record_for_booking = lambda *_args, **_kwargs: True
+    message_handler.check_availability = fake_availability
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    message_handler.create_yclients_record_for_booking = lambda *_args, **_kwargs: {}
+    try:
+        reply = _send(suffix, "перенеси беседку 8 на 30 июня на беседку 6 на то же время", now)
+        done = _send(suffix, "да", now)
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT sh.yclients_service_id
+                    FROM bookings b
+                    JOIN conversations c ON c.id = b.conversation_id
+                    JOIN users u ON u.id = c.user_id
+                    JOIN slot_holds sh ON sh.id = b.slot_hold_id
+                    WHERE u.external_id = %s
+                    LIMIT 1
+                    """,
+                    (TEST_PREFIX + suffix,),
+                )
+                row = cur.fetchone()
+        checked = seen[-1] if seen else {}
+        ok = (
+            "30 июня" in reply
+            and "Беседка №6" in reply
+            and "перенесла" in done.lower()
+            and row
+            and row["yclients_service_id"] == "18201063"
+            and checked.get("service_variant") == "Беседка №6"
+        )
+        return Check("reschedule can change gazebo variant", ok, f"{reply} | {done} | {row} | checked={checked}")
+    finally:
+        message_handler.delete_yclients_record_for_booking = original_delete
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
+        message_handler.create_yclients_record_for_booking = original_create_record
 
 
 def _test_reschedule_flow_answers_options_instead_of_loop(now: datetime) -> Check:
@@ -1631,7 +1733,7 @@ def _test_ai_change_type_reschedule_starts_flow(now: datetime) -> Check:
     message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
     message_handler.create_yclients_record_for_booking = lambda *_args, **_kwargs: {}
     try:
-        reply = _send(suffix, "давайте сместим баню на 26 июня", now)
+        reply = _send(suffix, "давайте сместим баню на 26 июня на то же время", now)
         state = _latest_state(suffix)
         form = state.get("form_data") or {}
         flow = form.get("reschedule_flow") or {}
@@ -1674,7 +1776,7 @@ def _test_paid_reschedule_asks_confirmation(now: datetime) -> Check:
     message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
     message_handler.create_yclients_record_for_booking = lambda *_args, **_kwargs: {}
     try:
-        reply = _send(suffix, "баня которая 23 июня можно перенести на 24?", now)
+        reply = _send(suffix, "баня которая 23 июня можно перенести на 24 на то же время?", now)
         state = _latest_state(suffix)
         form = state.get("form_data") or {}
         confirm_ok = (
@@ -1709,6 +1811,8 @@ def _test_paid_reschedule_asks_confirmation(now: datetime) -> Check:
 def main() -> None:
     settings = get_settings()
     now = datetime(2026, 5, 20, 12, 0, tzinfo=ZoneInfo(settings.app_timezone))
+    original_create_missing = message_handler.create_missing_yclients_records
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
     _cleanup()
     checks: list[Check] = []
     try:
@@ -1743,6 +1847,8 @@ def main() -> None:
         checks.append(_test_reschedule_selects_service_after_list(now))
         checks.append(_test_reschedule_uses_target_date_not_source_date(now))
         checks.append(_test_reschedule_typo_pernesti_uses_target_date(now))
+        checks.append(_test_reschedule_keeps_initial_date_after_selection(now))
+        checks.append(_test_reschedule_can_change_gazebo_variant(now))
         checks.append(_test_reschedule_flow_answers_options_instead_of_loop(now))
         checks.append(_test_reschedule_flow_answers_info_question(now))
         checks.append(_test_multi_reschedule_same_date_for_all_bookings(now))
@@ -1752,6 +1858,7 @@ def main() -> None:
         checks.append(_test_ai_change_type_reschedule_starts_flow(now))
         checks.append(_test_paid_reschedule_asks_confirmation(now))
     finally:
+        message_handler.create_missing_yclients_records = original_create_missing
         _cleanup()
 
     failed = [check for check in checks if not check.ok]

@@ -17,7 +17,11 @@ from app.bot.telegram_session import create_ipv4_session
 from app.core.config import get_settings
 from app.db.connection import get_connection
 from app.db.repositories import conversations_repo, users_repo
-from app.services.media_service import is_explicit_photo_request, media_for_client_message
+from app.services.media_service import (
+    is_explicit_photo_request,
+    media_for_client_message,
+    missing_media_titles_for_client_message,
+)
 from app.services.message_handler import handle_incoming
 from app.services.message_retention_runner import run_message_retention_loop
 from app.services.payment_status_runner import run_payment_status_loop
@@ -30,6 +34,7 @@ from app.services.yclients_sync_runner import run_yclients_sync_loop
 
 logger = logging.getLogger(__name__)
 MEDIA_SEND_TIMEOUT_SECONDS = 45
+AUTO_MEDIA_RESEND_AFTER_SECONDS = 12 * 60 * 60
 
 
 async def on_start(message: Message) -> None:
@@ -167,10 +172,14 @@ def _log_related_media_result(task: asyncio.Task) -> None:
 async def _send_related_media(message: Message, channel: str, external_user_id: str, text: str, reply: str) -> None:
     paths = media_for_client_message(text, reply)
     if not paths:
+        missing_titles = missing_media_titles_for_client_message(text, reply)
+        if is_explicit_photo_request(text) and missing_titles:
+            titles = ", ".join(missing_titles)
+            await message.answer(f"Фото для {titles} пока не добавлено. Я смогу отправить его, когда файл появится в базе фото.")
         return
     explicit_request = is_explicit_photo_request(text)
     if not explicit_request:
-        allowed = await asyncio.to_thread(_reserve_auto_media_send, channel, external_user_id)
+        allowed = await asyncio.to_thread(_reserve_auto_media_send, channel, external_user_id, paths)
         if not allowed:
             return
         paths = media_for_client_message(text, reply)
@@ -198,9 +207,13 @@ async def _send_media_paths(message: Message, paths: list) -> None:
         logger.exception("Failed to send media group chat_id=%s paths=%s", message.chat.id, paths)
 
 
-def _reserve_auto_media_send(channel: str, external_user_id: str) -> bool:
+def _reserve_auto_media_send(channel: str, external_user_id: str, paths: list) -> bool:
     settings = get_settings()
     now = datetime.now(ZoneInfo(settings.app_timezone))
+    media_key = "|".join(sorted(str(getattr(path, "name", path)) for path in paths))
+    if not media_key:
+        return False
+    media_names = set(media_key.split("|"))
     with get_connection() as conn:
         user = users_repo.find_by_external_id(conn, channel, external_user_id)
         if not user:
@@ -215,10 +228,33 @@ def _reserve_auto_media_send(channel: str, external_user_id: str) -> bool:
             return False
         form_data = conversation.get("form_data") or {}
         media_state = dict(form_data.get("media_state") or {})
-        if media_state.get("gazebo_auto_sent"):
+        sent_map = {
+            str(key): str(value)
+            for key, value in (media_state.get("gazebo_auto_sent_map") or {}).items()
+            if key and value
+        }
+        sent_keys = {
+            str(item)
+            for item in (media_state.get("gazebo_auto_sent_keys") or [])
+            if item
+        }
+        for existing_key, existing_at in sent_map.items():
+            existing_names = set(existing_key.split("|"))
+            if media_names <= existing_names and not _media_resend_due(existing_at, now):
+                return False
+        sent_at = sent_map.get(media_key)
+        if sent_at and not _media_resend_due(sent_at, now):
             return False
+        if media_key in sent_keys and not sent_at:
+            legacy_sent_at = str(media_state.get("gazebo_auto_sent_at") or "")
+            if legacy_sent_at and not _media_resend_due(legacy_sent_at, now):
+                return False
+        sent_keys.add(media_key)
+        sent_map[media_key] = now.isoformat()
         media_state["gazebo_auto_sent"] = True
         media_state["gazebo_auto_sent_at"] = now.isoformat()
+        media_state["gazebo_auto_sent_keys"] = sorted(sent_keys)[-20:]
+        media_state["gazebo_auto_sent_map"] = _prune_media_sent_map(sent_map, now)
         conversations_repo.update_after_message(
             conn,
             conversation["id"],
@@ -226,6 +262,26 @@ def _reserve_auto_media_send(channel: str, external_user_id: str) -> bool:
             form_data={**form_data, "media_state": media_state},
         )
         return True
+
+
+def _media_resend_due(sent_at: str, now: datetime) -> bool:
+    try:
+        previous = datetime.fromisoformat(sent_at)
+    except ValueError:
+        return True
+    if previous.tzinfo is None and now.tzinfo is not None:
+        previous = previous.replace(tzinfo=now.tzinfo)
+    if previous.tzinfo is not None and now.tzinfo is not None:
+        previous = previous.astimezone(now.tzinfo)
+    return (now - previous).total_seconds() >= AUTO_MEDIA_RESEND_AFTER_SECONDS
+
+
+def _prune_media_sent_map(sent_map: dict[str, str], now: datetime) -> dict[str, str]:
+    fresh: dict[str, str] = {}
+    for key, value in sent_map.items():
+        if not _media_resend_due(value, now):
+            fresh[key] = value
+    return dict(list(fresh.items())[-20:])
 
 
 def create_dispatcher() -> Dispatcher:

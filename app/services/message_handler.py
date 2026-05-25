@@ -970,6 +970,20 @@ def _wants_additional_booking(text: str) -> bool:
     return bool(_service_type_patch(normalized))
 
 
+def _starts_gazebo_browsing_after_booking(conversation: dict[str, Any], text: str) -> bool:
+    if not _asks_gazebo_options(text):
+        return False
+    if _asks_booking_summary(text):
+        return False
+    status = str(conversation.get("status") or "")
+    current_step = str(conversation.get("current_step") or "")
+    return (
+        status in {"payment_paid", "reserved"}
+        or current_step in {"reserved", "payment_status", "awaiting_new_date"}
+        or bool((conversation.get("form_data") or {}).get("last_unavailable"))
+    )
+
+
 def _starts_new_booking_request(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
     if _asks_available_services(text):
@@ -1213,6 +1227,58 @@ def _new_booking_form_data(previous: dict[str, Any]) -> dict[str, Any]:
         if previous.get(key):
             fresh[key] = previous[key]
     return fresh
+
+
+def _new_gazebo_browsing_form_data(previous: dict[str, Any], text: str, now: datetime) -> dict[str, Any]:
+    fresh = _new_booking_form_data(previous)
+    patch = _deterministic_patch(text, now)
+    fresh["service_type"] = "gazebo"
+    for key in ("date", "guests_count", "preferences"):
+        if patch.get(key):
+            fresh[key] = patch[key]
+    return fresh
+
+
+def _handle_gazebo_browsing_start(
+    conn,
+    *,
+    text: str,
+    conversation: dict[str, Any],
+    previous_form_data: dict[str, Any],
+    history: list[dict[str, Any]],
+    now: datetime,
+) -> tuple[str, str, str, str | None, dict[str, Any]]:
+    form_data = _new_gazebo_browsing_form_data(previous_form_data, text, now)
+    if form_data.get("date"):
+        availability = check_availability(conn, form_data=form_data, now=now)
+        if availability.ok and not availability.slots:
+            required, next_key = _no_availability_reply(form_data)
+            form_data = _reset_unavailable_slot(form_data)
+            current_step = "awaiting_new_date"
+        else:
+            form_data = _remember_available_gazebo_variants(form_data, availability.slots)
+            form_data = _auto_select_single_available_gazebo(form_data)
+            required, next_key = _availability_reply(
+                availability.message,
+                availability.slots,
+                form_data,
+            )
+            current_step = next_key or "service_variant"
+    else:
+        required = (
+            "Клиент спрашивает, какие беседки есть. Ответь коротко: есть разные беседки по вместимости и удобствам. "
+            "Скажи, что свободные варианты нужно показывать только после проверки даты в журнале. "
+            "Попроси дату отдыха одним вопросом. Не используй параметры прошлой брони."
+        )
+        next_key = "date"
+        current_step = "date"
+    reply = _ai_process_reply(
+        text=text,
+        form_data=form_data,
+        history=history,
+        required_meaning=required,
+    )
+    return reply, "waiting_user", current_step, next_key, form_data
 
 
 def _reply_with_hold_summary(
@@ -1662,7 +1728,7 @@ def _filter_actual_journal_bookings(
     for booking in bookings:
         record_id = str(booking.get("yclients_record_id") or "").strip()
         if record_id and not booking.get("synced_yclients_record_id"):
-            if yclients_records_repo.has_active_busy_interval_for_booking(
+            if _booking_sync_grace_active(booking, now) and yclients_records_repo.has_active_busy_interval_for_booking(
                 conn,
                 booking_id=int(booking["id"]),
                 yclients_record_id=record_id,
@@ -1692,7 +1758,24 @@ def _filter_actual_journal_bookings(
         bookings_repo.mark_journal_present_by_ids(conn, booking_ids=present_ids, now=now)
     if missing_ids:
         bookings_repo.mark_journal_missing_by_ids(conn, booking_ids=missing_ids, now=now)
+        for booking_id in missing_ids:
+            yclients_records_repo.delete_busy_interval(
+                conn,
+                source="bot_booking",
+                source_record_id=str(booking_id),
+            )
     return actual
+
+
+def _booking_sync_grace_active(booking: dict[str, Any], now: datetime) -> bool:
+    created_at = booking.get("yclients_created_at") or booking.get("updated_at") or booking.get("created_at")
+    if not isinstance(created_at, datetime):
+        return False
+    if created_at.tzinfo is None and now.tzinfo is not None:
+        created_at = created_at.replace(tzinfo=now.tzinfo)
+    if now.tzinfo is not None and created_at.tzinfo is not None:
+        created_at = created_at.astimezone(now.tzinfo)
+    return now - created_at <= timedelta(minutes=15)
 
 
 def _has_user_bookings(
@@ -1702,6 +1785,25 @@ def _has_user_bookings(
     now: datetime,
 ) -> bool:
     return bool(_active_user_bookings(conn, conversation, form_data, now))
+
+
+def _should_route_existing_booking_command(text: str) -> bool:
+    return (
+        _asks_booking_summary(text)
+        or _wants_cancel_booking(text)
+        or _wants_reschedule(text)
+        or _wants_swap_bookings(text)
+        or _wants_multi_booking_reschedule(text)
+    )
+
+
+def _as_post_booking_conversation(conversation: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **conversation,
+        "status": "payment_paid",
+        "current_step": "reserved",
+        "next_step": "payment_status",
+    }
 
 
 def _context_summaries(
@@ -2524,6 +2626,56 @@ def _means_same_target(text: str) -> bool:
     return any(marker in normalized for marker in ("тоже", "также", "туда же", "на эту же", "на тот же", "то же"))
 
 
+def _means_same_time(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in (
+            "то же время",
+            "тоже время",
+            "такое же время",
+            "в то же",
+            "на то же",
+            "в это же время",
+            "время то же",
+            "время такое же",
+        )
+    )
+
+
+def _means_same_object(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in (
+            "та же бесед",
+            "ту же бесед",
+            "эта же бесед",
+            "эту же бесед",
+            "тот же объект",
+            "тот же вариант",
+            "оставляем",
+            "оставить",
+        )
+    )
+
+
+def _means_change_object(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in (
+            "другую бесед",
+            "другая бесед",
+            "поменять бесед",
+            "сменить бесед",
+            "заменить бесед",
+            "на другую",
+            "не эту",
+        )
+    )
+
+
 def _booking_reference_patterns(booking: dict[str, Any], bookings: list[dict[str, Any]]) -> list[str]:
     title = _booking_object_title(booking).lower().replace("ё", "е")
     patterns: list[str] = []
@@ -2645,7 +2797,7 @@ def _start_reschedule_flow(
         if len(same_target_assignments) >= 2:
             updated = {**form_data, "swap_reschedule_flow": {"stage": "collect_swap"}, "reschedule_flow": None}
             return _prepare_swap_reschedule(conn, conversation, bookings, same_target_assignments, updated, status, now)
-    flow = {"stage": "reschedule", "booking_id": None}
+    flow = {"stage": "reschedule", "booking_id": None} | _initial_reschedule_flow_patch(text, now)
     updated = {**form_data, "reschedule_flow": flow}
     if len(bookings) == 1:
         flow["booking_id"] = bookings[0]["id"]
@@ -2661,6 +2813,51 @@ def _start_reschedule_flow(
     for index, booking in enumerate(bookings, start=1):
         lines.append(f"{index}. {_booking_line_short(booking)}")
     return "\n".join(lines), status, "reserved", "payment_status", updated
+
+
+def _initial_reschedule_flow_patch(text: str, now: datetime) -> dict[str, Any]:
+    patch = _deterministic_patch(text, now)
+    flow_patch: dict[str, Any] = {}
+    if patch.get("date"):
+        flow_patch["date"] = patch["date"]
+    if patch.get("time"):
+        flow_patch["time"] = patch["time"]
+    if patch.get("duration"):
+        flow_patch["duration"] = patch["duration"]
+    if _means_same_time(text):
+        flow_patch["same_time"] = True
+    if _means_same_object(text):
+        flow_patch["same_object"] = True
+    if _means_change_object(text):
+        flow_patch["same_object"] = False
+        flow_patch["change_object"] = True
+    variant = (_reschedule_service_variant_patch(text) or {}).get("service_variant")
+    if variant:
+        flow_patch["service_variant"] = variant
+        flow_patch["same_object"] = False
+        flow_patch["change_object"] = True
+    return flow_patch
+
+
+def _reschedule_service_variant_patch(text: str, *, allow_bare: bool = False) -> dict[str, str]:
+    normalized = text.lower().replace("ё", "е")
+    variants: list[tuple[int, str]] = []
+    patterns = (
+        r"\bбеседк[а-яё]*\s*(?:на\s*)?(?:№|номер\s*)?([1-8])\b",
+        r"(?:№|номер)\s*([1-8])\b",
+        r"\b([1-8])\s*(?:-?\s*)?(?:ю|ую|ая|я)?\s*беседк",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, normalized):
+            variants.append((match.start(), f"Беседка №{match.group(1)}"))
+    if "крыт" in normalized and "бесед" in normalized:
+        variants.append((normalized.find("крыт"), "Крытая беседка"))
+    if variants:
+        variants.sort(key=lambda item: item[0])
+        return {"service_variant": variants[-1][1]}
+    if allow_bare:
+        return _service_variant_patch(text, allow_bare_ordinal=True)
+    return {}
 
 
 def _handle_reschedule_flow(
@@ -2697,20 +2894,58 @@ def _handle_reschedule_flow(
         return _execute_reschedule(conn, conversation, booking, form_data, flow)
 
     patch = _deterministic_patch(text, now)
+    patch.pop("service_variant", None)
+    variant_patch = _reschedule_service_variant_patch(
+        text,
+        allow_bare=bool(flow.get("change_object") and not flow.get("service_variant")),
+    )
+    if variant_patch:
+        patch |= variant_patch
     target_from_marker = _reschedule_target_date_patch(text, now, booking)
     if target_from_marker:
         patch["date"] = target_from_marker["date"]
+    if patch.get("time") and not patch.get("duration"):
+        patch["duration"] = _hours_from_minutes(booking.get("duration_minutes"))
+    same_time = bool(flow.get("same_time")) or _means_same_time(text)
+    same_object = bool(flow.get("same_object")) or _means_same_object(text)
+    change_object = bool(flow.get("change_object")) or _means_change_object(text)
+    current_variant = _booking_object_title(booking)
+    requested_variant = patch.get("service_variant") or flow.get("service_variant")
+    target_variant = None
+    if booking.get("service_type") == "gazebo":
+        if requested_variant:
+            target_variant = _canonical_reschedule_gazebo_variant(str(requested_variant))
+            if _normalize_gazebo_title(target_variant) == _normalize_gazebo_title(current_variant):
+                same_object = True
+                change_object = False
+            else:
+                same_object = False
+                change_object = True
+        elif change_object:
+            target_variant = None
+            same_object = False
+        else:
+            target_variant = current_variant
+            same_object = True
     if _bare_weekday_confirmation(text, now) and not patch.get("date"):
         return _bare_weekday_confirmation(text, now) or "", status, "reserved", "payment_status", {**form_data, "reschedule_flow": flow | {"booking_id": booking["id"]}}
 
     target_date = patch.get("date") or flow.get("date")
-    target_time = patch.get("time") or flow.get("time") or str(booking.get("booking_time"))[:5]
-    target_duration = patch.get("duration") or flow.get("duration") or _hours_from_minutes(booking.get("duration_minutes"))
+    target_time = patch.get("time") or flow.get("time")
+    if not target_time and same_time:
+        target_time = str(booking.get("booking_time"))[:5]
+    target_duration = patch.get("duration") or flow.get("duration")
+    if target_time and not target_duration:
+        target_duration = _hours_from_minutes(booking.get("duration_minutes"))
     flow = flow | {
         "booking_id": booking["id"],
         "date": target_date,
         "time": target_time,
         "duration": target_duration,
+        "same_time": same_time,
+        "same_object": same_object,
+        "change_object": change_object,
+        "service_variant": target_variant,
     }
     updated = {**form_data, "reschedule_flow": flow}
     if not target_date:
@@ -2722,8 +2957,27 @@ def _handle_reschedule_flow(
             updated,
         )
     if not target_time:
+        if booking.get("service_type") == "gazebo":
+            variant_line = (
+                f"Беседку оставляем ту же: {target_variant}."
+                if target_variant
+                else f"Беседку можем поменять. Какую ставим вместо {current_variant}?"
+            )
+        else:
+            variant_line = f"Услугу оставляем ту же: {current_variant}."
         return (
-            f"Поняла дату: {_format_date_ru(target_date)}.\n\nВо сколько хотите приехать? Можно сразу написать период, например: с 18:00 до 00:00.",
+            f"Поняла дату: {_format_date_ru(target_date)}.\n\n"
+            f"{variant_line}\n\n"
+            "Во сколько хотите приехать? Можно написать «в то же время» или указать новый период, например: с 18:00 до 00:00.",
+            status,
+            "reserved",
+            "payment_status",
+            updated,
+        )
+    if booking.get("service_type") == "gazebo" and change_object and not target_variant:
+        return (
+            f"Дату и время поняла: {_format_date_ru(target_date)}, с {target_time}.\n\n"
+            f"Какую беседку ставим вместо {current_variant}? Можно написать номер беседки или «оставить ту же».",
             status,
             "reserved",
             "payment_status",
@@ -2783,6 +3037,13 @@ def _execute_reschedule(
     new_date = datetime.fromisoformat(str(target_date)).date()
     new_time = datetime.strptime(str(target_time)[:5], "%H:%M").time()
     new_duration = _duration_minutes_value(target_duration)
+    target_form = _form_data_for_booking_reschedule(form_data, old_booking, flow)
+    target_variant_config = _selected_variant_config(target_form)
+    target_yclients_service_id = str(
+        target_variant_config.get("yclients_service_id")
+        or old_booking.get("hold_yclients_service_id")
+        or ""
+    )
     updated_booking = bookings_repo.update_schedule(
         conn,
         booking_id=int(booking["id"]),
@@ -2791,6 +3052,22 @@ def _execute_reschedule(
         duration_minutes=new_duration,
     )
     if updated_booking:
+        if updated_booking.get("slot_hold_id"):
+            updated_hold = slot_holds_repo.update_slot(
+                conn,
+                hold_id=int(updated_booking["slot_hold_id"]),
+                yclients_service_id=target_yclients_service_id,
+                slot_date=new_date,
+                slot_time=new_time,
+                duration_minutes=new_duration,
+                now=_now_local(),
+            )
+            if updated_hold:
+                target_yclients_service_id = str(updated_hold.get("yclients_service_id") or target_yclients_service_id)
+        updated_booking = {
+            **updated_booking,
+            "hold_yclients_service_id": target_yclients_service_id,
+        }
         upsert_local_busy_interval_for_booking(conn, booking=updated_booking)
         try:
             create_yclients_record_for_booking(conn, booking=updated_booking)
@@ -2819,8 +3096,12 @@ def _execute_reschedule(
                 )
             return _handoff_reply(), "handoff", "handoff", "handoff", form_data
     cleared = {**form_data, "date": target_date, "time": target_time, "duration": target_duration, "reschedule_flow": None}
+    variant_line = ""
+    if booking.get("service_type") == "gazebo" and flow.get("service_variant"):
+        cleared["service_variant"] = flow.get("service_variant")
+        variant_line = f"\nБеседка: {flow.get('service_variant')}."
     return (
-        f"Готово ✅\n\nПеренесла бронь на {_format_date_ru(target_date)}, с {target_time} на {_format_duration(target_duration)}.\n\nАванс сохраняется, остаток можно будет внести на месте.",
+        f"Готово ✅\n\nПеренесла бронь на {_format_date_ru(target_date)}, с {target_time} на {_format_duration(target_duration)}.{variant_line}\n\nАванс сохраняется, остаток можно будет внести на месте.",
         "payment_paid",
         "reserved",
         "payment_status",
@@ -2843,6 +3124,16 @@ def _restore_booking_after_failed_reschedule(conn, old_booking: dict[str, Any]) 
     )
     if not restored:
         return None
+    if restored.get("slot_hold_id"):
+        slot_holds_repo.update_slot(
+            conn,
+            hold_id=int(restored["slot_hold_id"]),
+            yclients_service_id=str(old_booking.get("hold_yclients_service_id") or ""),
+            slot_date=old_date,
+            slot_time=old_time,
+            duration_minutes=old_duration,
+            now=_now_local(),
+        )
     restored = {
         **restored,
         "hold_yclients_service_id": old_booking.get("hold_yclients_service_id"),
@@ -2944,10 +3235,20 @@ def _reschedule_confirmation_reply(booking: dict[str, Any], flow: dict[str, Any]
     target_date = flow.get("date")
     target_time = flow.get("time")
     target_duration = flow.get("duration")
+    current_variant = _booking_object_title(booking)
+    target_variant = flow.get("service_variant")
+    variant_line = ""
+    if (
+        booking.get("service_type") == "gazebo"
+        and target_variant
+        and _normalize_gazebo_title(target_variant) != _normalize_gazebo_title(current_variant)
+    ):
+        variant_line = f"Новая беседка: {target_variant}.\n\n"
     return (
         "Проверила, на новое время свободно ✅\n\n"
         f"Перенести бронь «{_booking_line_short(booking)}» "
         f"на {_format_date_ru(target_date)}, с {target_time} на {_format_duration(target_duration)}?\n\n"
+        f"{variant_line}"
         "Аванс сохраняется. Если по новой дате или услуге будет разница в стоимости, её можно будет доплатить на месте.\n\n"
         "Подтверждаете перенос? Напишите «да» или «нет»."
     )
@@ -3039,8 +3340,18 @@ def _form_data_for_booking_reschedule(form_data: dict[str, Any], booking: dict[s
         "ignore_source_record_ids": sorted(ignore_source_record_ids),
     }
     if service_type == "gazebo":
-        updated["service_variant"] = _booking_object_title(booking)
+        updated["service_variant"] = flow.get("service_variant") or _booking_object_title(booking)
     return updated
+
+
+def _canonical_reschedule_gazebo_variant(value: str) -> str:
+    normalized = _normalize_gazebo_title(value)
+    variants = (load_services_map().get("gazebo") or {}).get("variants") or []
+    for variant in variants:
+        title = str(variant.get("title") or "")
+        if _normalize_gazebo_title(title) == normalized:
+            return title
+    return value
 
 
 def _booking_line_short(booking: dict[str, Any]) -> str:
@@ -4038,6 +4349,35 @@ def handle_incoming(message: IncomingMessage) -> str:
         )
         history = messages_repo.list_recent(conn, conversation["id"], limit=20)
 
+        if _should_route_existing_booking_command(message.text) and _has_user_bookings(
+            conn,
+            conversation,
+            conversation.get("form_data") or {},
+            now,
+        ):
+            if _handoff_active(user, now):
+                users_repo.clear_handoff(conn, user_id=int(user["id"]))
+            routed_conversation = _as_post_booking_conversation(conversation)
+            routed = _handle_post_booking_message(conn, routed_conversation, message.text, history, now)
+            if routed is not None:
+                reply, status, current_step, next_key, form_data = routed
+                messages_repo.create(
+                    conn,
+                    conversation_id=conversation["id"],
+                    sender=SENDER_ASSISTANT,
+                    text=reply,
+                )
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status=status,
+                    current_step=current_step,
+                    next_step=next_key,
+                    form_data=form_data,
+                )
+                return reply
+
         if _handoff_active(user, now) and _is_waitlist_decline(message.text):
             waitlist_repo.close_for_user(conn, user_id=int(user["id"]))
             users_repo.clear_handoff(conn, user_id=int(user["id"]))
@@ -4428,6 +4768,33 @@ def handle_incoming(message: IncomingMessage) -> str:
                 "status": "waiting_user",
             }
             started_new_booking = True
+
+        if _starts_gazebo_browsing_after_booking(conversation, message.text):
+            reply, status, current_step, next_key, form_data = _handle_gazebo_browsing_start(
+                conn,
+                text=message.text,
+                conversation=conversation,
+                previous_form_data=conversation.get("form_data") or {},
+                history=history,
+                now=now,
+            )
+            messages_repo.create(
+                conn,
+                conversation_id=conversation["id"],
+                sender=SENDER_ASSISTANT,
+                text=reply,
+            )
+            conversations_repo.update_after_message(
+                conn,
+                conversation["id"],
+                now,
+                status=status,
+                intent="gazebo_options",
+                current_step=current_step,
+                next_step=next_key,
+                form_data=form_data,
+            )
+            return reply
 
         hold_command = _handle_reserved_hold_command(conn, conversation, message.text, now, history)
         if hold_command is not None:

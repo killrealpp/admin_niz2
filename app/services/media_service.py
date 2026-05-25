@@ -36,9 +36,38 @@ def media_for_client_message(text: str, reply: str) -> list[Path]:
             return media_for_gazebo_titles(reply_variants)
 
     reply_variants = _gazebo_variants_from_text(normalized_reply)
-    if reply_variants and _reply_has_concrete_gazebo_context(normalized_reply):
+    if (
+        reply_variants
+        and _reply_has_concrete_gazebo_context(normalized_reply)
+        and _reply_lists_available_options(normalized_reply)
+    ):
         return media_for_gazebo_titles(reply_variants)
     return []
+
+
+def missing_media_titles_for_client_message(text: str, reply: str) -> list[str]:
+    normalized_text = _normalize(text)
+    normalized_reply = _normalize(reply)
+    if not _mentions_gazebo(f"{normalized_text}\n{normalized_reply}"):
+        return []
+
+    titles: list[str] = []
+    if is_explicit_photo_request(text):
+        titles = _gazebo_variants_from_text(normalized_text)
+        if not titles:
+            titles = _gazebo_variants_from_text(normalized_reply)
+    if not titles:
+        return []
+
+    missing: list[str] = []
+    seen: set[str] = set()
+    for title in titles:
+        canonical = _canonical_gazebo_title(title)
+        path = GAZEBO_IMAGE_BY_VARIANT.get(canonical)
+        if path and not path.exists() and canonical not in seen:
+            missing.append(canonical)
+            seen.add(canonical)
+    return missing
 
 
 def is_explicit_photo_request(text: str) -> bool:
@@ -177,6 +206,22 @@ def _reply_has_concrete_gazebo_context(text: str) -> bool:
             "выбран",
             "бронь",
             "заброниров",
+        )
+    )
+
+
+def _reply_lists_available_options(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "свободны",
+            "свободна",
+            "свободные",
+            "варианты",
+            "подойдут",
+            "рекоменд",
+            "выбираете",
+            "выбрать",
         )
     )
 

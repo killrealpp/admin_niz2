@@ -87,6 +87,7 @@ def delete_yclients_record_for_booking(
         source="yclients",
         source_record_id=record_id,
     )
+    yclients_records_repo.delete_record_by_id(conn, record_id=record_id)
     return True
 
 

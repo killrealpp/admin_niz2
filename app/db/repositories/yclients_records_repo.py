@@ -201,6 +201,27 @@ def delete_busy_interval(
         return cur.rowcount
 
 
+def delete_record_by_id(conn: PgConnection, *, record_id: str) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            DELETE FROM resource_busy_intervals
+            WHERE source = 'yclients'
+              AND source_record_id = %s
+            """,
+            (record_id,),
+        )
+        deleted = cur.rowcount
+        cur.execute(
+            """
+            DELETE FROM yclients_records
+            WHERE yclients_record_id = %s
+            """,
+            (record_id,),
+        )
+        return deleted + cur.rowcount
+
+
 def has_active_busy_interval_for_booking(
     conn: PgConnection,
     *,

@@ -186,6 +186,41 @@ def get_by_id(conn: PgConnection, hold_id: int) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def update_slot(
+    conn: PgConnection,
+    *,
+    hold_id: int,
+    yclients_service_id: str | None,
+    slot_date: date,
+    slot_time: time,
+    duration_minutes: int | None,
+    now: datetime,
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE slot_holds
+            SET yclients_service_id = %s,
+                slot_date = %s,
+                slot_time = %s,
+                duration_minutes = %s,
+                updated_at = %s
+            WHERE id = %s
+            RETURNING *
+            """,
+            (
+                yclients_service_id,
+                slot_date,
+                slot_time,
+                duration_minutes,
+                now,
+                hold_id,
+            ),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
 def mark_converted(conn: PgConnection, *, hold_id: int, now: datetime) -> None:
     with conn.cursor() as cur:
         cur.execute(
