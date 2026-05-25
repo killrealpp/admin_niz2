@@ -18,6 +18,7 @@ from app.db.repositories import (
     webhook_events_repo,
 )
 from app.integrations.yookassa_client import YooKassaClient, YooKassaError
+from app.services.availability_service import check_availability, load_services_map
 from app.services.yclients_record_service import (
     create_missing_yclients_records,
     upsert_local_busy_interval_for_booking,
@@ -181,6 +182,7 @@ def finalize_bookings_for_paid_payment(
     settings = get_settings()
     resolved_now = now or dt.now(ZoneInfo(settings.app_timezone))
     created_ids: list[int] = []
+    slot_holds_repo.expire_old(conn, resolved_now)
 
     for hold_id in hold_ids:
         existing_booking = bookings_repo.find_by_hold_id(conn, slot_hold_id=hold_id)
@@ -190,6 +192,8 @@ def finalize_bookings_for_paid_payment(
 
         hold = slot_holds_repo.get_by_id(conn, hold_id)
         if not hold:
+            continue
+        if not _hold_can_be_finalized(conn, hold, resolved_now):
             continue
 
         conversation = conversations_repo.get_by_id(conn, int(hold["conversation_id"]))
@@ -223,6 +227,58 @@ def finalize_bookings_for_paid_payment(
     if created_ids:
         payments_repo.update_booking_ids(conn, payment_id=int(payment["id"]), booking_ids=created_ids)
     return created_ids
+
+
+def _hold_can_be_finalized(conn: PgConnection, hold: dict[str, Any], now: datetime) -> bool:
+    status = str(hold.get("status") or "")
+    expires_at = hold.get("expires_at")
+    if status == "active" and (not expires_at or expires_at > now):
+        return True
+    if status not in {"active", "expired"}:
+        return False
+
+    form_data = _availability_form_for_hold(conn, hold)
+    if not form_data:
+        return False
+    try:
+        availability = check_availability(conn, form_data=form_data, now=now)
+    except Exception:
+        return False
+    return bool(availability.ok and availability.slots)
+
+
+def _availability_form_for_hold(conn: PgConnection, hold: dict[str, Any]) -> dict[str, Any]:
+    conversation = conversations_repo.get_by_id(conn, int(hold["conversation_id"]))
+    form_data = dict((conversation or {}).get("form_data") or {})
+    slot_date = hold.get("slot_date")
+    slot_time = hold.get("slot_time")
+    if not slot_date or not slot_time:
+        return {}
+    service_type = str(hold.get("service_type") or "")
+    form_data.update(
+        {
+            "service_type": service_type,
+            "date": slot_date.isoformat() if hasattr(slot_date, "isoformat") else str(slot_date),
+            "time": str(slot_time)[:5],
+            "duration": hold.get("duration_minutes"),
+        }
+    )
+    variant_title = _variant_title_for_hold(hold)
+    if variant_title:
+        form_data["service_variant"] = variant_title
+    return form_data
+
+
+def _variant_title_for_hold(hold: dict[str, Any]) -> str | None:
+    service_type = hold.get("service_type")
+    yclients_service_id = str(hold.get("yclients_service_id") or "").strip()
+    if not service_type or not yclients_service_id:
+        return None
+    config = load_services_map().get(service_type) or {}
+    for variant in config.get("variants") or []:
+        if str(variant.get("yclients_service_id") or "").strip() == yclients_service_id:
+            return str(variant.get("title") or "")
+    return None
 
 
 def sync_payment_statuses(conn: PgConnection, *, limit: int = 50) -> dict[str, int]:

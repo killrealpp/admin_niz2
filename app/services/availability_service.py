@@ -461,7 +461,7 @@ def _duration_minutes(value: Any) -> int | None:
     if value in (None, ""):
         return None
     if isinstance(value, int):
-        return value * 60 if value < 24 else value
+        return value * 60 if value <= 24 else value
     text = str(value).lower()
     digits = "".join(ch for ch in text if ch.isdigit())
     if not digits:

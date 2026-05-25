@@ -520,6 +520,255 @@ def _test_gazebo_recommendations_use_only_available() -> Check:
     return Check("gazebo recommendations use only available variants", ok, reply)
 
 
+def _test_gazebo_capacity_filter_rejects_tight_options() -> Check:
+    form = _base_form(
+        service_type="gazebo",
+        service_variant=None,
+        date="2026-05-30",
+        guests_count=30,
+        last_available_gazebo_variants=["Беседка №5", "Беседка №2", "Беседка №4", "Беседка №6"],
+    )
+    reply = message_handler._gazebo_selection_text(form)
+    paths = media_for_client_message("а на 30 чел", reply)
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "не подходят" in lowered
+        and "какую закрепляем" not in lowered
+        and not paths
+    )
+    return Check("gazebo capacity filter rejects tight options", ok, f"{reply} | media={paths}")
+
+
+def _test_gazebo_date_reply_asks_guests_before_choice() -> Check:
+    form = _base_form(
+        service_type="gazebo",
+        service_variant=None,
+        date="2026-05-30",
+        time=None,
+        duration=None,
+        guests_count=None,
+    )
+    form = message_handler._remember_available_gazebo_variants(
+        form,
+        ["Беседка №5: дата свободна", "Беседка №2: дата свободна", "Беседка №4: дата свободна"],
+    )
+    reply, next_key = message_handler._availability_reply(
+        "Нашёл свободные варианты для «Беседка».",
+        ["Беседка №5: дата свободна", "Беседка №2: дата свободна", "Беседка №4: дата свободна"],
+        form,
+    )
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        next_key == "guests_count"
+        and "сколько" in lowered
+        and "человек" in lowered
+        and "какую беседку выбираете" not in lowered
+    )
+    return Check("gazebo date reply asks guests before choice", ok, reply)
+
+
+def _test_next_free_dates_filter_gazebos_by_guests(now: datetime) -> Check:
+    suffix = "gazebo_next_dates_by_guests"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant=None,
+            date="2026-05-30",
+            time=None,
+            duration=None,
+            guests_count=20,
+        ),
+    )
+    original_availability = message_handler.check_availability
+    seen_dates: list[str] = []
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        form = kwargs.get("form_data") or {}
+        seen_dates.append(str(form.get("date")))
+        if form.get("date") == "2026-05-31":
+            return AvailabilityResult(True, "ok", ["Беседка №5: дата свободна", "Беседка №2: дата свободна"])
+        if form.get("date") == "2026-06-01":
+            return AvailabilityResult(True, "ok", ["Беседка №3: дата свободна", "Беседка №8: дата свободна"])
+        return AvailabilityResult(True, "ok", [])
+
+    message_handler.check_availability = fake_availability
+    try:
+        with get_connection() as conn:
+            reply = message_handler._next_free_dates_reply(
+                conn,
+                created["conversation"],
+                _base_form(
+                    service_type="gazebo",
+                    service_variant=None,
+                    date="2026-05-30",
+                    time=None,
+                    duration=None,
+                    guests_count=20,
+                ),
+                now,
+                limit=1,
+                days_ahead=5,
+            )
+        lowered = (reply or "").lower().replace("ё", "е")
+        ok = (
+            reply is not None
+            and "20 гостей" in lowered
+            and "1 июня" in lowered
+            and "беседка №3" in lowered
+            and "беседка №8" in lowered
+            and "беседка №5" not in lowered
+            and "2026-05-30" not in seen_dates
+        )
+        return Check("next free dates filter gazebos by guests", ok, f"{reply} | seen={seen_dates}")
+    finally:
+        message_handler.check_availability = original_availability
+
+
+def _test_gazebo_start_time_defaults_until_morning(now: datetime) -> Check:
+    suffix = "gazebo_time_until_morning"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №2",
+            date="2026-05-30",
+            time=None,
+            duration=None,
+            guests_count=10,
+            event_format=None,
+            upsell_items=[],
+            client_name="Кирилл",
+            phone=None,
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="time",
+            next_step="time",
+        )
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_availability = message_handler.check_availability
+    seen: list[dict[str, Any]] = []
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(intent="booking_request", action="ask_next_question", current_step="time")
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        seen.append(kwargs.get("form_data") or {})
+        return AvailabilityResult(True, "ok", ["Беседка №2: 17:00-08:00"])
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.check_availability = fake_availability
+    try:
+        reply = _send(suffix, "примерно с 5 вечера а там как пойдет", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        checked = seen[-1] if seen else {}
+        ok = (
+            form.get("time") == "17:00"
+            and form.get("duration") == 15
+            and checked.get("duration") == 15
+            and "на сколько часов" not in reply.lower()
+            and state.get("current_step") == "event_format"
+        )
+        return Check("gazebo start time defaults until morning", ok, f"{reply} | {form} | checked={checked}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.check_availability = original_availability
+
+
+def _test_media_waits_for_date_and_guests() -> Check:
+    date_only_reply = "На 30 мая свободны: Беседка №5, Беседка №2, Беседка №4, Беседка №6."
+    guest_reply = (
+        "Для 10 гостей из свободных на выбранную дату вариантов подходят:\n"
+        "- Беседка №2: до 15 человек, 3 200 ₽\n"
+        "- Беседка №4: до 15 человек, 3 200 ₽"
+    )
+    date_only = media_for_client_message("30 мая", date_only_reply)
+    after_guests = media_for_client_message("нас 10 человек", guest_reply)
+    ok = (
+        not date_only
+        and {path.name for path in after_guests} == {"besedka2.jpg", "besedka4.jpg"}
+    )
+    return Check("media waits for date and guests", ok, f"date_only={date_only}, after_guests={[p.name for p in after_guests]}")
+
+
+def _test_explicit_photo_request_ignores_availability_text() -> Check:
+    form = _base_form(
+        service_type="gazebo",
+        service_variant=None,
+        date="2026-05-30",
+        guests_count=10,
+    )
+    reply = message_handler._deterministic_info_reply("покажи беседку №2", form)
+    paths = media_for_client_message("покажи беседку №2", reply or "")
+    lowered = (reply or "").lower().replace("ё", "е")
+    ok = (
+        reply is not None
+        and "сейчас отправлю" in lowered
+        and "не могу" not in lowered
+        and "только для свободных" not in lowered
+        and [path.name for path in paths] == ["besedka2.jpg"]
+    )
+    return Check("explicit photo request ignores availability text", ok, f"{reply} | {[p.name for p in paths]}")
+
+
+def _test_price_question_during_form_not_booking_summary(now: datetime) -> Check:
+    suffix = "price_during_form"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №2",
+            date="2026-05-30",
+            time="17:00",
+            duration=15,
+            guests_count=10,
+            event_format=None,
+            upsell_items=[],
+            client_name="Кирилл",
+            phone=None,
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="event_format",
+            next_step="event_format",
+        )
+    original_call_ai = message_handler.call_ai
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(intent="price_question", action="ask_next_question", current_step="event_format")
+
+    message_handler.call_ai = fake_call_ai
+    try:
+        reply = _send(suffix, "сколько стоит беседка в итоге", now)
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "3200" in reply.replace(" ", "")
+            and "пока не вижу активных броней" not in lowered
+            and "формат" in lowered
+        )
+        return Check("price question during form not booking summary", ok, reply)
+    finally:
+        message_handler.call_ai = original_call_ai
+
+
 def _test_single_available_gazebo_is_auto_selected() -> Check:
     form = _base_form(
         service_type="gazebo",
@@ -800,6 +1049,23 @@ def _test_weekday_confirmation_yes_uses_saved_candidate(now: datetime) -> Check:
         message_handler.generate_process_reply = original_generate
 
 
+def _test_gazebo_open_ended_duration_overrides_ai_guess() -> Check:
+    guessed = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №2",
+        date="2026-05-30",
+        time="17:00",
+        duration="6 часов",
+        guests_count=10,
+    )
+    updated = message_handler._apply_gazebo_default_duration(
+        guessed,
+        force=message_handler._gazebo_open_ended_duration_requested("примерно с 5 вечера, а там как пойдёт"),
+    )
+    ok = updated.get("duration") == 15
+    return Check("gazebo open-ended duration overrides AI guess", ok, str(updated))
+
+
 def _test_first_upsell_no_gets_soft_push() -> Check:
     form = _base_form(service_type="gazebo", service_variant="Беседка №2")
     reply = message_handler._upsell_push_reply(form)
@@ -859,6 +1125,72 @@ def _test_first_upsell_flow_before_phone(now: datetime) -> Check:
         and state.get("current_step") == "upsell_items"
     )
     return Check("first upsell flow before phone gets soft push", ok, f"{reply} | {state}")
+
+
+def _test_prefilled_first_upsell_no_still_gets_soft_push(now: datetime) -> Check:
+    suffix = "prefilled_first_upsell_flow"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date="2026-06-06",
+            time="12:00",
+            duration=24,
+            guests_count=5,
+            event_format="день рождения",
+            upsell_items=["не нужны"],
+            upsell_offer_count=0,
+            client_name="Кирилл",
+            phone=None,
+        ),
+    )
+    with get_connection() as conn:
+        messages_repo = message_handler.messages_repo
+        messages_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            sender="assistant",
+            text="Обычно к беседке берут допы: уголь, розжиг, решётку или шампуры, лёд, посуду, кальян. Что подготовить для вашего праздника?",
+        )
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="phone",
+            next_step="phone",
+        )
+
+    first_reply = _send(suffix, "нет", now)
+    first_state = _latest_state(suffix)
+    first_form = first_state.get("form_data") or {}
+    second_reply = _send(suffix, "нет", now + timedelta(seconds=1))
+    second_state = _latest_state(suffix)
+    second_form = second_state.get("form_data") or {}
+    ok = (
+        "напишите «нет» ещё раз" in first_reply.lower()
+        and first_form.get("upsell_offer_count") == 1
+        and not first_form.get("upsell_items")
+        and "телефон" in second_reply.lower()
+        and second_form.get("upsell_items") == ["не нужны"]
+        and second_state.get("current_step") == "phone"
+    )
+    return Check(
+        "prefilled first upsell no still gets soft push",
+        ok,
+        f"{first_reply} | {first_state} | {second_reply} | {second_state}",
+    )
+
+
+def _test_duration_24_formats_as_hours() -> Check:
+    hold = {"duration_minutes": 1440}
+    ok = (
+        message_handler._format_duration(24) == "24 часа"
+        and message_handler._format_duration(hold["duration_minutes"]) == "24 часа"
+    )
+    return Check("duration 24 formats as hours", ok, message_handler._format_duration(24))
 
 
 def _test_positive_upsell_goes_to_next_step(now: datetime) -> Check:
@@ -983,15 +1315,23 @@ def _test_location_question_does_not_handoff() -> Check:
 
 def _test_gazebo_media_selection() -> Check:
     general = media_for_client_message("какие беседки есть?", "Напишите дату — проверю свободные беседки и отправлю фото.")
-    free = media_for_client_message("нас 10", "На 25 июня свободны: Беседка №4, Беседка №6.")
-    single_free = media_for_client_message("завтра", "На 22 мая свободна: Беседка №6.")
+    date_only = media_for_client_message("30 мая", "На 30 мая свободны: Беседка №4, Беседка №6.")
+    free = media_for_client_message(
+        "нас 10",
+        "Для 10 гостей на 25 июня из свободных подойдут: Беседка №4, Беседка №6.",
+    )
+    rejected = media_for_client_message(
+        "нас 30",
+        "На 25 июня свободны: Беседка №4, Беседка №6, но для 30 гостей по вместимости они не подходят.",
+    )
     specific = media_for_client_message("покажи беседку 8", "Вот беседка №8")
     time_reply = media_for_client_message("на 18:00", "Беседка №4: с 18:00 до 00:00 свободно.")
     location = media_for_client_message("где вы находитесь?", "Адрес: Выкса")
     ok = (
         not general
+        and not date_only
         and [path.name for path in free] == ["besedka4.jpg", "besedka6.jpg"]
-        and [path.name for path in single_free] == ["besedka6.jpg"]
+        and not rejected
         and [path.name for path in specific] == ["besedka8png.png"]
         and not time_reply
         and not location
@@ -1000,8 +1340,9 @@ def _test_gazebo_media_selection() -> Check:
         "gazebo media selection",
         ok,
         (
-            f"general={general}, free={[path.name for path in free]}, single_free={[path.name for path in single_free]}, "
-            f"specific={[path.name for path in specific]}, time={[path.name for path in time_reply]}, location={location}"
+            f"general={general}, date_only={date_only}, free={[path.name for path in free]}, "
+            f"rejected={[path.name for path in rejected]}, specific={[path.name for path in specific]}, "
+            f"time={[path.name for path in time_reply]}, location={location}"
         ),
     )
 
@@ -1827,6 +2168,14 @@ def main() -> None:
         checks.append(_test_bathhouse_gazebo_order_starts_with_bathhouse(now))
         checks.append(_test_deterministic_date_beats_stale_ai(now))
         checks.append(_test_gazebo_recommendations_use_only_available())
+        checks.append(_test_gazebo_capacity_filter_rejects_tight_options())
+        checks.append(_test_gazebo_date_reply_asks_guests_before_choice())
+        checks.append(_test_next_free_dates_filter_gazebos_by_guests(now))
+        checks.append(_test_gazebo_start_time_defaults_until_morning(now))
+        checks.append(_test_gazebo_open_ended_duration_overrides_ai_guess())
+        checks.append(_test_media_waits_for_date_and_guests())
+        checks.append(_test_explicit_photo_request_ignores_availability_text())
+        checks.append(_test_price_question_during_form_not_booking_summary(now))
         checks.append(_test_single_available_gazebo_is_auto_selected())
         checks.append(_test_gazebo_variant_is_not_guessed())
         checks.append(_test_booking_summary_counts_all_bookings(now))
@@ -1838,6 +2187,8 @@ def main() -> None:
         checks.append(_test_weekday_confirmation_yes_uses_saved_candidate(now))
         checks.append(_test_first_upsell_no_gets_soft_push())
         checks.append(_test_first_upsell_flow_before_phone(now))
+        checks.append(_test_prefilled_first_upsell_no_still_gets_soft_push(now))
+        checks.append(_test_duration_24_formats_as_hours())
         checks.append(_test_positive_upsell_goes_to_next_step(now))
         checks.append(_test_free_dates_lookup_after_no_availability(now))
         checks.append(_test_waitlist_decline_does_not_handoff(now))

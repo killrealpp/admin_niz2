@@ -40,6 +40,8 @@ def media_for_client_message(text: str, reply: str) -> list[Path]:
         reply_variants
         and _reply_has_concrete_gazebo_context(normalized_reply)
         and _reply_lists_available_options(normalized_reply)
+        and _reply_has_date_and_guest_count(normalized_reply)
+        and not _reply_rejects_capacity(normalized_reply)
     ):
         return media_for_gazebo_titles(reply_variants)
     return []
@@ -222,6 +224,31 @@ def _reply_lists_available_options(text: str) -> bool:
             "рекоменд",
             "выбираете",
             "выбрать",
+        )
+    )
+
+
+def _reply_has_date_and_guest_count(text: str) -> bool:
+    has_date = bool(
+        re.search(
+            r"\b\d{1,2}\s*(?:мая|июня|июля|августа|сентября|октября|ноября|декабря|января|февраля|марта|апреля)\b",
+            text,
+        )
+    ) or "выбранную дату" in text
+    has_guests = bool(re.search(r"\b\d{1,3}\s*(?:гостей|гостя|гость|человек|чел)\b", text))
+    return has_date and has_guests
+
+
+def _reply_rejects_capacity(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in (
+            "не подходят",
+            "не подойдет",
+            "не подойдёт",
+            "тесноват",
+            "по вместимости они могут",
+            "по вместимости они не",
         )
     )
 

@@ -72,6 +72,11 @@ async def notify_paid_payments_once(bot: Bot) -> None:
         if not chat_id:
             continue
         with get_connection() as conn:
+            bookings = _payment_bookings(conn, payment)
+        if not bookings:
+            await _notify_unfinalized_paid_payment(bot, payment, chat_id=chat_id)
+            continue
+        with get_connection() as conn:
             journal_ready = _payment_journal_ready(conn, payment)
         if not journal_ready:
             logger.info(
@@ -80,8 +85,6 @@ async def notify_paid_payments_once(bot: Bot) -> None:
             )
             continue
         text = _paid_notification_text(payment)
-        with get_connection() as conn:
-            bookings = _payment_bookings(conn, payment)
         media_paths = media_for_bookings(bookings)
         try:
             await bot.send_message(chat_id=chat_id, text=text)
@@ -119,6 +122,43 @@ async def notify_paid_payments_once(bot: Bot) -> None:
                 "Если запись в YCLIENTS не создалась автоматически, проверьте карточку заявки."
             ),
         )
+
+
+async def _notify_unfinalized_paid_payment(bot: Bot, payment: dict, *, chat_id: str) -> None:
+    text = (
+        "Оплата поступила ✅\n\n"
+        "Резерв по этой ссылке уже не был активен, поэтому бронь не закрепилась автоматически. "
+        "Мы проверим выбранное время и напишем вам по сохранённому номеру."
+    )
+    try:
+        await bot.send_message(chat_id=chat_id, text=text)
+    except Exception:
+        logger.exception(
+            "Failed to notify unfinalized paid payment payment_id=%s chat_id=%s",
+            payment.get("id"),
+            chat_id,
+        )
+        return
+    with get_connection() as conn:
+        payments_repo.mark_payment_notified(conn, payment_id=payment["id"])
+        messages_repo.create(
+            conn,
+            conversation_id=payment["conversation_id"],
+            sender="assistant",
+            text=text,
+            raw_payload={"event": "payment_paid_without_booking", "payment_id": payment["id"]},
+        )
+    hold_ids = _hold_ids_from_payment(payment)
+    await notify_admin_text(
+        bot,
+        (
+            "Оплата получена, но бронь не создалась автоматически.\n"
+            f"Платеж #{payment.get('id')}, сумма: {payment.get('amount')} ₽.\n"
+            f"Клиент: {payment.get('user_name') or chat_id}, Telegram ID: {chat_id}.\n"
+            f"Hold IDs: {', '.join(str(item) for item in hold_ids) or 'не найдены'}.\n"
+            "Проверьте слот и решите оплату вручную."
+        ),
+    )
 
 
 async def _send_booking_media(bot: Bot, *, chat_id: str, media_paths: list) -> None:
@@ -205,6 +245,18 @@ def _payment_bookings(conn, payment: dict) -> list[dict]:
 
 def _booking_ids_from_payment(payment: dict) -> list[int]:
     value = payment.get("booking_ids") or []
+    if isinstance(value, list):
+        return [int(item) for item in value if str(item).isdigit()]
+    if isinstance(value, str):
+        return [int(item) for item in value.split(",") if item.strip().isdigit()]
+    return []
+
+
+def _hold_ids_from_payment(payment: dict) -> list[int]:
+    raw = payment.get("raw_payload") or {}
+    if not isinstance(raw, dict):
+        return []
+    value = raw.get("hold_ids")
     if isinstance(value, list):
         return [int(item) for item in value if str(item).isdigit()]
     if isinstance(value, str):
