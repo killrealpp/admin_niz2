@@ -381,6 +381,105 @@ def mark_admin_notified(
         return cur.rowcount
 
 
+def list_due_reminders(
+    conn: PgConnection,
+    *,
+    reminder_date: date,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT b.*, u.external_id AS user_external_id, u.channel AS user_channel
+            FROM bookings b
+            JOIN users u ON u.id = b.user_id
+            WHERE b.booking_date = %s
+              AND b.payment_status = 'paid'
+              AND b.reminder_sent_at IS NULL
+              AND b.status NOT IN ('cancelled', 'journal_missing')
+            ORDER BY b.booking_time ASC, b.id ASC
+            LIMIT %s
+            """,
+            (reminder_date, limit),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
+def mark_reminder_sent(
+    conn: PgConnection,
+    *,
+    booking_id: int,
+    now: datetime,
+) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE bookings
+            SET reminder_sent_at = %s,
+                updated_at = %s
+            WHERE id = %s
+            """,
+            (now, now, booking_id),
+        )
+
+
+def mark_reminder_response(
+    conn: PgConnection,
+    *,
+    booking_ids: list[int],
+    response: str,
+    now: datetime,
+) -> int:
+    if not booking_ids:
+        return 0
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE bookings
+            SET reminder_response = %s,
+                reminder_response_at = %s,
+                updated_at = %s
+            WHERE id = ANY(%s)
+              AND status NOT IN ('cancelled', 'journal_missing')
+            """,
+            (response, now, now, booking_ids),
+        )
+        return cur.rowcount
+
+
+def list_waiting_reminder_response_for_user(
+    conn: PgConnection,
+    *,
+    user_id: int,
+    now: datetime,
+    phone: str | None = None,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    params: list[Any] = [user_id]
+    phone_filter = ""
+    if phone:
+        phone_filter = " OR regexp_replace(b.phone, '\\D', '', 'g') = regexp_replace(%s, '\\D', '', 'g')"
+        params.append(phone)
+    params.extend([now.date(), limit])
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            FROM bookings b
+            LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
+            WHERE (b.user_id = %s{phone_filter})
+              AND b.reminder_sent_at IS NOT NULL
+              AND b.reminder_response IS NULL
+              AND b.booking_date >= %s
+              AND b.status NOT IN ('cancelled', 'journal_missing')
+            ORDER BY b.booking_date ASC, b.booking_time ASC, b.id ASC
+            LIMIT %s
+            """,
+            params,
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def list_paid_without_yclients_record(
     conn: PgConnection,
     *,
@@ -493,6 +592,41 @@ def update_schedule(
             RETURNING *
             """,
             (booking_date, booking_time, duration_minutes, booking_id),
+        )
+        row = cur.fetchone()
+    return dict(row) if row else None
+
+
+def update_details(
+    conn: PgConnection,
+    *,
+    booking_id: int,
+    guests_count: int | None = None,
+    event_format: str | None = None,
+    upsell_items: list[str] | None = None,
+) -> dict[str, Any] | None:
+    fields: list[str] = ["updated_at = NOW()"]
+    values: list[Any] = []
+    if guests_count is not None:
+        fields.append("guests_count = %s")
+        values.append(guests_count)
+    if event_format is not None:
+        fields.append("event_format = %s")
+        values.append(event_format)
+    if upsell_items is not None:
+        fields.append("upsell_items = %s")
+        values.append(Json(upsell_items))
+    values.append(booking_id)
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            UPDATE bookings
+            SET {', '.join(fields)}
+            WHERE id = %s
+              AND status NOT IN ('cancelled')
+            RETURNING *
+            """,
+            values,
         )
         row = cur.fetchone()
     return dict(row) if row else None

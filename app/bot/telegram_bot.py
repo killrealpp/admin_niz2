@@ -185,7 +185,7 @@ async def _send_related_media(message: Message, channel: str, external_user_id: 
         paths = media_for_client_message(text, reply)
         if not paths:
             return
-        note = "Сейчас отправлю фото выбранной беседки 📸" if len(paths) == 1 else "Сейчас отправлю фото вариантов 📸"
+        note = "Сейчас отправлю фото выбранного варианта 📸" if len(paths) == 1 else "Сейчас отправлю фото вариантов 📸"
         await message.answer(note)
     logger.info("Sending related media chat_id=%s count=%s", message.chat.id, len(paths))
     try:

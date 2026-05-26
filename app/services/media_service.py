@@ -15,22 +15,45 @@ GAZEBO_IMAGE_BY_VARIANT = {
     "Беседка №4": IMAGES_DIR / "besedka4.jpg",
     "Беседка №5": IMAGES_DIR / "besedka5.jpg",
     "Беседка №6": IMAGES_DIR / "besedka6.jpg",
-    "Беседка №8": IMAGES_DIR / "besedka8png.png",
+    "Беседка №8": IMAGES_DIR / "besedka8.jpg",
     "Крытая беседка": IMAGES_DIR / "besedka_krytaya.jpg",
+    "Тёплая беседка": IMAGES_DIR / "besedka_teplaya.jpg",
+}
+
+SERVICE_IMAGE_BY_TYPE = {
+    "bathhouse": IMAGES_DIR / "banya.jpg",
+    "house": IMAGES_DIR / "dom_gostevoy.jpg",
+    "warm_gazebo": IMAGES_DIR / "besedka_teplaya.jpg",
+}
+
+SERVICE_TITLE_BY_TYPE = {
+    "bathhouse": "Баня",
+    "house": "Гостевой дом",
+    "warm_gazebo": "Тёплая беседка",
 }
 
 
 def media_for_client_message(text: str, reply: str) -> list[Path]:
     normalized_text = _normalize(text)
     normalized_reply = _normalize(reply)
-    if not _mentions_gazebo(f"{normalized_text}\n{normalized_reply}"):
+    combined = f"{normalized_text}\n{normalized_reply}"
+    if not _mentions_media_subject(combined):
         return []
 
     explicit_photo_request = is_explicit_photo_request(text)
     if explicit_photo_request:
+        explicit_paths: list[Path] = []
+        requested_service_paths = media_for_service_types(_service_types_from_text(normalized_text))
+        if requested_service_paths:
+            explicit_paths.extend(requested_service_paths)
         requested_variants = _gazebo_variants_from_text(normalized_text)
         if requested_variants:
-            return media_for_gazebo_titles(requested_variants)
+            explicit_paths.extend(media_for_gazebo_titles(requested_variants))
+        if explicit_paths:
+            return _existing(explicit_paths)
+        reply_service_paths = media_for_service_types(_service_types_from_text(normalized_reply))
+        if reply_service_paths:
+            return reply_service_paths
         reply_variants = _gazebo_variants_from_text(normalized_reply)
         if reply_variants:
             return media_for_gazebo_titles(reply_variants)
@@ -43,19 +66,29 @@ def media_for_client_message(text: str, reply: str) -> list[Path]:
         and _reply_has_date_and_guest_count(normalized_reply)
     ):
         return media_for_gazebo_titles(reply_variants)
+    service_types = _service_types_for_auto_media(normalized_reply)
+    if service_types:
+        return media_for_service_types(service_types)
     return []
 
 
 def missing_media_titles_for_client_message(text: str, reply: str) -> list[str]:
     normalized_text = _normalize(text)
     normalized_reply = _normalize(reply)
-    if not _mentions_gazebo(f"{normalized_text}\n{normalized_reply}"):
+    combined = f"{normalized_text}\n{normalized_reply}"
+    if not _mentions_media_subject(combined):
         return []
 
     titles: list[str] = []
     if is_explicit_photo_request(text):
+        missing = _missing_service_media_titles(_service_types_from_text(normalized_text))
+        if missing:
+            return missing
         titles = _gazebo_variants_from_text(normalized_text)
         if not titles:
+            missing = _missing_service_media_titles(_service_types_from_text(normalized_reply))
+            if missing:
+                return missing
             titles = _gazebo_variants_from_text(normalized_reply)
     if not titles:
         return []
@@ -101,6 +134,28 @@ def media_for_gazebo_titles(titles: list[str]) -> list[Path]:
             if (path := GAZEBO_IMAGE_BY_VARIANT.get(_canonical_gazebo_title(title)))
         ]
     )
+
+
+def media_for_service_types(service_types: list[str]) -> list[Path]:
+    return _existing(
+        [
+            path
+            for service_type in service_types
+            if (path := SERVICE_IMAGE_BY_TYPE.get(service_type))
+        ]
+    )
+
+
+def _missing_service_media_titles(service_types: list[str]) -> list[str]:
+    missing: list[str] = []
+    seen: set[str] = set()
+    for service_type in service_types:
+        title = SERVICE_TITLE_BY_TYPE.get(service_type, service_type)
+        path = SERVICE_IMAGE_BY_TYPE.get(service_type)
+        if path and not path.exists() and title not in seen:
+            missing.append(title)
+            seen.add(title)
+    return missing
 
 
 def _gazebo_variants_for_auto_media(text: str) -> list[str]:
@@ -199,7 +254,10 @@ def media_for_bookings(bookings: list[dict[str, Any]]) -> list[Path]:
 
 
 def _media_for_booking(booking: dict[str, Any]) -> Path | None:
-    if booking.get("service_type") != "gazebo":
+    service_type = str(booking.get("service_type") or "")
+    if service_type in SERVICE_IMAGE_BY_TYPE:
+        return SERVICE_IMAGE_BY_TYPE[service_type]
+    if service_type != "gazebo":
         return None
     title = _booking_title(booking)
     return GAZEBO_IMAGE_BY_VARIANT.get(title)
@@ -223,6 +281,7 @@ def _booking_title(booking: dict[str, Any]) -> str:
         "18201063": "Беседка №6",
         "18201065": "Беседка №8",
         "19196656": "Крытая беседка",
+        "18201071": "Тёплая беседка",
     }
     return service_to_title.get(service_id, title)
 
@@ -262,6 +321,8 @@ def _gazebo_variants_from_text(text: str) -> list[str]:
                 variants.append(variant)
     if "крыт" in text and "бесед" in text and "Крытая беседка" not in variants:
         variants.append("Крытая беседка")
+    if "тепл" in text and "бесед" in text and "Тёплая беседка" not in variants:
+        variants.append("Тёплая беседка")
     return variants
 
 
@@ -269,6 +330,8 @@ def _canonical_gazebo_title(title: str) -> str:
     normalized = _normalize(title)
     if "крыт" in normalized and "бесед" in normalized:
         return "Крытая беседка"
+    if "тепл" in normalized and "бесед" in normalized:
+        return "Тёплая беседка"
     match = re.search(r"№\s*([1-8])\b", normalized) or re.search(r"\bбеседк[а-яё]*\s*([1-8])\b", normalized)
     if match:
         return f"Беседка №{match.group(1)}"
@@ -340,6 +403,75 @@ def _reply_rejects_capacity(text: str) -> bool:
 
 def _mentions_gazebo(text: str) -> bool:
     return "бесед" in text
+
+
+def _mentions_media_subject(text: str) -> bool:
+    return _mentions_gazebo(text) or bool(_service_types_from_text(text))
+
+
+def _service_types_from_text(text: str) -> list[str]:
+    result: list[str] = []
+    if "бан" in text or "саун" in text:
+        result.append("bathhouse")
+    if "гостев" in text and "дом" in text:
+        result.append("house")
+    elif re.search(r"\bдом(?:ик|а|е|ом|у)?\b", text) and "домой" not in text:
+        result.append("house")
+    if "тепл" in text and "бесед" in text:
+        result.append("warm_gazebo")
+    return _unique(result)
+
+
+def _service_types_for_auto_media(text: str) -> list[str]:
+    if not _reply_has_positive_media_context(text):
+        return []
+    if not _reply_has_date(text):
+        return []
+    return _service_types_from_text(text)
+
+
+def _reply_has_positive_media_context(text: str) -> bool:
+    if any(
+        marker in text
+        for marker in (
+            "не наш",
+            "нет свобод",
+            "свободных вариантов не",
+            "не вижу свобод",
+            "не получилось",
+        )
+    ):
+        return False
+    return any(
+        marker in text
+        for marker in (
+            "свобод",
+            "подходит",
+            "подойдут",
+            "выбрали",
+            "выбран",
+            "бронь",
+            "заброниров",
+            "закреп",
+        )
+    )
+
+
+def _reply_has_date(text: str) -> bool:
+    return bool(
+        re.search(
+            r"\b\d{1,2}\s*(?:мая|июня|июля|августа|сентября|октября|ноября|декабря|января|февраля|марта|апреля)\b",
+            text,
+        )
+    ) or "выбранную дату" in text
+
+
+def _unique(values: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
 
 
 def _existing(paths: list[Path]) -> list[Path]:

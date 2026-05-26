@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
@@ -50,6 +50,7 @@ async def run_payment_status_loop(bot: Bot | None = None) -> None:
                 await notify_admin_about_new_bookings(bot)
                 await notify_paid_payments_once(bot)
                 await notify_expired_holds_once(bot)
+                await notify_booking_reminders_once(bot)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -164,6 +165,57 @@ async def notify_expired_holds_once(bot: Bot) -> None:
                 text=text,
                 raw_payload={"event": "slot_hold_expired", "hold_id": hold["id"]},
             )
+
+
+async def notify_booking_reminders_once(bot: Bot) -> None:
+    settings = get_settings()
+    now = datetime.now(ZoneInfo(settings.app_timezone))
+    if now.hour < 10:
+        return
+    reminder_date = now.date() + timedelta(days=1)
+    with get_connection() as conn:
+        bookings = bookings_repo.list_due_reminders(conn, reminder_date=reminder_date, limit=50)
+
+    for booking in bookings:
+        chat_id = str(booking.get("user_external_id") or "")
+        if not chat_id:
+            with get_connection() as conn:
+                bookings_repo.mark_reminder_sent(conn, booking_id=int(booking["id"]), now=now)
+            continue
+        text = _booking_reminder_text(booking)
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception:
+            logger.exception("Failed to send booking reminder booking_id=%s chat_id=%s", booking.get("id"), chat_id)
+            continue
+        with get_connection() as conn:
+            bookings_repo.mark_reminder_sent(conn, booking_id=int(booking["id"]), now=now)
+            messages_repo.create(
+                conn,
+                conversation_id=booking["conversation_id"],
+                sender="assistant",
+                text=text,
+                raw_payload={"event": "booking_reminder", "booking_id": booking["id"]},
+            )
+
+
+def _booking_reminder_text(booking: dict) -> str:
+    return (
+        f"Напоминаю: завтра у вас бронь {_booking_reminder_title(booking)}, "
+        f"{_format_date_short(booking.get('booking_date'))}, с {str(booking.get('booking_time') or '')[:5]} "
+        f"на {_format_duration_short(booking.get('duration_minutes'))}.\n\n"
+        "Подтвердите, пожалуйста, что придёте: напишите «да» или «нет»."
+    )
+
+
+def _booking_reminder_title(booking: dict) -> str:
+    config = load_services_map().get(booking.get("service_type")) or {}
+    title = config.get("title") or booking.get("service_type") or "бронь"
+    service_id = str(booking.get("hold_yclients_service_id") or "").strip()
+    for variant in config.get("variants") or []:
+        if service_id and str(variant.get("yclients_service_id") or "").strip() == service_id:
+            return str(variant.get("title") or title)
+    return str(title)
 
 
 def _expired_hold_notification_text(hold: dict) -> str:
@@ -395,5 +447,6 @@ def _paid_notification_text(payment: dict) -> str:
         "Поздравляем, бронь успешно подтверждена ✅\n\n"
         "Запись создана в журнале, ждём вас на отдых. "
         "Пусть всё пройдёт легко, уютно и с хорошим настроением.\n\n"
-        f"Предоплата: {amount} ₽."
+        f"Предоплата: {amount} ₽.\n\n"
+        "Если планы изменятся, аванс можно вернуть при отмене не позднее чем за 7 дней до даты брони."
     )

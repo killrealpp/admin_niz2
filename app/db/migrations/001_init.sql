@@ -98,6 +98,9 @@ CREATE TABLE IF NOT EXISTS bookings (
     status VARCHAR(64) NOT NULL DEFAULT 'created',
     payment_status VARCHAR(64) NOT NULL DEFAULT 'not_paid',
     admin_notified_at TIMESTAMPTZ,
+    reminder_sent_at TIMESTAMPTZ,
+    reminder_response VARCHAR(32),
+    reminder_response_at TIMESTAMPTZ,
     yclients_created_at TIMESTAMPTZ,
     yclients_create_error TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -106,6 +109,9 @@ CREATE TABLE IF NOT EXISTS bookings (
 
 ALTER TABLE bookings
     ADD COLUMN IF NOT EXISTS admin_notified_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS reminder_sent_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS reminder_response VARCHAR(32),
+    ADD COLUMN IF NOT EXISTS reminder_response_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS yclients_created_at TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS yclients_create_error TEXT;
 
