@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.db.repositories import bookings_repo, yclients_records_repo
 from app.integrations.yclients_client import YClientsError
 from app.integrations.yclients_client import YClientsClient
-from app.services.availability_service import load_services_map
+from app.services.availability_service import clear_availability_cache, load_services_map
 
 
 def create_yclients_record_for_booking(
@@ -35,6 +35,7 @@ def create_yclients_record_for_booking(
         booking=local_booking,
         source="bot_booking",
     )
+    clear_availability_cache()
     return response
 
 
@@ -68,6 +69,7 @@ def delete_yclients_record_for_booking(
             source="bot_booking",
             source_record_id=str(booking.get("id")),
         )
+        clear_availability_cache()
         return True
     try:
         YClientsClient().delete_record(record_id)
@@ -88,6 +90,7 @@ def delete_yclients_record_for_booking(
         source_record_id=record_id,
     )
     yclients_records_repo.delete_record_by_id(conn, record_id=record_id)
+    clear_availability_cache()
     return True
 
 
@@ -151,6 +154,7 @@ def upsert_local_busy_interval_for_booking(
             "updated_at": datetime.now(start_at.tzinfo),
         },
     )
+    clear_availability_cache()
 
 
 def upsert_local_yclients_record_for_booking(
@@ -195,6 +199,7 @@ def upsert_local_yclients_record_for_booking(
             "updated_at": datetime.now(start_at.tzinfo),
         },
     )
+    clear_availability_cache()
 
 
 def _resolve_yclients_ids(booking: dict[str, Any]) -> tuple[str, str]:

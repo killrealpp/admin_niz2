@@ -142,6 +142,7 @@ async def notify_expired_holds_once(bot: Bot) -> None:
     settings = get_settings()
     now = datetime.now(ZoneInfo(settings.app_timezone))
     with get_connection() as conn:
+        slot_holds_repo.expire_old(conn, now)
         holds = slot_holds_repo.list_expired_unnotified(conn, limit=50)
 
     for hold in holds:

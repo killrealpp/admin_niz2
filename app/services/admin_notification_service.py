@@ -5,6 +5,7 @@ from psycopg2.extensions import connection as PgConnection
 
 from app.db.repositories import bookings_repo
 from app.services.availability_service import load_services_map
+from app.services.dialog.booking_texts import booking_object_title
 
 
 def _format_date(value: date | Any) -> str:
@@ -25,6 +26,14 @@ def _format_duration(minutes: int | None) -> str:
 
 def _service_title(service_type: str) -> str:
     return (load_services_map().get(service_type) or {}).get("title") or service_type
+
+
+def _admin_booking_title(booking: dict[str, Any]) -> str:
+    service_title = _service_title(str(booking.get("service_type") or ""))
+    object_title = booking_object_title(booking)
+    if object_title and object_title != service_title:
+        return f"{object_title} ({service_title})"
+    return object_title or service_title
 
 
 def format_admin_bookings_message(
@@ -55,7 +64,7 @@ def format_admin_bookings_message(
         lines.extend(
             [
                 (
-                    f"{index}. {_service_title(booking['service_type'])}: "
+                    f"{index}. {_admin_booking_title(booking)}: "
                     f"{_format_date(booking['booking_date'])}, "
                     f"{_format_time(booking['booking_time'])}, "
                     f"длительность {_format_duration(booking.get('duration_minutes'))}"

@@ -234,17 +234,7 @@ def _hold_can_be_finalized(conn: PgConnection, hold: dict[str, Any], now: dateti
     expires_at = hold.get("expires_at")
     if status == "active" and (not expires_at or expires_at > now):
         return True
-    if status not in {"active", "expired"}:
-        return False
-
-    form_data = _availability_form_for_hold(conn, hold)
-    if not form_data:
-        return False
-    try:
-        availability = check_availability(conn, form_data=form_data, now=now)
-    except Exception:
-        return False
-    return bool(availability.ok and availability.slots)
+    return False
 
 
 def _availability_form_for_hold(conn: PgConnection, hold: dict[str, Any]) -> dict[str, Any]:

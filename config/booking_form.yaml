@@ -59,7 +59,7 @@ fields:
     type: list
 
   - key: client_name
-    label: "Как вас зовут?"
+    label: "На какое имя записать бронь?"
     required_for_availability: false
     required_for_booking: true
     type: string

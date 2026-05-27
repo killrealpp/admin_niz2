@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.db.connection import get_connection
 from app.db.repositories import yclients_records_repo
 from app.integrations.yclients_client import YClientsClient, YClientsError
-from app.services.availability_service import load_services_map
+from app.services.availability_service import clear_availability_cache, load_services_map
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,7 @@ def sync_records(
             records_seen=seen,
             records_upserted=upserted,
         )
+        clear_availability_cache()
     except Exception as exc:
         _mark_sync_failed_safely(
             sync_name=SYNC_NAME,

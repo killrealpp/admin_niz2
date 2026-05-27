@@ -255,6 +255,27 @@ def list_expired_unnotified(conn: PgConnection, *, limit: int = 50) -> list[dict
         return [dict(row) for row in cur.fetchall()]
 
 
+def list_expired_for_conversation(
+    conn: PgConnection,
+    *,
+    conversation_id: int,
+    limit: int = 10,
+) -> list[dict[str, Any]]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT *
+            FROM slot_holds
+            WHERE conversation_id = %s
+              AND status = 'expired'
+            ORDER BY expires_at DESC, id DESC
+            LIMIT %s
+            """,
+            (conversation_id, limit),
+        )
+        return [dict(row) for row in cur.fetchall()]
+
+
 def mark_expired_notified(conn: PgConnection, *, hold_id: int, now: datetime) -> None:
     with conn.cursor() as cur:
         cur.execute(

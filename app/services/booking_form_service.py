@@ -66,10 +66,53 @@ def next_question(form_data: dict[str, Any]) -> tuple[str | None, str | None]:
         return None, None
 
     next_key = missing[0]
+    if next_key == "upsell_items":
+        return next_key, _upsell_question(form_data)
     for field in load_booking_fields():
         if field["key"] == next_key:
             return next_key, field["label"]
     return next_key, None
+
+
+def _upsell_question(form_data: dict[str, Any]) -> str:
+    service_type = form_data.get("service_type")
+    event = str(form_data.get("event_format") or "").lower()
+    guests = form_data.get("guests_count")
+    if service_type == "bathhouse":
+        return (
+            "Обычно к бане берут воду, лёд для напитков, посуду и кальян 🧊\n\n"
+            "Что подготовить для вас?"
+        )
+    if service_type == "house":
+        return (
+            "Обычно к дому берут посуду, воду, лёд и кальян, чтобы не везти мелочи с собой 🏡\n\n"
+            "Что подготовить для вас?"
+        )
+    if service_type == "gazebo":
+        if "день рождения" in event or "свад" in event or "празд" in event:
+            return (
+                "Обычно к празднику в беседке берут мангальный набор, лёд, посуду и кальян 🎉\n\n"
+                "Так можно сразу заняться отдыхом, без заездов по магазинам. Что подготовить для вас?"
+            )
+        if guests:
+            try:
+                guest_count = int(guests)
+            except (TypeError, ValueError):
+                guest_count = 0
+            if guest_count >= 15:
+                return (
+                    "Для такой компании к беседке обычно берут уголь, розжиг, решётку/шампуры, лёд и посуду 🔥\n\n"
+                    "Что подготовить для вас?"
+                )
+        return (
+            "Обычно к беседке берут допы, чтобы ничего не везти с собой: "
+            "уголь, розжиг, решётку/шампуры, лёд, посуду, кальян 🔥\n\n"
+            "Что подготовить для вас?"
+        )
+    return (
+        "Обычно к отдыху берут воду, лёд, посуду, кальян или мангальный набор ✅\n\n"
+        "Что подготовить для вас?"
+    )
 
 
 def describe_fields_for_prompt() -> str:

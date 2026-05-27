@@ -41,6 +41,9 @@ class Settings(BaseSettings):
         "read-write", alias="DB_TARGET_SESSION_ATTRS"
     )
     db_connect_timeout: int = Field(15, alias="DB_CONNECT_TIMEOUT")
+    db_pool_enabled: bool = Field(True, alias="DB_POOL_ENABLED")
+    db_pool_min: int = Field(1, alias="DB_POOL_MIN")
+    db_pool_max: int = Field(5, alias="DB_POOL_MAX")
 
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     telegram_webhook_url: str = Field("", alias="TELEGRAM_WEBHOOK_URL")
@@ -115,6 +118,8 @@ class Settings(BaseSettings):
             "db_port": self.db_port,
             "db_name": self.db_name,
             "db_sslmode": self.db_sslmode,
+            "db_pool_enabled": self.db_pool_enabled,
+            "db_pool_max": self.db_pool_max,
             "ai_provider": self.ai_provider,
             "openai_model": self.openai_model,
             "voice_transcription_enabled": self.voice_transcription_enabled,

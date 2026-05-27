@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from functools import lru_cache
-from concurrent.futures import ThreadPoolExecutor, as_completed
 import time as time_module
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -12,7 +11,6 @@ from psycopg2.extensions import connection as PgConnection
 from app.core.config import get_settings
 from app.core.config import PROJECT_ROOT
 from app.db.repositories import slot_holds_repo, yclients_records_repo
-from app.integrations.yclients_client import YClientsClient, YClientsError
 
 SERVICES_MAP_PATH = PROJECT_ROOT / "config" / "services_map.yaml"
 AVAILABILITY_CACHE_TTL_SECONDS = 15
@@ -82,49 +80,14 @@ def check_availability(
         _availability_cache[cache_key] = (time_module.monotonic(), local_result)
         return local_result
 
-    client = YClientsClient()
-    slot_holds_repo.expire_old(conn, now)
-    slot_date = datetime.fromisoformat(date_value).date()
-    slots: list[str] = []
-    errors: list[str] = []
-
-    with ThreadPoolExecutor(max_workers=min(4, len(variants))) as executor:
-        future_map = {
-            executor.submit(_fetch_variant_times, client, variant, title, date_value): variant
-            for variant in variants
-        }
-        for future in as_completed(future_map):
-            variant_title, raw_times, error = future.result()
-            if error:
-                errors.append(error)
-                continue
-            variant_slots: list[str] = []
-            for item in raw_times:
-                slot = _extract_time(item)
-                if not slot:
-                    continue
-                slot_time = time.fromisoformat(slot)
-                if slot_holds_repo.is_slot_held(
-                    conn,
-                    service_type=service_type,
-                    slot_date=slot_date,
-                    slot_time=slot_time,
-                    now=now,
-                    yclients_service_id=str(variant.get("yclients_service_id") or ""),
-                ):
-                    continue
-                variant_slots.append(slot)
-            if variant_slots:
-                shown = _format_slots(sorted(set(variant_slots)))
-                slots.append(f"{variant_title}: {shown}")
-
-    unique_slots = slots[:8]
-    if not unique_slots:
-        suffix = f" ({'; '.join(errors[:2])})" if errors else ""
-        result = AvailabilityResult(True, f"Свободных вариантов для «{title}» на эту дату не нашёл.{suffix}", [])
-        _availability_cache[cache_key] = (time_module.monotonic(), result)
-        return result
-    result = AvailabilityResult(True, f"Нашёл свободные варианты для «{title}».", unique_slots)
+    result = AvailabilityResult(
+        False,
+        (
+            "Локальная таблица записей ещё не синхронизирована, поэтому сейчас не могу надёжно проверить "
+            f"свободность для «{title}». Попробуйте чуть позже."
+        ),
+        [],
+    )
     _availability_cache[cache_key] = (time_module.monotonic(), result)
     return result
 
@@ -306,13 +269,28 @@ def _has_successful_sync(conn: PgConnection) -> bool:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT last_success_at
+            SELECT last_started_at, last_success_at, last_error, updated_at
             FROM yclients_sync_state
             WHERE sync_name = 'yclients_records'
             """
         )
         row = cur.fetchone()
-    return bool(row and row.get("last_success_at"))
+    if not row or not row.get("last_success_at"):
+        return False
+    settings = get_settings()
+    tz = ZoneInfo(settings.app_timezone)
+    last_success = row["last_success_at"]
+    updated_at = row.get("updated_at")
+    if last_success.tzinfo is None:
+        last_success = last_success.replace(tzinfo=tz)
+    if updated_at and updated_at.tzinfo is None:
+        updated_at = updated_at.replace(tzinfo=tz)
+    if row.get("last_error") and updated_at and updated_at > last_success:
+        return False
+    max_age = max(settings.yclients_sync_interval_seconds * 12, 600)
+    if datetime.now(tz) - last_success > timedelta(seconds=max_age):
+        return False
+    return True
 
 
 def _variant_filter(form_data: dict[str, Any]) -> dict[str, str] | None:
@@ -447,13 +425,23 @@ def _select_variants(
             continue
         filtered.append(variant)
     candidates = filtered or variants
-    candidates.sort(
-        key=lambda item: (
-            int(item.get("duration_minutes") or 9999),
-            int(item.get("capacity_max") or 9999),
-            int(item.get("price") or 999999),
+    if service_config.get("title") == "Беседка" and guests_count and int(guests_count) >= 20:
+        candidates.sort(
+            key=lambda item: (
+                0 if "№1" in str(item.get("title") or "") else 1,
+                int(item.get("duration_minutes") or 9999),
+                int(item.get("price") or 999999),
+                int(item.get("capacity_max") or 9999),
+            )
         )
-    )
+    else:
+        candidates.sort(
+            key=lambda item: (
+                int(item.get("duration_minutes") or 9999),
+                int(item.get("capacity_max") or 9999),
+                int(item.get("price") or 999999),
+            )
+        )
     return candidates[:12] if duration is None else candidates[:8]
 
 
@@ -470,56 +458,3 @@ def _duration_minutes(value: Any) -> int | None:
     if "мин" in text:
         return number
     return number * 60
-
-
-def _first_id(items: list[dict[str, Any]]) -> str:
-    for item in items:
-        value = item.get("id")
-        if value is not None:
-            return str(value)
-    return ""
-
-
-def _fetch_variant_times(
-    client: YClientsClient,
-    variant: dict[str, Any],
-    default_title: str,
-    date_value: str,
-) -> tuple[str, list[Any], str | None]:
-    service_id = str(variant.get("yclients_service_id") or "").strip()
-    staff_id = str(variant.get("yclients_staff_id") or "").strip()
-    variant_title = variant.get("title") or default_title
-    if not service_id:
-        return variant_title, [], f"{variant_title}: не указан service_id"
-    try:
-        if not staff_id:
-            staff_id = _first_id(client.get_book_staff(service_id))
-        if not staff_id:
-            return variant_title, [], f"{variant_title}: не найден ресурс"
-        raw_times = client.get_book_times(
-            staff_id=staff_id,
-            date=date_value,
-            service_id=service_id,
-        )
-        return variant_title, raw_times, None
-    except YClientsError as exc:
-        return variant_title, [], f"{variant_title}: {exc}"
-
-
-def _extract_time(item: Any) -> str | None:
-    if isinstance(item, str):
-        return item[:5] if ":" in item else None
-    if not isinstance(item, dict):
-        return None
-    for key in ("time", "datetime", "date", "seance_time"):
-        value = item.get(key)
-        if not value:
-            continue
-        text = str(value)
-        if "T" in text:
-            text = text.split("T", 1)[1]
-        if " " in text:
-            text = text.rsplit(" ", 1)[-1]
-        if ":" in text:
-            return text[:5]
-    return None

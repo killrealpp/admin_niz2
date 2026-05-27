@@ -178,6 +178,31 @@
   },
   "active": "b3a659b4c142a1f6",
   "lastOpenFiles": [
-    "Добро пожаловать.md"
+    "decisions/2026-05-27-dialog-state-policy.md",
+    "prompts/codex-workflow.md",
+    "prompts/llm-wiki-method.md",
+    "log.md",
+    "создайте ссылку.md",
+    "roadmap/dialog-regression-scenarios.md",
+    "architecture/auth.md",
+    "architecture/frontend.md",
+    "architecture/api.md",
+    "decisions/2026-05-26-use-llm-wiki.md",
+    "Добро пожаловать.md",
+    "index.md",
+    "architecture/backend.md",
+    "architecture/database.md",
+    "bugs/current-known-issues.md",
+    "daily/2026-05-26-scenario-check.md",
+    "daily/regression-suite-2026-05-26.err.log",
+    "daily/regression-suite-2026-05-26.out.log",
+    "architecture/overview.md",
+    "roadmap/pre-launch.md",
+    "prompts",
+    "daily",
+    "roadmap",
+    "decisions",
+    "bugs",
+    "architecture"
   ]
 }
