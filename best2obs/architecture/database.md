@@ -35,6 +35,7 @@
 ## Риски
 
 - Если YCLIENTS sync не работает, локальная доступность устаревает.
+- Свежесть YCLIENTS sync проверяется через `scripts/yclients_sync_status.py`: смотреть `last_success_at`, age, `records_seen`, `records_upserted`, `last_error`. При `YCLIENTS_SYNC_INTERVAL_SECONDS=5` текущий guard считает sync старым после 10 минут.
 - Если платеж прошел после истечения hold, финализация должна заново проверить доступность.
 - Если запись YCLIENTS не создалась, статус может быть `journal_missing` или ошибка создания.
 - Нужны регулярные проверки количества активных holds, failed payments и sync errors.

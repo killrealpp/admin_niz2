@@ -4,6 +4,8 @@ import re
 from datetime import datetime
 from typing import Any
 
+from app.services.dialog.time_parsing import normalize_duration_value
+
 
 MONTH_NAMES_RU = {
     1: "января",
@@ -27,6 +29,9 @@ def duration_minutes_value(value: Any) -> int | None:
     if isinstance(value, (int, float)):
         return int(float(value) * 60) if float(value) <= 24 else int(value)
     text = str(value).lower().replace(",", ".")
+    normalized_hours = normalize_duration_value(text)
+    if normalized_hours is not None:
+        return int(float(normalized_hours) * 60)
     match = re.search(r"(\d+(?:\.\d+)?)", text)
     if not match:
         return None

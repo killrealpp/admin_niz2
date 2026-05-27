@@ -167,6 +167,19 @@ def policy_or_common_info_reply(text: str) -> str | None:
             "Веники использовать нельзя ни в коем случае: за это предусмотрен штраф.\n\n"
             "В заявку их не добавляю."
         )
+    lines: list[str] = []
+    if any(marker in normalized for marker in ("дет", "ребен", "ребён", "ребят", "малыш")):
+        lines.append(
+            "С детьми можно ✅ Только просим следить за ними у воды, возле мангала и на территории."
+        )
+    if any(marker in normalized for marker in ("животн", "собак", "кошк", "питомц")):
+        lines.append(
+            "По животным точного общего правила в базе нет. Лучше уточнить под конкретный объект и формат отдыха."
+        )
+    if lines and "парков" in normalized:
+        lines.append("Парковка есть рядом с зоной отдыха.")
+    if lines:
+        return "\n\n".join(lines)
     if any(marker in normalized for marker in ("комар", "камар", "камор", "мошк", "насеком")):
         return (
             "Территорию обрабатывают от комаров раз в неделю ✅\n\n"

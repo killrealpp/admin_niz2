@@ -218,3 +218,36 @@
 - После очистки обнаружены старые локальные интервалы `resource_busy_intervals.source='bot_booking'`, которые могли ложно блокировать свободность; удалено 54 таких интервала. Остались только интервалы `source='yclients'`.
 - Выполнен YCLIENTS sync перед тестом: `records_seen=121`, `records_upserted=121`, `last_error=None`.
 - Финальные счетчики для старта теста: `users=0`, `conversations=0`, `messages=0`, `slot_holds=0`, `payments=0`, `bookings=0`, `waitlist_requests=0`; `resource_busy_intervals=127` только из YCLIENTS, `yclients_records=126`.
+
+## 2026-05-27 - исправлена память черновика после возврата от дома к беседке
+
+- По live-чату найден новый класс сбоя: клиент сначала обсуждал беседку на 20 гостей на 2 июня, потом спросил гостевой дом на ту же дату, затем вернулся фразой `лан давайте беседку же выбираю перую беседку`. Бот мог ошибочно стартовать "вторую бронь", забыть дату/гостей и повторно спросить уже выбранную беседку.
+- Добавлен guard продолжения текущего черновика при смене услуги обратно к ранее обсуждаемой: дата, гости, время, длительность и доступные варианты восстанавливаются из текущего `form_data`/`last_unavailable`, если клиент явно продолжает тот же сценарий, а не начинает новую бронь.
+- Расширено распознавание варианта беседки: опечатки `перую`, `перву`, `первой` трактуются как `Беседка №1`, если контекст уже про выбор беседки.
+- Добавлен draft-summary для вопросов вроде `а первая бронь какая?`: если оплаченной брони еще нет, бот не противоречит себе, а показывает текущую собираемую заявку и следующий недостающий шаг.
+- Если гостевой дом/баня/теплая беседка недоступны на выбранную дату, бот теперь предлагает альтернативные свободные услуги на эту же дату, прежде всего подходящие беседки по вместимости, а не только пишет waitlist.
+- Фраза `у нас просто праздник` после недоступного дома теперь используется как повод предложить альтернативы на ту же дату, а не снова просить дату.
+- `ну нет`, `да нет` и близкие живые отказы добавлены в upsell negative parser: первый отказ по допам снова запускает мягкий продающий повтор, второй закрывает допы.
+- Вопрос про длительность/часы в контексте беседки теперь не уходит в цену гостевого дома: готовый ответ объясняет, что у беседок стоимость зависит от конкретного объекта/периода, а не от "доплаты за каждый час".
+- Шаблон подтверждения заявки обновлен: финальный вопрос теперь явный `Всё верно? Подтверждаете бронь?`, с прежней структурой и эмодзи.
+- База знаний проверена через `load_knowledge()`: загружается `client_runtime.md`, ключевые факты про комаров/обработку, веники/штраф, предоплату, допы, парковку и адрес присутствуют.
+- Проверки: `compileall app scripts`; полный grouped suite `fresh+dates+gazebo+media+prices+upsell+time+payments+post_booking+services+waitlist+handoff+reminder+cancel+reschedule` - все checks OK; `scripts/dialog_stress_suite.py` - 12/12 OK.
+
+## 2026-05-27 - проведен senior project review
+
+- Проведен обзор структуры, wiki, core services, DB schema, YCLIENTS/ЮKassa integrations, regression scripts и текущих known issues без изменения production-кода.
+- Итоговая оценка проекта: 7/10. Сильные стороны: рабочая доменная модель, много регрессий, принцип "AI понимает, backend валидирует", LLM Wiki, fallback от внутренних AI-инструкций.
+- Главные найденные риски: `message_handler.py` около 6000 строк; нет DB-level атомарности active hold; платеж ЮKassa создается внутри открытой transaction; YCLIENTS sync держит transaction во время сетевой загрузки; regression scripts нельзя запускать параллельно; webhook требует production-обвязки.
+- Проверки: `compileall app scripts` - OK; `scripts/db_status.py` - OK; `scripts/local_regression_suite.py --group fresh --group payments` - OK; `scripts/validate_yclients_map.py` получил timeout 124s; `scripts/dialog_stress_suite.py` функционально дошел до конца, но cleanup упал из-за параллельного запуска с local regression, после чего штатный `_cleanup()` выполнен успешно.
+- Подробный отчет: [[daily/2026-05-27-project-review]].
+
+## 2026-05-27 - исправлены duration, mixed-upsell и диагностика sync
+
+- Добавлена нормализация `duration` в `booking_form_service.merge_form_data` и `dialog/time_parsing.py`: строки вроде `8 часов`, `8 ч`, `8.5 часа` приводятся к числу часов, некорректные строки очищаются.
+- Парсер времени теперь понимает свободную фразу `после обеда, к 3 дня и до 11 ночи` как `15:00` и длительность `8`.
+- Mixed upsell-сообщение вида `а вода и лед сколько стоят? если можно, добавьте воду и лед` теперь одновременно отвечает по цене и сохраняет выбранные допы.
+- Runtime-база знаний `app/knowledge/client_runtime.md` дополнена фактами про детей, животных, парковку, вместимость “впритык” и свои стулья/лавки.
+- Добавлен `scripts/yclients_sync_status.py` для диагностики свежести YCLIENTS sync-state.
+- `local_regression_suite.py` и `dialog_stress_suite.py` получили lock-файл, чтобы параллельные прогоны не ломали cleanup друг друга.
+- Проверено: `compileall app scripts` - OK; `scripts/db_status.py` - OK; `scripts/sync_yclients_records.py --once` - OK; `scripts/yclients_sync_status.py --strict` - OK; `scripts/dialog_stress_suite.py` - 13/13 OK; `local_regression_suite.py --group time --group upsell --group prices` - OK; `local_regression_suite.py --group gazebo --group services --group post_booking --group cancel --group reschedule --group fresh --group payments` - OK.
+- YCLIENTS sync после тестов свежий: `records_seen=122`, `records_upserted=122`, `last_error=None`.

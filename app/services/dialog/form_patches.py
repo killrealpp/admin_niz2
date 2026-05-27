@@ -212,7 +212,11 @@ def event_format_patch(text: str) -> dict[str, str]:
 
 def upsell_items_patch(text: str) -> dict[str, list[str]]:
     normalized = text.lower().replace("ё", "е")
-    if looks_like_price_question_text(text) or looks_like_forbidden_broom_request(text):
+    if looks_like_forbidden_broom_request(text):
+        return {}
+    price_question = looks_like_price_question_text(text)
+    explicit_selection = _has_explicit_upsell_selection(normalized)
+    if price_question and not explicit_selection:
         return {}
     cleaned = normalized.strip(" .,!?:;")
     no_extras = (
@@ -332,11 +336,30 @@ def upsell_sales_messages(service_type: Any) -> list[tuple[str, str, str]]:
 
 
 def has_upsell_signal(text: str) -> bool:
-    if looks_like_price_question_text(text) or looks_like_forbidden_broom_request(text):
+    normalized = text.lower().replace("ё", "е")
+    if looks_like_forbidden_broom_request(text):
+        return False
+    if looks_like_price_question_text(text) and not _has_explicit_upsell_selection(normalized):
         return False
     return bool(upsell_items_patch(text)) or any(
         marker in text.lower().replace("ё", "е")
         for marker in ("доп", "уголь", "розжиг", "решет", "решот", "шампур", "лед", "посуд", "кальян")
+    )
+
+
+def _has_explicit_upsell_selection(normalized: str) -> bool:
+    return any(
+        marker in normalized
+        for marker in (
+            "добав",
+            "подготов",
+            "отмет",
+            "запиш",
+            "возьм",
+            "давайте",
+            "если можно",
+            "полож",
+        )
     )
 
 

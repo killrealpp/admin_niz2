@@ -214,6 +214,52 @@ def stress_addon_price_then_choice(now: datetime) -> StressResult:
     )
 
 
+def stress_mixed_addon_price_and_choice(now: datetime) -> StressResult:
+    suffix = "stress_mixed_addon_price_choice"
+    transcript: list[tuple[str, str]] = []
+    created = reg._create_reserved_conversation(
+        suffix,
+        now,
+        reg._base_form(
+            service_type="gazebo",
+            service_variant="Беседка №8",
+            date="2026-06-30",
+            time="15:00",
+            duration=8,
+            guests_count=12,
+            event_format="компания друзей",
+            client_name="Кирилл",
+            phone=None,
+            upsell_items=[],
+            upsell_offer_count=0,
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+            form_data=created["conversation"]["form_data"],
+        )
+    reply = _say(suffix, "а вода и лед сколько стоят? если можно, добавьте воду и лед", now, transcript)
+    state = _state(suffix)
+    items = (state.get("form_data") or {}).get("upsell_items") or []
+    ok = (
+        _contains_all(reply, "точной отдельной цены", "добавим", "телефон")
+        and {"вода", "лед"} <= set(items)
+        and state.get("current_step") == "phone"
+    )
+    return StressResult(
+        "В одном сообщении цена допов и выбор воды/льда",
+        ok,
+        f"items={items} current_step={state.get('current_step')}",
+        transcript,
+    )
+
+
 def stress_second_service_references(now: datetime) -> StressResult:
     suffix = "stress_second_service_refs"
     transcript: list[tuple[str, str]] = []
@@ -550,6 +596,7 @@ def stress_forced_gazebo_capacity_addons_and_cancel_typo(now: datetime) -> Stres
 
 
 def main() -> None:
+    reg.install_regression_suite_lock("dialog_stress_suite")
     now = _now()
     reg._cleanup()
     original_create_missing = message_handler.create_missing_yclients_records
@@ -558,6 +605,7 @@ def main() -> None:
         stress_budget_selection,
         stress_upsell_informal_refusals,
         stress_addon_price_then_choice,
+        stress_mixed_addon_price_and_choice,
         stress_second_service_references,
         stress_current_bookings_weird_question,
         stress_cancel_one_keep_other,

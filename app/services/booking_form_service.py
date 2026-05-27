@@ -6,6 +6,7 @@ import yaml
 
 from app.core.config import PROJECT_ROOT
 from app.core.constants import EMPTY_FORM_DATA
+from app.services.dialog.time_parsing import normalize_duration_value
 
 FORM_PATH = PROJECT_ROOT / "config" / "booking_form.yaml"
 
@@ -37,8 +38,26 @@ def merge_form_data(
             continue
         if value == "" or value == []:
             continue
+        if key == "duration":
+            normalized_duration = normalize_duration_value(value)
+            if normalized_duration is None:
+                continue
+            merged[key] = normalized_duration
+            continue
         merged[key] = value
-    return merged
+    return _normalize_form_data(merged)
+
+
+def _normalize_form_data(form_data: dict[str, Any]) -> dict[str, Any]:
+    value = form_data.get("duration")
+    if value in (None, ""):
+        return form_data
+    normalized_duration = normalize_duration_value(value)
+    if normalized_duration is None:
+        form_data["duration"] = None
+    else:
+        form_data["duration"] = normalized_duration
+    return form_data
 
 
 def missing_fields(form_data: dict[str, Any], *, for_booking: bool = True) -> list[str]:

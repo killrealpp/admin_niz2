@@ -5,6 +5,26 @@ from datetime import time
 from typing import Any
 
 
+def normalize_duration_value(value: Any) -> int | float | None:
+    """Normalize duration to hours for form_data and availability checks."""
+    if value in (None, ""):
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        hours = float(value)
+    else:
+        text = str(value).lower().replace(",", ".").replace("ё", "е").strip()
+        match = re.search(r"(\d+(?:\.\d+)?)\s*(?:час|часа|часов|ч\b|минут|мин)?", text)
+        if not match:
+            return None
+        number = float(match.group(1))
+        hours = number / 60 if "мин" in text else number
+    if hours <= 0 or hours > 24:
+        return None
+    return int(hours) if hours.is_integer() else hours
+
+
 def time_period_patch(text: str) -> dict[str, Any]:
     original_text = text.lower().replace("ё", "е").replace(",", ".")
     normalized = original_text
@@ -12,7 +32,7 @@ def time_period_patch(text: str) -> dict[str, Any]:
     normalized = re.sub(r"\s*(?:час(?:а|ов)?|ч|чиса|чисов)\b", "", normalized)
     normalized = re.sub(r"\b(?:полночь|полночи|полноч)\b", "00", normalized)
     match = re.search(
-        r"(?:с\s*)?(\d{1,2})(?:[:.\-]\s*(\d{2}))?\s*(?:до|\-)\s*(\d{1,2})(?:[:.]\s*(\d{2}))?",
+        r"(?:с|к|в)?\s*(\d{1,2})(?:[:.\-]\s*(\d{2}))?\s*(?:и\s*)?(?:до|\-)\s*(\d{1,2})(?:[:.]\s*(\d{2}))?",
         normalized,
     )
     if not match:
@@ -172,8 +192,7 @@ def duration_from_text(text: str) -> int | float | None:
     match = re.search(r"(?:на\s*)?(\d+(?:\.\d+)?)\s*(?:час|часа|часов|ч\b)", normalized)
     if not match:
         return None
-    value = float(match.group(1))
-    return int(value) if value.is_integer() else value
+    return normalize_duration_value(match.group(0))
 
 
 def bare_duration_from_text(text: str) -> int | float | None:
@@ -184,7 +203,7 @@ def bare_duration_from_text(text: str) -> int | float | None:
     value = float(match.group(1))
     if value <= 0 or value > 24:
         return None
-    return int(value) if value.is_integer() else value
+    return normalize_duration_value(value)
 
 
 def period_conflict(text: str, patch: dict[str, Any]) -> bool:

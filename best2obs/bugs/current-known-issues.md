@@ -12,10 +12,14 @@
 - Полный `scripts/local_regression_suite.py` всё ещё слишком долгий для обычного прогона: ежедневную проверку лучше запускать по группам через `--group`. Печать длительности check уже добавлена, per-test timeout пока не добавлен.
 - Трассировка показала, что долгие ответы часто связаны с `db.connect`/`db.work`; connection pooling добавлен, дальше нужно наблюдать за стабильностью удаленного PostgreSQL и битых pooled-соединений после сетевых сбоев.
 - 2026-05-27: после пополнения/восстановления хостинга PostgreSQL некоторое время давал `timeout expired` при подключении к `luecahalemas.beget.app:5432`, хотя TCP-порт был доступен. Позже `scripts/db_status.py` прошел, stress-suite и затронутые regression-группы прошли OK. Риск остается под наблюдением: если снова появятся задержки 30+ секунд на первом сообщении, сначала проверять БД/хостинг.
-- `local_regression_suite.py` нельзя запускать параллельно двумя процессами: cleanup использует общий префикс `local_regression_%`, поэтому параллельные прогоны могут удалить данные друг друга и дать ложный FAIL.
+- Параллельный запуск `local_regression_suite.py`/`dialog_stress_suite.py` теперь защищён lock-файлом. Если прогон будет аварийно убит timeout-ом, может потребоваться проверить stale lock в `%TEMP%\best2_regression_suite.lock`.
 - Даже после оптимизации dialog routing отдельные AI-ветки остаются медленными: в regression/stress логах встречаются 8-15 секунд на cancel/reschedule и до 20+ секунд на сложные info/post-booking ответы. Следующий UX-фокус - ограничить тяжелые AI-вызовы, добавить более быстрые deterministic replies для частых info-вопросов и/или вынести semantic-router на более быструю модель после замеров.
 - AI всё ещё иногда возвращает текст, похожий на внутреннюю инструкцию. Сейчас guard/fallback перехватывает это и клиенту уходит безопасный ответ, но сам факт нужно держать под наблюдением при смене модели/промпта.
 - 2026-05-27: strict hold-flow функционально исправлен и покрыт тестами, но в live нужно дополнительно проверить связку Telegram + payment polling: сообщение о снятии резерва через 10 минут, отсутствие автоподтверждения поздней оплаты, отсутствие повторной ссылки на тот же hold.
+- 2026-05-27 project review: в `slot_holds` нет DB-level уникальности/lock для активного слота. Нужно защитить создание hold от гонки двух клиентов через partial unique index/advisory lock/exclusion constraint и обработку `IntegrityError`.
+- 2026-05-27 project review: создание платежа ЮKassa происходит внутри открытой DB transaction. Нужно рассмотреть outbox/reconciliation flow, чтобы внешний платеж не мог создаться без надежной локальной записи.
+- 2026-05-27 project review: YCLIENTS sync держит соединение/transaction во время сетевой загрузки и применения пачки; при медленном API это может ухудшать стабильность. Лучше разделить fetch phase и короткий DB apply phase.
+- 2026-05-27 project review: `scripts/validate_yclients_map.py` не завершился за 124 секунды на ручном прогоне; нужна диагностика timeout и повтор в стабильном окне.
 
 ## Уже закрытые классы проблем
 
@@ -59,6 +63,18 @@
 - Просроченный hold после 10 минут должен освобождать слот и уведомлять клиента; поздняя оплата по старой ссылке не должна автоматически создавать бронь.
 - Повторное подтверждение активного резерва должно переиспользовать существующую платежную ссылку, а не создавать новую.
 - YCLIENTS cleanup должен начинаться с dry-run и удалять только bot-created/Telegram-created тестовые записи по явным признакам.
+- Возврат к беседке после недоступного дома не должен стартовать новую/вторую бронь, если клиент явно продолжает текущий черновик; дата, гости и выбранный вариант должны сохраняться.
+- Разговорные опечатки выбора первой беседки (`перую`, `перву`, `первой`) должны распознаваться в контексте выбора беседки.
+- Вопрос о текущей "первой брони" до оплаты должен показывать черновик заявки, а не выдумывать оформленную бронь.
+- Недоступность гостевого дома на дату должна предлагать подходящие свободные альтернативы на эту же дату, а не только ставить waitlist.
+- Живой первый отказ от допов `ну нет/да нет` должен запускать второй upsell-заход, а не сразу закрывать допы.
+- Вопрос о стоимости дополнительных часов в контексте беседки должен отвечать по правилам беседок, а не подставлять цену гостевого дома.
+- Шаблон подтверждения заявки должен оставаться читаемым и явно спрашивать `Подтверждаете бронь?`.
+- `duration` из AI/анкеты больше не должен сохраняться строкой вроде `8 часов`: нормализация приводит значение к числу часов перед сохранением и форматированием.
+- Фраза `после обеда, к 3 дня и до 11 ночи` должна распознаваться как `15:00` и длительность `8`.
+- Mixed upsell-сообщение `а вода и лед сколько стоят? если можно, добавьте воду и лед` должно отвечать по цене, сохранять `вода`/`лёд` в допы и переходить к следующему шагу.
+- Info-вопросы про детей/парковку/животных должны отвечать из `client_runtime.md`; если точного правила по животным нет, бот не должен обещать.
+- Добавлен `scripts/yclients_sync_status.py`: диагностика показывает `last_success_at`, возраст sync, `records_seen`, `records_upserted`, `last_error`.
 
 ## Проверено 2026-05-27 после восстановления БД
 
@@ -66,6 +82,9 @@
 - `scripts/local_regression_suite.py --group gazebo --group upsell --group prices --group cancel --group post_booking --group services --group reschedule --group fresh` - все checks OK.
 - `python -m compileall app scripts` - OK.
 - Полный grouped suite `fresh+dates+gazebo+media+prices+upsell+time+payments+post_booking+services+waitlist+handoff+reminder+cancel+reschedule` - все checks OK после фиксов парсинга, availability-cache и hold-flow.
+- 2026-05-27 поздний прогон после фиксов памяти черновика: `compileall app scripts` - OK; полный grouped suite `fresh+dates+gazebo+media+prices+upsell+time+payments+post_booking+services+waitlist+handoff+reminder+cancel+reschedule` - OK; `scripts/dialog_stress_suite.py` - 12/12 OK.
+- 2026-05-27 вечерний прогон после фиксов duration/mixed-upsell/sync-status: `compileall app scripts` - OK; `scripts/dialog_stress_suite.py` - 13/13 OK; `local_regression_suite.py --group time --group upsell --group prices` - OK; `local_regression_suite.py --group gazebo --group services --group post_booking --group cancel --group reschedule --group fresh --group payments` - OK; `scripts/yclients_sync_status.py --strict` - OK после ручного `sync_yclients_records.py --once`.
+- `load_knowledge()` доступен: загружает `client_runtime.md`, в базе найдены ключевые факты про комаров/обработку, веники/штраф, предоплату, допы, парковку и адрес.
 - YCLIENTS cleanup dry-run после удаления тестовых Telegram-записей показывает 0 bot-created кандидатов; локальный sync после чистки: `records_seen=121`, `last_error=None`.
 - В логах тестов остались наблюдения по скорости: отдельные AI-ветки занимают 4-7 секунд, но функционально сценарии прошли.
 

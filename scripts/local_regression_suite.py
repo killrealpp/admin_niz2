@@ -7,12 +7,15 @@ It is safe to run against the shared DB: all rows with TEST_PREFIX are removed.
 from __future__ import annotations
 
 import argparse
+import atexit
+import os
 import sys
-from time import perf_counter
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from tempfile import gettempdir
+from time import perf_counter
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
@@ -38,6 +41,8 @@ from app.services.yclients_record_service import build_book_record_payload  # no
 
 
 TEST_PREFIX = "local_regression_"
+LOCK_PATH = Path(gettempdir()) / "best2_regression_suite.lock"
+_INSTALLED_LOCK_FD: int | None = None
 TEST_PHONE = "+79990000001"
 OLD_BOOKING_TEST_PHONE = "+79990000002"
 TEST_GROUPS = (
@@ -64,6 +69,39 @@ class Check:
     name: str
     ok: bool
     details: str = ""
+
+
+def install_regression_suite_lock(owner: str) -> None:
+    global _INSTALLED_LOCK_FD
+    if _INSTALLED_LOCK_FD is not None:
+        return
+    try:
+        fd = os.open(str(LOCK_PATH), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+    except FileExistsError as exc:
+        try:
+            details = LOCK_PATH.read_text(encoding="utf-8").strip()
+        except OSError:
+            details = ""
+        suffix = f" ({details})" if details else ""
+        raise RuntimeError(f"Regression suite is already running: {LOCK_PATH}{suffix}") from exc
+    os.write(fd, f"owner={owner}; pid={os.getpid()}\n".encode("utf-8"))
+    _INSTALLED_LOCK_FD = fd
+    atexit.register(_release_regression_suite_lock)
+
+
+def _release_regression_suite_lock() -> None:
+    global _INSTALLED_LOCK_FD
+    fd = _INSTALLED_LOCK_FD
+    if fd is None:
+        return
+    _INSTALLED_LOCK_FD = None
+    try:
+        os.close(fd)
+    finally:
+        try:
+            LOCK_PATH.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _cleanup() -> None:
@@ -2041,6 +2079,48 @@ def _test_positive_upsell_goes_to_next_step(now: datetime) -> Check:
     return Check("positive upsell goes to confirmation", ok, f"{reply} | {state}")
 
 
+def _test_mixed_addon_price_and_selection_saves_items(now: datetime) -> Check:
+    suffix = "mixed_addon_price_selection"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №6",
+            date="2026-06-30",
+            time="18:00",
+            duration=6,
+            guests_count=8,
+            event_format="компания друзей",
+            client_name="Кирилл",
+            phone=None,
+            upsell_items=[],
+            upsell_offer_count=0,
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+            form_data=created["conversation"]["form_data"],
+        )
+    reply = _send(suffix, "а вода и лед сколько стоят? если можно, добавьте воду и лед", now)
+    state = _latest_state(suffix)
+    form = state.get("form_data") or {}
+    items = form.get("upsell_items") or []
+    ok = (
+        "точной отдельной цены" in reply.lower().replace("ё", "е")
+        and "добавим" in reply.lower().replace("ё", "е")
+        and {"вода", "лед"} <= set(items)
+        and state.get("current_step") == "phone"
+    )
+    return Check("mixed addon price and selection saves items", ok, f"{reply} | {state}")
+
+
 def _test_free_dates_lookup_after_no_availability(now: datetime) -> Check:
     suffix = "free_dates_lookup"
     created = _create_reserved_conversation(
@@ -3555,6 +3635,29 @@ def _test_brooms_info_without_form_does_not_ask_booking() -> Check:
     return Check("brooms info without form does not ask booking", ok, str(reply))
 
 
+def _test_children_parking_info_during_form_uses_runtime_knowledge() -> Check:
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №8",
+        date="2026-06-02",
+        time=None,
+        duration=None,
+        guests_count=12,
+    )
+    knowledge = message_handler.load_knowledge().lower().replace("ё", "е")
+    reply = message_handler._deterministic_info_reply("а детям можно? и парковка далеко?", form)
+    lowered = (reply or "").lower().replace("ё", "е")
+    ok = (
+        "с детьми можно" in lowered
+        and "парковка есть" in lowered
+        and "во сколько" in lowered
+        and "с детьми можно" in knowledge
+        and "живот" in knowledge
+        and "впритык" in knowledge
+    )
+    return Check("children and parking info uses runtime knowledge", ok, str(reply))
+
+
 def _test_mosquito_question_during_confirmation() -> Check:
     form = _base_form(service_type="gazebo", service_variant="Крытая беседка")
     reply = message_handler._awaiting_confirmation_side_reply(
@@ -4089,6 +4192,22 @@ def _test_afternoon_time_words_parse_pm() -> Check:
     return Check("afternoon time words parse as PM", ok, f"{three_pm} | {typo_pm} | {period}")
 
 
+def _test_duration_string_normalization_and_loose_period() -> Check:
+    normalized = message_handler.merge_form_data(_base_form(duration="8 часов"), {})
+    decimal = message_handler.merge_form_data(_base_form(duration=None), {"duration": "8.5 часа"})
+    invalid = message_handler.merge_form_data(_base_form(duration="восемь часов"), {})
+    period = message_handler._time_period_patch("после обеда, наверное к 3 дня и до 11 ночи")
+    ok = (
+        normalized.get("duration") == 8
+        and decimal.get("duration") == 8.5
+        and invalid.get("duration") is None
+        and period.get("time") == "15:00"
+        and period.get("duration") == 8
+        and message_handler._duration_minutes_value("8 ч") == 480
+    )
+    return Check("duration strings normalize and loose period parses", ok, f"{normalized} | {decimal} | {invalid} | {period}")
+
+
 def _test_large_gazebo_group_prioritizes_no1() -> Check:
     form = _base_form(
         service_type="gazebo",
@@ -4335,6 +4454,7 @@ def main() -> None:
         help="Run only one regression group. Can be passed more than once.",
     )
     args = parser.parse_args()
+    install_regression_suite_lock("local_regression_suite")
     selected_groups = set(args.group or [])
     if selected_groups:
         print(f"Running regression groups: {', '.join(sorted(selected_groups))}", flush=True)
@@ -4389,6 +4509,7 @@ def main() -> None:
         run("time", lambda: _test_gazebo_start_time_defaults_until_morning(now))
         run("time", _test_people_range_is_not_time)
         run("time", _test_afternoon_time_words_parse_pm)
+        run("time", _test_duration_string_normalization_and_loose_period)
         run("time", _test_gazebo_open_ended_duration_overrides_ai_guess)
         run("time", _test_bathhouse_open_ended_duration_until_morning)
         run("media", _test_media_waits_for_date_and_guests)
@@ -4417,6 +4538,7 @@ def main() -> None:
         run("upsell", lambda: _test_prefilled_first_upsell_no_still_gets_soft_push(now))
         run("time", _test_duration_24_formats_as_hours)
         run("upsell", lambda: _test_positive_upsell_goes_to_next_step(now))
+        run("upsell", lambda: _test_mixed_addon_price_and_selection_saves_items(now))
         run("waitlist", lambda: _test_free_dates_lookup_after_no_availability(now))
         run("waitlist", lambda: _test_waitlist_decline_does_not_handoff(now))
         run("handoff", _test_location_question_does_not_handoff)
@@ -4453,6 +4575,7 @@ def main() -> None:
         run("prices", _test_gazebo_duration_price_rule)
         run("prices", _test_brooms_are_forbidden)
         run("prices", _test_brooms_info_without_form_does_not_ask_booking)
+        run("prices", _test_children_parking_info_during_form_uses_runtime_knowledge)
         run("prices", _test_mosquito_question_during_confirmation)
         run("time", _test_bare_duration_answer)
         run("time", lambda: _test_confirmation_time_correction_rechecks(now))

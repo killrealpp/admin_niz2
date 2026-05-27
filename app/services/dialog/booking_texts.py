@@ -30,7 +30,7 @@ def confirmation_reply_text(form_data: dict[str, Any]) -> str:
         f"➕ Допы: {extras}\n"
         f"👤 Имя: {form_data.get('client_name')}\n"
         f"📞 Телефон: {form_data.get('phone')}\n\n"
-        "Всё верно, подтверждаем бронь?"
+        "Всё верно? Подтверждаете бронь?"
     )
 
 

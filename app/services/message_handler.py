@@ -5603,19 +5603,23 @@ def handle_incoming(message: IncomingMessage) -> str:
             upsell_patch = _upsell_items_patch(message.text)
             selected_items = upsell_patch.get("upsell_items") or []
             if selected_items and selected_items != ["не нужны"]:
+                price_reply = _addon_price_reply(message.text) if _looks_like_price_question_text(message.text) else None
                 form_data = merge_form_data(
                     current_form_data,
                     upsell_patch | {"upsell_offer_count": int(current_form_data.get("upsell_offer_count") or 0)},
                 )
                 next_key, question = next_question(form_data)
                 items_text = ", ".join(selected_items)
+                prefix = f"Хорошо, {items_text} добавим ✅"
+                if price_reply:
+                    prefix = f"{price_reply}\n\n{prefix}"
                 if next_key is None:
-                    reply = _confirmation_reply_text(form_data)
+                    reply = f"{price_reply}\n\n{_confirmation_reply_text(form_data)}" if price_reply else _confirmation_reply_text(form_data)
                     status = "awaiting_confirmation"
                     current_step = "awaiting_confirmation"
                     next_step = "confirmation"
                 else:
-                    reply = f"Хорошо, {items_text} добавим ✅\n\n{question}"
+                    reply = f"{prefix}\n\n{question}"
                     status = "waiting_user"
                     current_step = next_key
                     next_step = next_key
