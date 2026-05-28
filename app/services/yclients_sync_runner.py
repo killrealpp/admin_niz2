@@ -4,9 +4,8 @@ import logging
 from aiogram import Bot
 
 from app.core.config import get_settings
-from app.db.connection import get_connection
 from app.services.availability_service import clear_availability_cache
-from app.services.yclients_sync_service import sync_records
+from app.services.yclients_sync_service import sync_records_once
 from app.services.waitlist_service import notify_waitlist_matches
 
 logger = logging.getLogger(__name__)
@@ -40,9 +39,7 @@ async def run_yclients_sync_loop(bot: Bot | None = None) -> None:
 
 def _sync_once():
     settings = get_settings()
-    with get_connection() as conn:
-        return sync_records(
-            conn,
-            days_back=settings.yclients_sync_days_back,
-            days_forward=settings.yclients_sync_days_forward,
-        )
+    return sync_records_once(
+        days_back=settings.yclients_sync_days_back,
+        days_forward=settings.yclients_sync_days_forward,
+    )

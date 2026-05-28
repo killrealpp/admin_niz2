@@ -4,11 +4,11 @@
     "type": "split",
     "children": [
       {
-        "id": "979011e36333eb96",
+        "id": "9246e5adafabb837",
         "type": "tabs",
         "children": [
           {
-            "id": "b3a659b4c142a1f6",
+            "id": "5aa060f1bde3cef0",
             "type": "leaf",
             "state": {
               "type": "graph",
@@ -70,7 +70,8 @@
               "title": "Закладки"
             }
           }
-        ]
+        ],
+        "currentTab": 1
       }
     ],
     "direction": "horizontal",
@@ -176,15 +177,21 @@
       "bases:Создать новую базу": false
     }
   },
-  "active": "b3a659b4c142a1f6",
+  "active": "5aa060f1bde3cef0",
   "lastOpenFiles": [
-    "daily/2026-05-27-project-review.md",
+    "decisions/2026-05-28-best2info-client-knowledge.md",
+    "Без названия 1.canvas",
+    "Без названия.canvas",
+    "testing/dialog-test-matrix.md",
+    "testing",
+    "roadmap/dialog-regression-scenarios.md",
     "decisions/2026-05-27-dialog-state-policy.md",
+    "decisions/2026-05-27-production-hardening.md",
+    "daily/2026-05-27-project-review.md",
     "prompts/codex-workflow.md",
     "prompts/llm-wiki-method.md",
     "log.md",
     "создайте ссылку.md",
-    "roadmap/dialog-regression-scenarios.md",
     "architecture/auth.md",
     "architecture/frontend.md",
     "architecture/api.md",

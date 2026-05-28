@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS slot_holds (
     user_id BIGINT NOT NULL REFERENCES users(id),
     service_type VARCHAR(64) NOT NULL,
     yclients_service_id VARCHAR(64),
+    yclients_staff_id VARCHAR(64),
     slot_date DATE NOT NULL,
     slot_time TIME NOT NULL,
     duration_minutes INT,
@@ -71,10 +72,54 @@ CREATE TABLE IF NOT EXISTS slot_holds (
 );
 
 ALTER TABLE slot_holds
-    ADD COLUMN IF NOT EXISTS expired_notified_at TIMESTAMPTZ;
+    ADD COLUMN IF NOT EXISTS expired_notified_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS yclients_staff_id VARCHAR(64);
+
+UPDATE slot_holds
+SET status = 'expired', updated_at = NOW()
+WHERE status = 'active'
+  AND expires_at <= NOW();
+
+WITH ranked_active_holds AS (
+    SELECT
+        id,
+        ROW_NUMBER() OVER (
+            PARTITION BY
+                service_type,
+                COALESCE(NULLIF(yclients_staff_id, ''), NULLIF(yclients_service_id, ''), ''),
+                slot_date
+            ORDER BY created_at DESC, id DESC
+        ) AS rn
+    FROM slot_holds
+    WHERE status = 'active'
+)
+UPDATE slot_holds
+SET status = 'cancelled', updated_at = NOW()
+WHERE id IN (
+    SELECT id
+    FROM ranked_active_holds
+    WHERE rn > 1
+);
 
 CREATE INDEX IF NOT EXISTS idx_slot_holds_lookup
     ON slot_holds (service_type, slot_date, slot_time, status, expires_at);
+
+CREATE INDEX IF NOT EXISTS idx_slot_holds_resource_lookup
+    ON slot_holds (
+        service_type,
+        COALESCE(NULLIF(yclients_staff_id, ''), NULLIF(yclients_service_id, ''), ''),
+        slot_date,
+        status,
+        expires_at
+    );
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_slot_holds_unique_active_resource_day
+    ON slot_holds (
+        service_type,
+        COALESCE(NULLIF(yclients_staff_id, ''), NULLIF(yclients_service_id, ''), ''),
+        slot_date
+    )
+    WHERE status = 'active';
 
 CREATE INDEX IF NOT EXISTS idx_slot_holds_expired_notifications
     ON slot_holds (status, expired_notified_at, expires_at);

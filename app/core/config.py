@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     hold_ttl_minutes: int = Field(10, alias="HOLD_TTL_MINUTES")
     handoff_ttl_minutes: int = Field(60, alias="HANDOFF_TTL_MINUTES")
     message_summary_enabled: bool = Field(True, alias="MESSAGE_SUMMARY_ENABLED")
-    message_summary_after_hours: int = Field(72, alias="MESSAGE_SUMMARY_AFTER_HOURS")
+    message_summary_after_hours: int = Field(48, alias="MESSAGE_SUMMARY_AFTER_HOURS")
     message_summary_interval_seconds: int = Field(
         3600, alias="MESSAGE_SUMMARY_INTERVAL_SECONDS"
     )
@@ -98,6 +98,9 @@ class Settings(BaseSettings):
     yookassa_webhook_path: str = Field("/webhooks/yookassa", alias="YOOKASSA_WEBHOOK_PATH")
     yookassa_webhook_secret: str = Field("", alias="YOOKASSA_WEBHOOK_SECRET")
     yookassa_webhook_url: str = Field("", alias="YOOKASSA_WEBHOOK_URL")
+    yookassa_webhook_max_body_bytes: int = Field(
+        32768, alias="YOOKASSA_WEBHOOK_MAX_BODY_BYTES"
+    )
 
     admin_telegram_chat_id: str = Field("", alias="ADMIN_TELEGRAM_CHAT_ID")
     log_level: str = Field("INFO", alias="LOG_LEVEL")

@@ -68,6 +68,8 @@ def looks_like_same_date_reference_text(text: str) -> bool:
         for marker in (
             "ту же дату",
             "та же дата",
+            "то же число",
+            "на то же число",
             "тот же день",
             "тем же днем",
             "тем же днём",
@@ -75,6 +77,8 @@ def looks_like_same_date_reference_text(text: str) -> bool:
             "на ту же дату",
             "в этот же день",
             "дата та же",
+            "число то же",
+            "число такое же",
             "такую же дату",
         )
     )
@@ -159,8 +163,11 @@ def service_variant_patch(text: str, *, allow_bare_ordinal: bool = False) -> dic
         return {"preferences": "беседка со светом и розетками"}
     if "больш" in normalized or "много мест" in normalized:
         return {"preferences": "большая беседка"}
-    match = re.search(r"\b(?:беседк[аиуойе]*\s*)?№?\s*([1-8])\b", normalized)
-    if match and "бесед" in normalized:
+    match = re.search(r"\bбеседк[аиуойе]*\s+на\s+([1-8])\b", normalized)
+    if match:
+        return {"service_variant": f"Беседка №{match.group(1)}"}
+    match = re.search(r"\b(?:беседк[аиуойе]*\s*№?\s*|№\s*)([1-8])\b", normalized)
+    if match:
         return {"service_variant": f"Беседка №{match.group(1)}"}
     match = re.search(r"\b([1-8])\s*-?\s*(?:й|я|ю|ую|ая|ей|ею)\b", normalized)
     if match and (allow_bare_ordinal or "бесед" in normalized):
@@ -201,7 +208,7 @@ def event_format_patch(text: str) -> dict[str, str]:
         ("корпоратив", ("корпоратив", "работ", "коллег")),
         ("свадьба", ("свадьб", "выездная регистрация")),
         ("семейный отдых", ("семейн", "семьей", "семья", "родствен")),
-        ("компания друзей", ("друз", "компания", "с друзьями")),
+        ("компания друзей", ("друз", "компания", "с друзьями", "встреч", "одноклас")),
         ("спокойный отдых", ("спокой", "споко", "тихий", "расслаб", "просто отдох", "просто отдых")),
     )
     for value, markers in formats:
@@ -395,18 +402,18 @@ def guests_count_patch(text: str, expected_key: str | None) -> dict[str, int]:
         return {}
     normalized = text.lower().replace("ё", "е").strip()
     range_match = re.search(
-        r"\b(\d{1,3})\s*(?:-|–|—|до)\s*(\d{1,3})\s*(?:человек|гостей|гостя|гость|чел)\b",
+        r"\b(\d{1,3})\s*(?:-|–|—|до)\s*(\d{1,3})\s*(?:человек|челов|гостей|гостя|гость|чел)\b",
         normalized,
     )
     if range_match:
         guests = max(int(range_match.group(1)), int(range_match.group(2)))
         if 0 < guests <= 300:
             return {"guests_count": guests}
-    match = re.fullmatch(r"(?:нас\s*)?(\d{1,3})(?:\s*(?:человек|гостей|гостя|гость|чел))?", normalized)
+    match = re.fullmatch(r"(?:нас\s*)?(\d{1,3})(?:\s*(?:человек|челов|гостей|гостя|гость|чел))?", normalized)
     if not match:
-        match = re.search(r"\bнас\s+(\d{1,3})\b", normalized)
+        match = re.search(r"\bнас\s+(?:будет\s+|примерно\s+|планируется\s+)?(\d{1,3})\b", normalized)
     if not match:
-        match = re.search(r"\b(\d{1,3})\s*(?:человек|гостей|гостя|гость|чел)\b", normalized)
+        match = re.search(r"\b(\d{1,3})\s*(?:человек|челов|гостей|гостя|гость|чел)\b", normalized)
     if not match:
         match = re.search(r"\b(\d{1,3})\s*(?:взрослых|взрослые|взрослый)\b", normalized)
     if not match:

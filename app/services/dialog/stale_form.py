@@ -5,7 +5,7 @@ from typing import Any
 
 from app.services.availability_service import load_services_map
 from app.services.booking_form_service import initial_form_data, next_question
-from app.services.dialog.formatting import format_date_ru, format_duration
+from app.services.dialog.formatting import format_date_ru, format_time_duration_range
 
 
 def new_booking_form_data(previous: dict[str, Any]) -> dict[str, Any]:
@@ -69,8 +69,10 @@ def stale_form_summary(form_data: dict[str, Any]) -> str:
     if form_data.get("date"):
         lines.append(f"- Дата: {format_date_ru(form_data.get('date'))}")
     if form_data.get("time"):
-        duration = f" на {format_duration(form_data.get('duration'))}" if form_data.get("duration") else ""
-        lines.append(f"- Время: с {form_data.get('time')}{duration}")
+        if form_data.get("duration"):
+            lines.append(f"- Время: {format_time_duration_range(form_data.get('time'), form_data.get('duration'))}")
+        else:
+            lines.append(f"- Время: с {form_data.get('time')}")
     if form_data.get("guests_count"):
         lines.append(f"- Гостей: {form_data.get('guests_count')}")
     if form_data.get("event_format"):

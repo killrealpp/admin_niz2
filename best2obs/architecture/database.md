@@ -1,5 +1,13 @@
 # Database
 
+## 2026-05-27 production-hardening update
+
+- `slot_holds` теперь хранит `yclients_staff_id`.
+- Активный hold защищен partial unique index по `service_type + resource/staff + slot_date`.
+- Перед insert ставится `pg_advisory_xact_lock`, старые holds истекают по DB time, конфликт превращается в `SlotHoldConflict`.
+- Raw `messages` сжимаются после 48 часов в `conversation_summaries`; summary остается доступным для нового контекста.
+- `app/db/connection.py` отбрасывает закрытые pooled connections и не пытается rollback, если connection уже закрыт.
+
 База данных - PostgreSQL. Схема описана в `app/db/migrations/001_init.sql`. Доступ и SSL задаются через `.env`.
 
 ## Подключение

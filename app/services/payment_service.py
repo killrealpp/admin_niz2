@@ -1,7 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
-from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from psycopg2.extensions import connection as PgConnection
@@ -55,7 +54,12 @@ def create_payment_link_for_bookings(
         amount=amount,
         currency="RUB",
         description=description,
+        raw_payload={
+            "booking_ids": booking_ids,
+            "state": "payment_intent_created",
+        },
     )
+    conn.commit()
     try:
         response = YooKassaClient().create_payment(
             amount=amount,
@@ -67,14 +71,19 @@ def create_payment_link_for_bookings(
                 "booking_ids": ",".join(str(item) for item in booking_ids),
             },
             customer_phone=phone,
-            idempotence_key=f"booking-payment-{payment['id']}-{uuid4()}",
+            idempotence_key=f"booking-payment-{payment['id']}",
         )
     except Exception as exc:
         payments_repo.mark_failed(
             conn,
             payment_id=payment["id"],
-            raw_payload={"error": str(exc)},
+            raw_payload={
+                "error": str(exc),
+                "booking_ids": booking_ids,
+                "state": "provider_create_failed",
+            },
         )
+        conn.commit()
         raise
 
     confirmation = response.get("confirmation") or {}
@@ -92,6 +101,7 @@ def create_payment_link_for_bookings(
         booking_ids=booking_ids,
         payment_status="awaiting_payment",
     )
+    conn.commit()
     return saved_payment
 
 
@@ -110,9 +120,19 @@ def create_payment_link_for_holds(
     if not hold_ids:
         raise YooKassaError("hold_ids are required for prepayment")
 
-    amount = calculate_prepayment_amount(len(hold_ids))
+    normalized_hold_ids = [int(item) for item in hold_ids]
+    amount = calculate_prepayment_amount(len(normalized_hold_ids))
     description = f"Предоплата за бронь, {client_name}, {phone}"
-    payment = payments_repo.create_pending(
+    existing_payment = payments_repo.find_active_for_hold_ids(
+        conn,
+        conversation_id=conversation_id,
+        provider="yookassa",
+        hold_ids=normalized_hold_ids,
+    )
+    if existing_payment and existing_payment.get("payment_url"):
+        return existing_payment
+
+    payment = existing_payment or payments_repo.create_pending(
         conn,
         conversation_id=conversation_id,
         user_id=user_id,
@@ -121,7 +141,12 @@ def create_payment_link_for_holds(
         amount=amount,
         currency="RUB",
         description=description,
+        raw_payload={
+            "hold_ids": normalized_hold_ids,
+            "state": "payment_intent_created",
+        },
     )
+    conn.commit()
     try:
         response = YooKassaClient().create_payment(
             amount=amount,
@@ -130,23 +155,28 @@ def create_payment_link_for_holds(
                 "conversation_id": str(conversation_id),
                 "user_id": str(user_id),
                 "payment_id": str(payment["id"]),
-                "hold_ids": ",".join(str(item) for item in hold_ids),
+                "hold_ids": ",".join(str(item) for item in normalized_hold_ids),
             },
             customer_phone=phone,
-            idempotence_key=f"hold-payment-{payment['id']}-{uuid4()}",
+            idempotence_key=f"hold-payment-{payment['id']}",
         )
     except Exception as exc:
         payments_repo.mark_failed(
             conn,
             payment_id=payment["id"],
-            raw_payload={"error": str(exc), "hold_ids": hold_ids},
+            raw_payload={
+                "error": str(exc),
+                "hold_ids": normalized_hold_ids,
+                "state": "provider_create_failed",
+            },
         )
+        conn.commit()
         raise
 
     confirmation = response.get("confirmation") or {}
     status = response.get("status") or "pending"
     payload = dict(response)
-    payload["hold_ids"] = hold_ids
+    payload["hold_ids"] = normalized_hold_ids
     saved_payment = payments_repo.attach_provider_response(
         conn,
         payment_id=payment["id"],
@@ -155,6 +185,7 @@ def create_payment_link_for_holds(
         status=status,
         raw_payload=payload,
     )
+    conn.commit()
     return saved_payment
 
 
@@ -220,6 +251,11 @@ def finalize_bookings_for_paid_payment(
             status="confirmed",
             payment_status="paid",
         )
+        booking = {
+            **booking,
+            "hold_yclients_service_id": hold.get("yclients_service_id"),
+            "hold_yclients_staff_id": hold.get("yclients_staff_id"),
+        }
         upsert_local_busy_interval_for_booking(conn, booking=booking)
         slot_holds_repo.mark_converted(conn, hold_id=hold_id, now=resolved_now)
         created_ids.append(int(booking["id"]))

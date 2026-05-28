@@ -1,9 +1,148 @@
 # Current Known Issues
 
+## 2026-05-28 live-dialog 135: second booking after paid gazebo lost context
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-28.
+- Симптомы: после оплаченной беседки вопрос `можно еще что нибудь забронировать?` мог вернуть старое `Заявка пока ожидает подтверждения`; фраза `давайте еще баню на то же число что и беседка` брала 30 июня, но следующим ответом снова спрашивала дату; вопрос `а вообще норм беседка?` внутри draft бани отвечал общим рекламным текстом про беседки и путал текущую услугу.
+- Причины: post-booking/info route мог использовать старый booking-ready `form_data`; fresh-start не всегда пробивал `awaiting_confirmation`, если у клиента уже есть оплаченная активная бронь; same-date filter новой заявки вычищал date-patch от reference-фразы; `на то же число` частично матчился как same-time; info-вопрос про другую услугу не искал активную бронь этой услуги.
+- Исправлено: post-booking `что еще можно забронировать` отвечает списком услуг без запуска confirmation; явная новая бронь после оплаченной активной брони чистит slot-поля через new-booking policy; `то же число` сохраняет date-patch для новой услуги; баня с известной датой спрашивает время; cross-service info reply отвечает по активной беседке и возвращает к текущему draft бани.
+- Дополнительно усилены flow guards: plain ack после закрытой брони не перехватывает активные `cancel_flow/reschedule_flow/swap_reschedule_flow`; cancel-flow на подтверждении использует сохраненный `booking_id/booking_ids`, если активная сверка журнала временно не вернула запись.
+- Защищено: `live 135 paid gazebo then bathhouse keeps context` в `scripts/local_regression_suite.py`; live-chain в `scripts/dialog_context_suite.py`; полный `local_regression_suite.py`, context/edge/stress suites и `yclients_sync_status.py --strict`.
+
+## 2026-05-28 live-dialog: upsell accept, confirmation info and paid journal record
+
+- Статус: закрыто кодом, regression/context/edge/stress проверками и ручным repair live booking `213`.
+- Симптомы: после soft upsell клиент написал `ну давайте`, но бот повторил вопрос допов; на `а это хорошая беседка?` бот ответил `Оформляем вторую бронь`; после оплаты не пришло paid-сообщение, а запись в YCLIENTS не появилась сразу.
+- Причины: vague accept после upsell-push не мапился на только что предложенный набор; fresh-start guard мог сработать до confirmation-flow на вопросе со словом `беседка`; Telegram updates одного пользователя обрабатывались параллельными `to_thread`; YCLIENTS create упал на transient SSL timeout, а paid notification ждал journal-ready; локальный busy interval paid booking создавался без hold staff id и мог выбрать первую беседку из config.
+- Исправлено: contextual accept для soft upsell; deterministic answer про текущую выбранную беседку; fresh-start не прерывает `awaiting_confirmation`; per-user Telegram lock; retry YCLIENTS create через 30 секунд; one-time промежуточное paid уведомление при journal-pending; bookings repo возвращает hold service/staff, busy interval перезаписывается на правильный ресурс.
+- Live repair: `scripts/sync_payment_statuses.py` создал YCLIENTS record `1741240914` для booking `213`, ресурс `18201061/3828151` (`Беседка №4`), `yclients_create_error=NULL`.
+- Защищено: новые checks `soft upsell accept after push adds basic set`, `gazebo quality question during confirmation stays in confirmation`, `paid finalize busy interval uses hold variant`, плюс полный набор `compileall`, grouped regression, `dialog_context_suite.py`, `dialog_edge_suite.py`, `dialog_stress_suite.py`.
+
+## 2026-05-28 keyword-trigger concern for guest parsing
+
+- Статус: закрыто 2026-05-28.
+- Нюанс: после фикса `30 июня -> 30 гостей` backend всё ещё выглядел так, будто ищет слова `чел/человек/гостей/нас будет` и на них строит понимание. Это противоречило архитектурному принципу: AI понимает смысл, backend валидирует состояние.
+- Исправлено: core guard больше не использует guest-keywords как условие принятия/отклонения. AI-only `guests_count` проверяется структурно: не является ли оно числом даты или номером беседки, не является ли текущий шаг `guests_count`, не подтвердил ли это deterministic parser.
+- Защищено: `на 30 июня двадцать` принимается как 20 гостей через AI-смысл; `на 30 июня` не становится 30 гостями; `29 мая 6 беседка` не становится 6 гостями.
+- Проверено: `dialog_context_suite.py` 13/13, профильные regression-группы, `dialog_edge_suite.py` 13/13, `dialog_stress_suite.py` 13/13.
+
+## 2026-05-28 live-dialog: `на 30 июня` became `30 guests`
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-28.
+- Симптом: после `нужна беседка` клиент написал `на 30 июня`, а бот ответил `беседка свободна` и спросил, какую беседку выбрать. Затем на `а какой у меня выбор есть?` попросил дату заново, а на `я же писал 30 июня` уже отвечал, что `Беседка №1` подходит для `30 гостей`. В финальном состоянии диалога лежали `date=2026-06-30`, `guests_count=30`, `service_variant=Беседка №1`, хотя гостей клиент не называл.
+- Причина: AI мог классифицировать ответ текущего шага как `answer_info` и вернуть patch с датой/гостями; backend раньше мог выкинуть валидную дату из info-like сообщения или принять `guests_count=30` из AI-patch. После этого availability для 30 гостей оставляла одну беседку №1, и состояние становилось отравленным.
+- Исправлено: ответ текущего шага не считается info, если backend принял state-changing fields; число из date-only текста не принимается как `guests_count` по структурному конфликту с датой; AI может принимать semantic guest без слов-маркеров, если число не конфликтует с датой/вариантом; после даты без гостей бот спрашивает количество гостей перед подбором вариантов; вопрос про выбор при известной дате больше не теряет дату.
+- Добавлен recovery: если клиент пишет, что бот не спросил количество гостей, backend очищает ошибочный `guests_count/service_variant/last_available_gazebo_variants` и возвращает шаг `guests_count`.
+- Защищено: `scripts/dialog_context_suite.py` 13/13, включая `Чистая дата не превращается в 30 гостей`, `AI-смысл без слов-маркеров гостей принимается`, `Номер беседки из AI-patch не превращается в гостей`, `Вопрос про выбор помнит дату и просит гостей`, `Жалоба на неуточненных гостей чинит испорченное состояние`; профильные regression-группы, `dialog_edge_suite.py` 13/13, `dialog_stress_suite.py` 13/13.
+- Остаточный риск: скорость отдельных AI semantic веток (`dialog_timing_slow` до ~15 секунд на off-topic внутри формы). Состояние не портится, но нужен будущий deterministic short-circuit для частых посторонних вопросов.
+
+## 2026-05-28 live-dialog: two-gazebo request loses multi-booking context
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-28.
+- Исправлено: mixed info+booking для `2 беседки` теперь не теряет booking intent; текущая заявка и следующая дата ведутся последовательно через `pending_additional_bookings`; вторая дата не перезаписывает первую заявку; будние цены беседок показывают скидку 50%; confirmation correction имеет приоритет над reserved-hold glue; `активыне заявки` распознаётся как summary-вопрос; ночной интервал показывается как `до 08:00 следующего дня`.
+- Защищено тестами: `scripts/dialog_context_suite.py` содержит сценарии sequential two-gazebo queue, pending second-date guard, weekday price discount and awaiting-confirmation typo summary. Дополнительно пройдены профильные regression-группы, `dialog_edge_suite.py` и `dialog_stress_suite.py`.
+- Клиент сразу написал смешанный запрос: `нужно 2 беседки на 02.06 и 19.06. там есть мангал и угли?`. Бот ответил только на info-часть про мангал и не закрепил intent `две отдельные беседки`.
+- Дальше бот вел один текущий draft вместо двух последовательных броней: `02.06 на 11` было воспринято как 11 гостей, `19.06 на 13` вмешалось в тот же draft и не стало второй заявкой на 19 июня.
+- Availability/price list для 2 июня показал базовые цены беседок без будней скидки 50%, хотя 2 июня 2026 — вторник. Discount-aware path сейчас срабатывает на явный вопрос про скидку, но не применяется к списку свободных вариантов с ценами.
+- На подтверждении `время тоже поменяй с 11 до 08` было перехвачено reserved-hold command guard до `awaiting_confirmation` correction-flow и получило неверный ответ `не вижу активной предварительной заявки`, хотя draft был на подтверждении.
+- Summary-вопрос с опечаткой `активыне заявки` не распознался как вопрос о текущей заявке и ушел в side-reply, который ответил `Оформляем вторую бронь`, хотя нужно было показать текущий черновик или сказать, что оформленных активных заявок пока нет.
+- UX-решение: одиночное `на 11.00` для беседки по текущим правилам может стать интервалом до 08:00, но клиенту обязательно нужно показывать это явно как `до 08:00 следующего дня`, чтобы не выглядело как ошибка времени.
+- Требуется fix-step: multi-booking intent memory (`pending_second_booking`/queue), mixed booking+info должен применять booking intent до info-ответа, discount-aware formatting для gazebo availability list, correction priority на `awaiting_confirmation`, fuzzy summary detector для `активные заявки` с опечатками.
+
+## 2026-05-28 live-dialog: date+guests context routed past availability
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками.
+- Симптом: после `Понял, беседку` клиент написал `на 30 июня нас будет 20`, а бот ответил, что на 30 июня нет подходящих беседок и на ближайшие 75 дней свободных дат не нашёл. Это выглядело как неактуальная таблица и потеря контекста.
+- Диагностика: после свежего `scripts/sync_yclients_records.py --once` локальная БД показывает на 30 июня для 20 гостей свободные `Беседка №1`, `Беседка №8`, `Беседка №3`, `Крытая беседка`. Значит основная причина была в routing, не в данных.
+- Причина: date+guests в одном сообщении могло попасть в selection/no-capacity glue до реальной availability-проверки или использовать старые `last_suggested_free_dates`. Для маленьких свободных беседок no-capacity ответ не всегда добавлял ближайшие подходящие даты.
+- Исправлено: date+guests first message идёт в availability executor; stale suggestions очищаются при смене даты/гостей; маленькие свободные беседки объясняются как неподходящие по вместимости; ближайшие подходящие даты ищутся вокруг выбранной даты.
+- Дополнительно закрыт context-bug: `что мы подтверждаем?` на `awaiting_confirmation` без слова `бронь` теперь показывает черновик, а не запускает повторную availability-проверку.
+- Защищено: `gazebo date+guests first message checks availability`, `gazebo small slots on date offers nearest suitable`, `scripts/dialog_context_suite.py` 4/4, `dialog_edge_suite.py` 13/13, `dialog_stress_suite.py` 13/13.
+
+## 2026-05-28 live-dialog: refusal during upsell continued booking flow
+
+- Статус: закрыто кодом и regression/stress проверками.
+- Симптом: после info-ответа про правила/корпоратив клиент написал `давай откажемся от брони`, а бот ответил `Беседка: 18:00-00:00 свободно` и снова предложил допы. Это выглядело как отсутствие понимания у AI.
+- Причина: формулировка `откажемся от брони` не попадала в cancel/abort detector; в активной анкете на шаге допов сообщение проваливалось ниже, где booking flow продолжал availability/upsell. Это routing priority bug: cancel/abort должен обрабатываться раньше допов, availability и AI-generated ответа.
+- Исправлено: detector отмены/abort покрывает `откажемся/отказ от брони/заявки/оформления`, `бронь не нужна`, `не будем бронировать`. Для незавершенной заявки backend очищает slot-поля, сохраняет контакт и возвращает шаг `service_type`.
+- Дополнительно закрыт соседний guard: неопределенное `ну че нибудь` на шаге времени больше не запускает AI-инвенцию популярных слотов, а повторяет вопрос времени.
+- Защищено тестами: `fresh+upsell`, `post_booking+cancel`, `dialog_edge_suite.py` 13/13 и `dialog_stress_suite.py` 13/13.
+
+## 2026-05-28 live-dialog 6093: status fixed
+
+- Статус: закрыто кодом и regression/stress проверками. Старый диагностический блок ниже оставлен как история причины.
+- Исправлено: `20 чел` надежно принимается как `guests_count=20`; 5 июня для 20 гостей не предлагает маленькие беседки как подходящие; уточнение `только эта свободна на 5 июня` не листает stale `last_suggested_free_dates`; 8 июня показывает подходящие №1/№8/№3.
+- Исправлено: вопросы `скидка/со скидкой` идут через discount-aware path и `best2info/rules/discounts.md`; для 8 июня 2026 и Беседки №1 применяется ПН-ЧТ скидка 50%.
+- Исправлено: после `18,00` -> `на 5` -> `встреча однокласников` -> `кальян давайте` сохраняются `time=18:00`, `duration=5`, `event_format`, а upsell не возвращает форму к шагу времени.
+- Защищено тестами: live-сценарий 6093, `best2info` retrieval, скидки/предоплата/кальян/дети/парковка, state regression после перехода к допам.
+- Остаточный риск не функциональный: в regression/stress все еще встречается `dialog_timing_slow` на отдельных AI semantic ветках; это наблюдение по скорости, а не открытый баг корректности.
+
+## 2026-05-28 live-dialog 6093: capacity, nearest dates, discounts, form state
+
+- Статус: найдено по последнему реальному Telegram-чату `conversation_id=6093`; production-код пока не менялся, нужен отдельный fix-step с regression.
+- `20 чел` после вопроса о гостях не был надежно принят как `guests_count`: если AI/semantic помечает сообщение как info-like, `_ai_first_patch` оставляет только `_capacity_guest_patch`, а тот сейчас не покрывает сокращение `чел`. Поэтому бот ответил списком свободных беседок на 5 июня без фильтра по 20 гостям и снова спросил количество.
+- После этого `last_suggested_free_dates` запомнил нерелевантные для 20 гостей даты. Сообщение `только эта свободна на 5 июня` попало в early route `_asks_for_free_slots` на `awaiting_new_date`, который сразу вызывает `_next_free_dates_reply` и не парсит явную дату/уточнение. В итоге бот показал 16-20 июня как следующую страницу, хотя ближайшая подходящая дата была 8 июня.
+- По текущей локальной availability-таблице ошибка не похожа на stale YCLIENTS-cache: 5 июня для 20 гостей нет подходящих слотов, 8 июня подходят `Беседка №1/№8/№3`, 4 июня подходят `Беседка №8/Крытая`. Но freshness на момент live-чата из текущего `yclients_sync_state` задним числом не восстановить.
+- Вопросы про скидку перехватываются deterministic price path: `_deterministic_info_reply -> _price_reply_if_known` возвращает базовую цену из `services_map` до обращения к базе знаний. В knowledge есть 50% скидка ПН-ЧТ и таблица цен, но backend не применяет discount-aware ответ для фраз `скидка`, `со скидкой`; поэтому 8 июня, понедельник, бот написал 10 500 ₽ вместо объяснения скидки/условий.
+- После ответов `18,00`, `на 5`, `встреча однокласников` бот затем снова спросил время после `кальян давайте`. Финальное состояние разговора подтверждает потерю `time`, `duration`, `event_format` при сохранённом `upsell_items=["кальян"]`. Вероятный класс бага: AI-текст/last-assistant-asked-upsell может перескочить к допам, пока backend фактически не закрепил все поля; затем upsell branch мержит допы поверх form snapshot, где время/длительность/формат отсутствуют. Нужен state-safe guard: ответ клиенту должен соответствовать `next_question(form_data)`, а form patch на ожидаемом шаге должен иметь приоритет над AI-текстом.
+- Дополнительный UX-нюанс: `а скидка есть` получил пустой ответ-заготовку `Сейчас расскажу про скидки и акции` без фактов. Такие ответы надо считать невалидными для info-вопросов: если deterministic/knowledge не дал содержательного факта, лучше честно сказать, что условия уточним, и не создавать ощущение, что бот "не думает".
+
+## 2026-05-28 edge-dialog interruptions
+
+- Статус: найдено самостоятельным `scripts/dialog_edge_suite.py` и закрыто кодом/промптом. Summary-вопросы внутри анкеты/подтверждения теперь показывают черновик; отмена на `awaiting_confirmation` сбрасывает еще не созданную заявку; info-вопросы внутри cancel-flow не подтверждают отмену и отвечают по авансу/возврату; `нет, оставь` закрывает cancel-flow без удаления брони; off-topic post-booking больше не предлагает допы.
+- Добавлен защитный сценарный набор `scripts/dialog_edge_suite.py` - 12/12 OK после правок.
+- Остаточный риск: совсем посторонние вопросы внутри активной формы могут идти через AI semantic и давать `dialog_timing_slow`; состояние при этом не портится. Следующий UX-фокус - больше быстрых deterministic short-circuit для частых off-topic/info-вопросов.
+
+## 2026-05-28 current-request and soft-handoff follow-up
+
+- Статус: закрыто кодом и regression/stress проверками. Вопросы о "броне, которую хотел забронировать" теперь показывают черновик, если активной брони/hold нет; `ну че нибудь` не создает выдуманное время; `бля будем зажигать` не запускает handoff без жалобы; same-time reference для второй услуги подтягивает время из активной брони.
+- Добавлены regression checks: `booking summary uses draft when no active booking`, `emotional event format does not handoff`, `second service same time reference on time step`.
+- Остаточный риск: live Telegram smoke перед следующим релизным прогоном все равно должен начинаться с проверки fresh YCLIENTS sync, потому что direct free-dates зависит от локальных `yclients_records` / `resource_busy_intervals`.
+- Остаточный UX-риск: отдельные AI semantic ветки все еще дают `dialog_timing_slow` примерно 3-10 секунд в regression/stress. Функционально тесты зеленые, но скорость остается под наблюдением.
+
+## 2026-05-28 live-dialog: free dates, mixed info, and state glue
+
+- Статус 2026-05-28: основные live-баги закрыты кодом, regression-сценариями и ручным live-like прогоном. Перед реальным Telegram smoke обязательно проверить, что YCLIENTS sync fresh.
+- В live-чате 09:05 бот на запрос `начнем новую / какие ближайшие свободные даты для бани?` ответил, что ближайшая баня только с 6 августа. Текущая диагностика после sync показывает, что локальная availability-таблица считает баню свободной 28 мая, 29 мая, 1 июня и дальше; значит ошибка не подтверждается текущими данными и вероятнее связана со stale form/free-dates glue: старые `date`/`last_unavailable`/`last_suggested_free_dates` могли сдвинуть старт поиска ближайших дат, даже когда клиент явно начал новую анкету.
+- В `resource_busy_intervals` снова обнаружены локальные интервалы `source='bot_booking'` для бани 24 июня, хотя после подготовки live-теста ожидались только `yclients` intervals. Они не объясняют августовский ответ напрямую, но это отдельный риск чистоты локальной таблицы свободности.
+- Ответ на `а че нас типо 10 челов / какую нам выбрать, что дешевле` задал два вопроса в одном сообщении: сначала `Какую выбираете?`, затем `Продолжим оформление: На какую дату планируете отдых?`. Источник: info/budget reply уже содержит выбор, а `_answer_info_during_form` добавляет следующий вопрос анкеты, если `_reply_already_asks` не распознал общий вопрос выбора как уже заданный.
+- Сообщение `ну окей давайте четвертую / а с детьми можно?` ответило только про детей и не закрепило `Беседка №4`. Нужна обработка mixed selection + info: backend должен сначала применить валидный выбор варианта, затем ответить на info-вопрос и задать ровно один следующий вопрос.
+- Сообщение `я же говорил 10` после вопроса о количестве гостей было принято как время `10:00`, что привело к слоту `10:00-08:00`. Нужен expected-step-aware guard: если текущий/следующий шаг `guests_count`, голое число и фразы `я же говорил 10` должны обновлять гостей, а не время.
+- После pause-фразы `окей, лан я позже напишу` короткое `кайф` снова вернуло к upsell-вопросу. Нужен post-pause ack guard, чтобы клиентское подтверждение/эмоциональная реакция не перезапускали текущий вопрос.
+- Что изменено: direct free-dates с явным `новую` обходит старый `last_unavailable`; бюджетный подбор без даты не заявляет свободность и спрашивает дату; `челов` распознаётся как гости; mixed selection+info сохраняет вариант беседки; `guests_count` как активный шаг имеет приоритет над YAML-порядком полей; post-pause ack отвечает без повторного upsell.
+- Дополнительно найден и закрыт edge case: протухшая анкета без активного `stale_form_flow` больше не показывает checkpoint, если клиент явно пишет `начнем новую` вместе с запросом ближайших свободных дат; добавлен regression `old form new free dates skips stale choice`.
+- Проверено: `compileall`; полный `local_regression_suite.py`; `dialog_stress_suite.py` 13/13; после последней stale-form правки - groups `fresh/dates/time` и `reschedule`; ручной live-like сценарий с ближайшими датами, бюджетным подбором, mixed selection+info, `я же говорил 10`, pause ack и переносом.
+- Наблюдение: если `yclients_sync_status.py --strict` stale, direct lookup может давать неверную картину свободности. После ручного `sync_yclients_records.py --once` ближайшие даты снова корректны. Это production-риск настройки фонового sync, а не user-facing dialog bug.
+
+## 2026-05-27 reschedule-flow refactor status
+
+- Снижено: первый слой reschedule helpers и single reschedule execution вынесены из `message_handler.py` в `app/services/dialog/reschedule_flow.py`.
+- Проверено: `compileall`, `reschedule`, `gazebo+reschedule`, `post_booking+cancel+payments+services`, `gazebo+post_booking+payments+cancel`, `dialog_stress_suite.py` 13/13.
+- Найдено и закрыто в ходе проверки: `gazebo_capacity_by_title` оказался shared helper для обычного availability-flow; после добавления alias regression/stress снова зелёные.
+- Остаточный риск: grouped/swap execution переноса всё ещё в `message_handler.py`; следующий шаг должен быть callback-based, как cancel-flow, потому что там есть удаление нескольких YCLIENTS-записей, rollback старых записей и busy intervals.
+
+## 2026-05-27 cancel-flow refactor status
+
+- Снижено: execution отмены вынесен из `message_handler.py` в `app/services/dialog/cancel_flow.py` через `CancelFlowCallbacks`.
+- Проверено: `compileall`, `local_regression_suite.py --group cancel`, `--group post_booking --group payments --group reschedule`, `dialog_stress_suite.py` 13/13.
+- Остаточный риск: reschedule execution, `availability_flow` и часть confirmation-flow всё ещё в `message_handler.py`; следующий разрез должен быть таким же маленьким и callback-based.
+
+## 2026-05-27 post_booking_flow refactor status
+
+- Снижено: часть post-booking логики вынесена из `message_handler.py` в `app/services/dialog/post_booking_flow.py`, без изменения AI/prompts.
+- Проверено: `dialog_stress_suite.py` 13/13 и связанные regression-группы прошли.
+- Остаточный риск: основной `_handle_post_booking_message`, reschedule-flow и availability-flow всё ещё в `message_handler.py`; следующий вынос должен быть ещё более осторожным, маленькими кусками и с теми же группами тестов.
+
+## 2026-05-27 webhook hardening update
+
+- Закрыто частично: YooKassa webhook теперь имеет application-level secret check, production fail-fast без secret, body-size limit и smoke-тест.
+- Остаточный production-риск: публичный webhook всё равно нужно открывать только через reverse proxy/HTTPS и серверные лимиты; сам встроенный `ThreadingHTTPServer` не должен напрямую смотреть в интернет без обвязки.
+- Диалоговая логика этим изменением не тронута; `dialog_stress_suite.py` после правки прошёл 13/13.
+
 ## Под наблюдением
 
 - `message_handler.py` очень большой и содержит много пересекающихся сценариев. Риск регрессий высокий при точечных правках.
-- Рефакторинг `message_handler.py` начат, но не завершен: вынесены formatting/price-info/stale-form/routing guards/semantic-router/response-builder/performance/cancel helpers, дальше нужны confirmation/post-booking/reschedule/availability flow modules.
+- Рефакторинг `message_handler.py` начат, но не завершен: вынесены formatting/price-info/stale-form/routing guards/semantic-router/response-builder/performance/post-booking/cancel/reschedule/availability helpers, confirmation-flow, direct free-dates lookup и explicit photo reply; дальше нужны оставшийся media scheduling и glue-код fresh-start/stale-form.
 - AI может ошибаться в неоднозначных сообщениях, поэтому backend должен продолжать валидировать state и доступность.
 - Проверка свободности зависит от свежести `yclients_records` и `resource_busy_intervals`.
 - ЮKassa webhook пока зависит от серверной настройки; без него подтверждение оплаты идет через polling или следующее сообщение.
@@ -15,10 +154,9 @@
 - Параллельный запуск `local_regression_suite.py`/`dialog_stress_suite.py` теперь защищён lock-файлом. Если прогон будет аварийно убит timeout-ом, может потребоваться проверить stale lock в `%TEMP%\best2_regression_suite.lock`.
 - Даже после оптимизации dialog routing отдельные AI-ветки остаются медленными: в regression/stress логах встречаются 8-15 секунд на cancel/reschedule и до 20+ секунд на сложные info/post-booking ответы. Следующий UX-фокус - ограничить тяжелые AI-вызовы, добавить более быстрые deterministic replies для частых info-вопросов и/или вынести semantic-router на более быструю модель после замеров.
 - AI всё ещё иногда возвращает текст, похожий на внутреннюю инструкцию. Сейчас guard/fallback перехватывает это и клиенту уходит безопасный ответ, но сам факт нужно держать под наблюдением при смене модели/промпта.
+- 2026-05-28: до пополнения tokens в stress/regression логах повторялся OpenRouter 402 `Prompt tokens limit exceeded` на отдельных AI-ветках. После пополнения в текущем confirmation-flow прогоне 402 не повторился, но live-качество сложных info/post-booking ответов всё равно зависит от доступного лимита/кредитов и дальнейшего сокращения prompt.
 - 2026-05-27: strict hold-flow функционально исправлен и покрыт тестами, но в live нужно дополнительно проверить связку Telegram + payment polling: сообщение о снятии резерва через 10 минут, отсутствие автоподтверждения поздней оплаты, отсутствие повторной ссылки на тот же hold.
-- 2026-05-27 project review: в `slot_holds` нет DB-level уникальности/lock для активного слота. Нужно защитить создание hold от гонки двух клиентов через partial unique index/advisory lock/exclusion constraint и обработку `IntegrityError`.
-- 2026-05-27 project review: создание платежа ЮKassa происходит внутри открытой DB transaction. Нужно рассмотреть outbox/reconciliation flow, чтобы внешний платеж не мог создаться без надежной локальной записи.
-- 2026-05-27 project review: YCLIENTS sync держит соединение/transaction во время сетевой загрузки и применения пачки; при медленном API это может ухудшать стабильность. Лучше разделить fetch phase и короткий DB apply phase.
+- 2026-05-27 project review: critical hold/payment/sync риски закрыты production-hardening разрезом; теперь следить за live-сценариями Telegram + payment polling и свежестью sync-state.
 - 2026-05-27 project review: `scripts/validate_yclients_map.py` не завершился за 124 секунды на ручном прогоне; нужна диагностика timeout и повтор в стабильном окне.
 
 ## Уже закрытые классы проблем
@@ -75,6 +213,13 @@
 - Mixed upsell-сообщение `а вода и лед сколько стоят? если можно, добавьте воду и лед` должно отвечать по цене, сохранять `вода`/`лёд` в допы и переходить к следующему шагу.
 - Info-вопросы про детей/парковку/животных должны отвечать из `client_runtime.md`; если точного правила по животным нет, бот не должен обещать.
 - Добавлен `scripts/yclients_sync_status.py`: диагностика показывает `last_success_at`, возраст sync, `records_seen`, `records_upserted`, `last_error`.
+- Cancel-flow execution вынесен из `message_handler.py` через callbacks; отмена одной/нескольких броней, правило аванса, `дя`, handoff на ошибке удаления YCLIENTS и post-cancel ack покрыты regression/stress.
+- Grouped/swap reschedule execution вынесен из `message_handler.py` через callbacks; перенос нескольких броней и swap-flow покрыты `reschedule` regression.
+- Availability reply layer вынесен в `availability_flow.py`; ответы по свободности, no-availability, waitlist, альтернативам на недоступную дату и ближайшим свободным датам покрыты `gazebo/services/fresh` и stress-suite.
+- Confirmation-flow вынесен в `confirmation_flow.py`: reserved hold commands, expired hold reply, pending payment reuse, hold summary, awaiting-confirmation execution, confirmation side reply и create-hold wrappers покрыты `payments/post_booking/cancel/reschedule`, `fresh/gazebo/prices/upsell` и stress-suite.
+- Post-booking classifier больше не должен перехватывать явную новую бронь: `а можно еще беседку забронировать?` стартует новую анкету до post-booking AI.
+- Фразы переноса с `смест...` больше не должны стартовать новую бронь из-за названия услуги.
+- Info-вопрос без активной анкеты с названием услуги (`веник в баню`, `комары`, `адрес/парковка`) не должен стартовать бронирование; deterministic info short-circuit отвечает без вопроса анкеты.
 
 ## Проверено 2026-05-27 после восстановления БД
 
@@ -84,6 +229,10 @@
 - Полный grouped suite `fresh+dates+gazebo+media+prices+upsell+time+payments+post_booking+services+waitlist+handoff+reminder+cancel+reschedule` - все checks OK после фиксов парсинга, availability-cache и hold-flow.
 - 2026-05-27 поздний прогон после фиксов памяти черновика: `compileall app scripts` - OK; полный grouped suite `fresh+dates+gazebo+media+prices+upsell+time+payments+post_booking+services+waitlist+handoff+reminder+cancel+reschedule` - OK; `scripts/dialog_stress_suite.py` - 12/12 OK.
 - 2026-05-27 вечерний прогон после фиксов duration/mixed-upsell/sync-status: `compileall app scripts` - OK; `scripts/dialog_stress_suite.py` - 13/13 OK; `local_regression_suite.py --group time --group upsell --group prices` - OK; `local_regression_suite.py --group gazebo --group services --group post_booking --group cancel --group reschedule --group fresh --group payments` - OK; `scripts/yclients_sync_status.py --strict` - OK после ручного `sync_yclients_records.py --once`.
+- 2026-05-28 после выноса grouped/swap reschedule execution и availability-flow: `compileall app scripts` - OK; `scripts/dialog_stress_suite.py` - 13/13 OK; `local_regression_suite.py --group fresh --group gazebo --group services --group prices --group upsell --group reschedule` - OK; `local_regression_suite.py --group post_booking --group payments --group cancel` - OK.
+- 2026-05-28 после выноса confirmation/hold layer: `compileall app scripts` - OK; `local_regression_suite.py --group payments --group post_booking --group cancel` - OK; `local_regression_suite.py --group cancel --group reschedule` - OK; `scripts/dialog_stress_suite.py` - 13/13 OK; `local_regression_suite.py --group fresh --group gazebo --group services --group prices --group upsell` - OK.
+- 2026-05-28 после выноса awaiting-confirmation execution: `compileall app scripts` - OK; `local_regression_suite.py --group payments --group post_booking --group cancel` - OK; `scripts/dialog_stress_suite.py` - 13/13 OK; `local_regression_suite.py --group reschedule` - OK; `local_regression_suite.py --group fresh --group gazebo --group prices --group upsell` - OK.
+- 2026-05-28 после дополнительного разреза swap-reschedule orchestration, reschedule gazebo-change options и общего availability executor: `compileall app scripts` - OK; `local_regression_suite.py --group reschedule` - OK; `local_regression_suite.py --group fresh --group gazebo --group waitlist --group services` - OK; `local_regression_suite.py --group prices --group upsell --group payments --group post_booking --group cancel --group reschedule` - OK; `scripts/dialog_stress_suite.py` - 13/13 OK; `local_regression_suite.py --group dates --group media --group time --group handoff --group reminder` - OK.
 - `load_knowledge()` доступен: загружает `client_runtime.md`, в базе найдены ключевые факты про комаров/обработку, веники/штраф, предоплату, допы, парковку и адрес.
 - YCLIENTS cleanup dry-run после удаления тестовых Telegram-записей показывает 0 bot-created кандидатов; локальный sync после чистки: `records_seen=121`, `last_error=None`.
 - В логах тестов остались наблюдения по скорости: отдельные AI-ветки занимают 4-7 секунд, но функционально сценарии прошли.
@@ -107,3 +256,12 @@
 - Cancel-flow частично вынесен из `message_handler.py`; следующий риск рядом - переносы всё ещё находятся в большом координаторе и требуют аккуратного выноса отдельным модулем.
 - Группа `reschedule` может быть слишком долгой для автоматического tool timeout; все сценарии прошли точечно, но suite нужно оптимизировать по fixture/cleanup.
 - Semantic-router ускорен компактным context, но качество нужно проверять на живых свободных формулировках: модель должна понимать смысл, а backend валидировать состояние и БД.
+# 2026-05-27 production-hardening status
+
+- Закрыто: риск двойного active hold закрыт DB-индексом, advisory lock и regression `concurrent active hold conflict`.
+- Закрыто частично: риск рассинхронизации ЮKassa снижен payment-intent flow; локальный pending коммитится до provider-call.
+- Закрыто: YCLIENTS fetch больше не держит DB transaction вокруг сетевого запроса.
+- Закрыто: raw messages сжимаются после 48 часов; regression проверяет summary и удаление старых raw messages.
+- Остаточный риск: AI semantic в отдельных stress-сценариях может занимать 30+ секунд; нужна дальнейшая оптимизация router prompt/модели и deterministic маршрутов.
+- Остаточный риск: YooKassa webhook для production все еще требует reverse proxy/HTTPS и серверные лимиты; application-level secret и body-size limit уже добавлены.
+- Остаточный риск: `message_handler.py` остается крупным координатором; следующий разрез - `post_booking_flow`, затем `reschedule_flow`/`availability_flow`.

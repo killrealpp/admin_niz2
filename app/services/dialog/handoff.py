@@ -61,7 +61,6 @@ def looks_like_handoff_needed(text: str) -> bool:
         r"(?<![а-яa-z0-9])задолбал(?:[а-яa-z]*)?(?![а-яa-z0-9])",
         r"(?<![а-яa-z0-9])хрен(?:[а-яa-z]*)?(?![а-яa-z0-9])",
         r"(?<![а-яa-z0-9])нах(?:уй|ер)?(?![а-яa-z0-9])",
-        r"(?<![а-яa-z0-9])бля(?:[а-яa-z]*)?(?![а-яa-z0-9])",
     )
     return any(re.search(pattern, normalized) for pattern in rude_patterns)
 

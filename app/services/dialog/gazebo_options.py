@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services.availability_service import load_services_map
-from app.services.dialog.formatting import duration_minutes_value, format_date_ru
+from app.services.dialog.formatting import duration_minutes_value, format_date_ru, format_rub
 
 
 def gazebo_selection_text(form_data: dict[str, Any]) -> str:
@@ -20,13 +20,14 @@ def gazebo_selection_text(form_data: dict[str, Any]) -> str:
             ]
         shown_variants = suitable if guests else available_variants
         if shown_variants:
+            date_text = format_date_ru(form_data.get("date")) if form_data.get("date") else "выбранную дату"
             if guests:
-                intro = f"Для {guests} гостей из свободных на выбранную дату вариантов подходят:"
+                intro = f"Для {guests} гостей из свободных на {date_text} вариантов подходят:"
             else:
-                intro = "На выбранную дату свободны эти варианты:"
+                intro = f"На {date_text} свободны эти варианты:"
             lines = [intro]
             for variant in shown_variants:
-                lines.append(f"- {format_gazebo_variant_line(variant)}")
+                lines.append(f"- {format_gazebo_variant_line(variant, date_value=form_data.get('date'))}")
             if guests:
                 try:
                     guests_int = int(guests)
@@ -53,8 +54,9 @@ def gazebo_selection_text(form_data: dict[str, Any]) -> str:
             return "\n".join(lines)
         if guests:
             free_names = ", ".join(str(variant.get("title") or "Беседка") for variant in available_variants)
+            date_text = format_date_ru(form_data.get("date")) if form_data.get("date") else "выбранную дату"
             return (
-                f"На выбранную дату свободны: {free_names}.\n\n"
+                f"На {date_text} свободны: {free_names}.\n\n"
                 f"Но для {guests} гостей по вместимости они не подходят, поэтому не буду предлагать тесный вариант.\n\n"
                 "Сейчас посмотрю ближайшие даты, где есть подходящие свободные варианты."
             )
@@ -68,6 +70,12 @@ def gazebo_selection_text(form_data: dict[str, Any]) -> str:
         return (
             f"Для {guests} гостей подберу беседку только из реально свободных вариантов ✅\n\n"
             "Напишите, пожалуйста, дату отдыха — проверю журнал и покажу свободные беседки с фото."
+        )
+    if form_data.get("date"):
+        return (
+            f"Дата есть: {format_date_ru(form_data.get('date'))}.\n\n"
+            "Чтобы показать нормальный выбор беседок и не предложить вариант не по вместимости, "
+            "сначала уточню количество гостей.\n\nСколько вас будет человек?"
         )
     return (
         "Беседки подбираю по свободности в журнале, чтобы не предлагать занятые варианты ✅\n\n"
@@ -95,6 +103,9 @@ def looks_like_gazebo_budget_preference(text: str) -> bool:
 
 def gazebo_budget_selection_text(form_data: dict[str, Any]) -> str | None:
     variants = available_gazebo_variant_configs(form_data)
+    checked_date = bool(form_data.get("date") and variants)
+    if not variants and not form_data.get("date"):
+        variants = (load_services_map().get("gazebo") or {}).get("variants") or []
     if not variants:
         return None
     guests = form_data.get("guests_count")
@@ -121,10 +132,16 @@ def gazebo_budget_selection_text(form_data: dict[str, Any]) -> str | None:
     ]
     if not cheapest:
         return None
-    lines = ["Из свободных подходящих вариантов самые недорогие:"]
+    if checked_date:
+        lines = ["Из свободных подходящих вариантов самые недорогие:"]
+    else:
+        lines = ["По цене из подходящих вариантов самые недорогие:"]
     for variant in cheapest:
-        lines.append(f"- {format_gazebo_variant_line(variant)}")
+        lines.append(f"- {format_gazebo_variant_line(variant, date_value=form_data.get('date'))}")
     lines.append("")
+    if not checked_date:
+        lines.append("Назовите дату — проверю по журналу, какие из них свободны.")
+        return "\n".join(lines)
     if len(cheapest) == 1:
         title = str(cheapest[0].get("title") or "этот вариант")
         lines.append(f"Можно закрепить {title}. Подойдёт?")
@@ -254,7 +271,20 @@ def clear_available_gazebo_variants(form_data: dict[str, Any]) -> dict[str, Any]
     return updated
 
 
-def format_gazebo_variant_line(variant: dict[str, Any]) -> str:
+def gazebo_discount_price(price: Any, date_value: Any) -> int | None:
+    if not price or not date_value:
+        return None
+    try:
+        weekday = datetime.fromisoformat(str(date_value)).weekday()
+        base_price = int(price)
+    except (TypeError, ValueError):
+        return None
+    if weekday in {0, 1, 2, 3}:
+        return int(base_price * 0.5)
+    return None
+
+
+def format_gazebo_variant_line(variant: dict[str, Any], *, date_value: Any = None) -> str:
     title = str(variant.get("title") or "Беседка").strip()
     capacity = variant.get("capacity_max")
     price = variant.get("price")
@@ -272,7 +302,11 @@ def format_gazebo_variant_line(variant: dict[str, Any]) -> str:
     if capacity:
         parts.append(f"до {capacity} человек")
     if price:
-        parts.append(f"{price} ₽")
+        discount_price = gazebo_discount_price(price, date_value)
+        if discount_price is not None:
+            parts.append(f"{format_rub(price)} ₽, по будней скидке 50% — {format_rub(discount_price)} ₽")
+        else:
+            parts.append(f"{format_rub(price)} ₽")
     description = description_by_title.get(normalize_gazebo_title(title))
     if description:
         parts.append(description)

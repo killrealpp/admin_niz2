@@ -1,7 +1,12 @@
 from datetime import date, datetime, time
 from typing import Any
 
+from psycopg2 import IntegrityError
 from psycopg2.extensions import connection as PgConnection
+
+
+class SlotHoldConflict(RuntimeError):
+    """Raised when another active hold already owns the requested resource/date."""
 
 
 def list_active_for_slot(
@@ -11,6 +16,7 @@ def list_active_for_slot(
     slot_date: date,
     now: datetime,
     yclients_service_id: str | None = None,
+    yclients_staff_id: str | None = None,
 ) -> list[dict[str, Any]]:
     with conn.cursor() as cur:
         sql = """
@@ -25,6 +31,9 @@ def list_active_for_slot(
         if yclients_service_id:
             sql += " AND yclients_service_id = %s"
             params.append(yclients_service_id)
+        if yclients_staff_id:
+            sql += " AND yclients_staff_id = %s"
+            params.append(yclients_staff_id)
         cur.execute(sql, params)
         return [dict(row) for row in cur.fetchall()]
 
@@ -87,40 +96,62 @@ def create(
     user_id: int,
     service_type: str,
     yclients_service_id: str | None,
+    yclients_staff_id: str | None = None,
     slot_date: date,
     slot_time: time,
     duration_minutes: int | None,
     expires_at: datetime,
 ) -> dict[str, Any]:
     with conn.cursor() as cur:
+        resource_id = (yclients_staff_id or yclients_service_id or "").strip()
+        lock_key = f"{service_type}:{resource_id}:{slot_date.isoformat()}"
+        cur.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
         cur.execute(
             """
-            INSERT INTO slot_holds (
-                conversation_id,
-                user_id,
-                service_type,
-                yclients_service_id,
-                slot_date,
-                slot_time,
-                duration_minutes,
-                status,
-                expires_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'active', %s)
-            RETURNING *
-            """,
-            (
-                conversation_id,
-                user_id,
-                service_type,
-                yclients_service_id,
-                slot_date,
-                slot_time,
-                duration_minutes,
-                expires_at,
-            ),
+            UPDATE slot_holds
+            SET status = 'expired', updated_at = NOW()
+            WHERE status = 'active'
+              AND expires_at <= NOW()
+            """
         )
-        return dict(cur.fetchone())
+        cur.execute("SAVEPOINT slot_hold_create")
+        try:
+            cur.execute(
+                """
+                INSERT INTO slot_holds (
+                    conversation_id,
+                    user_id,
+                    service_type,
+                    yclients_service_id,
+                    yclients_staff_id,
+                    slot_date,
+                    slot_time,
+                    duration_minutes,
+                    status,
+                    expires_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'active', %s)
+                RETURNING *
+                """,
+                (
+                    conversation_id,
+                    user_id,
+                    service_type,
+                    yclients_service_id,
+                    yclients_staff_id,
+                    slot_date,
+                    slot_time,
+                    duration_minutes,
+                    expires_at,
+                ),
+            )
+        except IntegrityError as exc:
+            cur.execute("ROLLBACK TO SAVEPOINT slot_hold_create")
+            cur.execute("RELEASE SAVEPOINT slot_hold_create")
+            raise SlotHoldConflict("active hold already exists for resource/date") from exc
+        row = cur.fetchone()
+        cur.execute("RELEASE SAVEPOINT slot_hold_create")
+        return dict(row)
 
 
 def cancel_matching(
@@ -191,6 +222,7 @@ def update_slot(
     *,
     hold_id: int,
     yclients_service_id: str | None,
+    yclients_staff_id: str | None = None,
     slot_date: date,
     slot_time: time,
     duration_minutes: int | None,
@@ -201,6 +233,7 @@ def update_slot(
             """
             UPDATE slot_holds
             SET yclients_service_id = %s,
+                yclients_staff_id = %s,
                 slot_date = %s,
                 slot_time = %s,
                 duration_minutes = %s,
@@ -210,6 +243,7 @@ def update_slot(
             """,
             (
                 yclients_service_id,
+                yclients_staff_id,
                 slot_date,
                 slot_time,
                 duration_minutes,

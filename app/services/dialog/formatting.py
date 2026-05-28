@@ -55,6 +55,31 @@ def format_duration(value: Any) -> str:
     return f"{minutes} минут"
 
 
+def format_time_duration_range(start_time: Any, duration: Any) -> str:
+    start_text = str(start_time or "").strip()[:5]
+    minutes = duration_minutes_value(duration)
+    if not start_text or minutes is None:
+        duration_text = format_duration(duration) if duration not in (None, "") else ""
+        return f"с {start_text} на {duration_text}".strip()
+    match = re.fullmatch(r"(\d{1,2}):(\d{2})", start_text)
+    if not match:
+        return f"с {start_text} на {format_duration(duration)}"
+    start_hour = int(match.group(1))
+    start_minute = int(match.group(2))
+    if start_hour > 23 or start_minute > 59:
+        return f"с {start_text} на {format_duration(duration)}"
+    start_total = start_hour * 60 + start_minute
+    end_total = start_total + minutes
+    end_hour = (end_total // 60) % 24
+    end_minute = end_total % 60
+    next_day = " следующего дня" if end_total >= 24 * 60 else ""
+    return (
+        f"с {start_hour:02d}:{start_minute:02d} "
+        f"до {end_hour:02d}:{end_minute:02d}{next_day} "
+        f"({format_duration(duration)})"
+    )
+
+
 def format_date_ru(value: Any) -> str:
     if not value:
         return "выбранную дату"

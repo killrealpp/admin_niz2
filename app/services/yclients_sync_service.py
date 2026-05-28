@@ -24,56 +24,86 @@ class SyncResult:
     records_upserted: int
 
 
-def sync_records(
-    conn: PgConnection,
+@dataclass
+class SyncWindow:
+    now: datetime
+    tz: ZoneInfo
+    start_day: date
+    end_day: date
+    window_start: datetime
+    window_end: datetime
+
+
+@dataclass
+class FetchedSyncRecords:
+    window: SyncWindow
+    raw_records: list[dict[str, Any]]
+
+
+def build_sync_window(
     *,
     days_back: int = 1,
     days_forward: int = 60,
     now: datetime | None = None,
-) -> SyncResult:
+) -> SyncWindow:
     settings = get_settings()
     tz = ZoneInfo(settings.app_timezone)
-    now = now.astimezone(tz) if now else datetime.now(tz)
-    start_day = now.date() - timedelta(days=days_back)
-    end_day = now.date() + timedelta(days=days_forward)
-    start_date = start_day.isoformat()
-    end_date = end_day.isoformat()
-    window_start = datetime.combine(start_day, time.min, tzinfo=tz)
-    window_end = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=tz)
+    resolved_now = now.astimezone(tz) if now else datetime.now(tz)
+    start_day = resolved_now.date() - timedelta(days=days_back)
+    end_day = resolved_now.date() + timedelta(days=days_forward)
+    return SyncWindow(
+        now=resolved_now,
+        tz=tz,
+        start_day=start_day,
+        end_day=end_day,
+        window_start=datetime.combine(start_day, time.min, tzinfo=tz),
+        window_end=datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=tz),
+    )
 
-    yclients_records_repo.mark_sync_started(conn, SYNC_NAME, now)
+
+def fetch_records(window: SyncWindow) -> FetchedSyncRecords:
     client = YClientsClient()
-    seen = 0
+    raw_records = _load_records(
+        client,
+        start_date=window.start_day.isoformat(),
+        end_date=window.end_day.isoformat(),
+    )
+    return FetchedSyncRecords(window=window, raw_records=raw_records)
+
+
+def apply_records(conn: PgConnection, fetched: FetchedSyncRecords) -> SyncResult:
+    window = fetched.window
+    yclients_records_repo.mark_sync_started(conn, SYNC_NAME, window.now)
+    seen = len(fetched.raw_records)
     upserted = 0
     try:
         yclients_records_repo.delete_records_ended_before(
             conn,
-            now - timedelta(days=3),
+            window.now - timedelta(days=3),
         )
         seen_ids: set[str] = set()
-        for raw in _load_records(client, start_date=start_date, end_date=end_date):
-            seen += 1
-            normalized = normalize_record(raw, now=now, tz=tz)
+        for raw in fetched.raw_records:
+            normalized = normalize_record(raw, now=window.now, tz=window.tz)
             if not normalized:
                 continue
             seen_ids.add(normalized["yclients_record_id"])
             yclients_records_repo.upsert_record(conn, normalized)
             yclients_records_repo.upsert_busy_interval(
                 conn,
-                _busy_interval_from_record(normalized, now),
+                _busy_interval_from_record(normalized, window.now),
             )
             upserted += 1
         if seen_ids:
             yclients_records_repo.delete_records_missing_from_sync_window(
                 conn,
-                start_at=window_start,
-                end_at=window_end,
+                start_at=window.window_start,
+                end_at=window.window_end,
                 seen_record_ids=seen_ids,
             )
         yclients_records_repo.mark_sync_finished(
             conn,
             sync_name=SYNC_NAME,
-            now=now,
+            now=window.now,
             success=True,
             records_seen=seen,
             records_upserted=upserted,
@@ -82,13 +112,47 @@ def sync_records(
     except Exception as exc:
         _mark_sync_failed_safely(
             sync_name=SYNC_NAME,
-            now=now,
+            now=window.now,
             records_seen=seen,
             records_upserted=upserted,
             error=str(exc),
         )
         raise
     return SyncResult(records_seen=seen, records_upserted=upserted)
+
+
+def sync_records_once(
+    *,
+    days_back: int = 1,
+    days_forward: int = 60,
+    now: datetime | None = None,
+) -> SyncResult:
+    window = build_sync_window(days_back=days_back, days_forward=days_forward, now=now)
+    try:
+        fetched = fetch_records(window)
+    except Exception as exc:
+        _mark_sync_failed_safely(
+            sync_name=SYNC_NAME,
+            now=window.now,
+            records_seen=0,
+            records_upserted=0,
+            error=str(exc),
+        )
+        raise
+    with get_connection() as conn:
+        return apply_records(conn, fetched)
+
+
+def sync_records(
+    conn: PgConnection,
+    *,
+    days_back: int = 1,
+    days_forward: int = 60,
+    now: datetime | None = None,
+) -> SyncResult:
+    window = build_sync_window(days_back=days_back, days_forward=days_forward, now=now)
+    fetched = fetch_records(window)
+    return apply_records(conn, fetched)
 
 
 def _mark_sync_failed_safely(

@@ -16,6 +16,7 @@ def create_pending(
     amount: Decimal,
     currency: str,
     description: str,
+    raw_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     with conn.cursor() as cur:
         cur.execute(
@@ -28,9 +29,10 @@ def create_pending(
                 amount,
                 currency,
                 description,
+                raw_payload,
                 status
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'pending')
             RETURNING *
             """,
             (
@@ -41,9 +43,38 @@ def create_pending(
                 amount,
                 currency,
                 description,
+                Json(raw_payload) if raw_payload is not None else None,
             ),
         )
         return dict(cur.fetchone())
+
+
+def find_active_for_hold_ids(
+    conn: PgConnection,
+    *,
+    conversation_id: int,
+    provider: str,
+    hold_ids: list[int],
+) -> dict[str, Any] | None:
+    wanted = sorted(int(item) for item in hold_ids)
+    if not wanted:
+        return None
+    for payment in list_for_conversation(conn, conversation_id=conversation_id):
+        if payment.get("provider") != provider:
+            continue
+        if payment.get("status") not in {"pending", "waiting_for_capture"}:
+            continue
+        raw_payload = payment.get("raw_payload") or {}
+        if not isinstance(raw_payload, dict):
+            continue
+        payment_hold_ids = sorted(
+            int(item)
+            for item in raw_payload.get("hold_ids") or []
+            if str(item).isdigit()
+        )
+        if payment_hold_ids == wanted:
+            return payment
+    return None
 
 
 def attach_provider_response(

@@ -89,6 +89,12 @@ async def notify_paid_payments_once(bot: Bot) -> None:
                 "Skip paid notification until YCLIENTS record is ready payment_id=%s",
                 payment.get("id"),
             )
+            await _notify_paid_payment_waiting_for_journal_once(
+                bot,
+                payment,
+                chat_id=chat_id,
+                bookings=bookings,
+            )
             continue
         text = _paid_notification_text(payment)
         media_paths = media_for_bookings(bookings)
@@ -407,6 +413,92 @@ async def notify_admin_about_handoffs(bot: Bot) -> None:
 def _payment_journal_ready(conn, payment: dict) -> bool:
     bookings = _payment_bookings(conn, payment)
     return bool(bookings) and all(booking.get("yclients_record_id") for booking in bookings)
+
+
+async def _notify_paid_payment_waiting_for_journal_once(
+    bot: Bot,
+    payment: dict,
+    *,
+    chat_id: str,
+    bookings: list[dict],
+) -> None:
+    with get_connection() as conn:
+        if _journal_pending_notification_sent(conn, payment):
+            return
+    text = (
+        "Оплата поступила ✅\n\n"
+        "Сейчас закрепляю запись в журнале. Обычно это занимает пару минут. "
+        "Финальное подтверждение пришлю сюда, когда запись будет создана."
+    )
+    try:
+        await bot.send_message(chat_id=chat_id, text=text)
+    except (TelegramBadRequest, TelegramForbiddenError):
+        logger.exception(
+            "Paid journal-pending notification cannot be delivered payment_id=%s chat_id=%s",
+            payment.get("id"),
+            chat_id,
+        )
+        return
+    except Exception:
+        logger.exception(
+            "Failed to send journal-pending paid notification payment_id=%s chat_id=%s",
+            payment.get("id"),
+            chat_id,
+        )
+        return
+    with get_connection() as conn:
+        messages_repo.create(
+            conn,
+            conversation_id=payment["conversation_id"],
+            sender="assistant",
+            text=text,
+            raw_payload={
+                "event": "payment_paid_journal_pending",
+                "payment_id": payment["id"],
+            },
+        )
+        system_logs_repo.create(
+            conn,
+            level="warning",
+            event_type="payment_paid_journal_pending",
+            message="paid payment is waiting for YCLIENTS record",
+            conversation_id=payment.get("conversation_id"),
+            payload={
+                "payment_id": payment.get("id"),
+                "provider_payment_id": payment.get("provider_payment_id"),
+                "booking_ids": [booking.get("id") for booking in bookings],
+                "yclients_errors": [
+                    booking.get("yclients_create_error")
+                    for booking in bookings
+                    if booking.get("yclients_create_error")
+                ],
+            },
+        )
+    if any(booking.get("yclients_create_error") for booking in bookings):
+        await notify_admin_text(
+            bot,
+            (
+                "Оплата получена, но запись в YCLIENTS пока не создана.\n"
+                f"Платеж #{payment.get('id')}, сумма: {payment.get('amount')} ₽.\n"
+                "Автосоздание будет повторяться; если ошибка не уйдет, проверьте заявку вручную."
+            ),
+        )
+
+
+def _journal_pending_notification_sent(conn, payment: dict) -> bool:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM messages
+            WHERE conversation_id = %s
+              AND raw_payload->>'event' = 'payment_paid_journal_pending'
+              AND raw_payload->>'payment_id' = %s
+            LIMIT 1
+            """,
+            (payment.get("conversation_id"), str(payment.get("id"))),
+        )
+        return cur.fetchone() is not None
 
 
 def _payment_bookings(conn, payment: dict) -> list[dict]:

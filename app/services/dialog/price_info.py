@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from app.core.config import get_settings
@@ -231,11 +232,71 @@ def price_reply_if_known(
     title_has_duration = "час" in str(title).lower()
     duration_text = f" на {format_duration(duration)}" if duration and not title_has_duration else ""
     prepayment = format_rub(get_settings().prepayment_amount_rub)
+    price_text = f"По текущей карте услуг {title.lower()} {date_text}{duration_text} стоит {format_rub(price)} ₽."
+    if form_data.get("service_type") == "gazebo" and form_data.get("date"):
+        try:
+            weekday = datetime.fromisoformat(str(form_data.get("date"))).weekday()
+        except ValueError:
+            weekday = None
+        if weekday in {0, 1, 2, 3}:
+            discount_price = int(int(price) * 0.5)
+            price_text = (
+                f"На {date_text} действует будняя скидка 50% на беседки ✅\n\n"
+                f"{title}: базовая цена {format_rub(price)} ₽, со скидкой {format_rub(discount_price)} ₽."
+            )
     return (
-        f"По текущей карте услуг {title.lower()} {date_text}{duration_text} стоит {format_rub(price)} ₽.\n\n"
+        f"{price_text}\n\n"
         f"Предоплата для закрепления брони — {prepayment} ₽, остаток оплачивается на месте.\n\n"
         f"{question or 'Если всё верно, можем продолжать оформление.'}"
     )
+
+
+def discount_reply_if_known(
+    text: str,
+    form_data: dict[str, Any],
+    *,
+    selected_variant_config: SelectedVariantConfig,
+) -> str | None:
+    normalized = text.lower().replace("ё", "е")
+    if not any(marker in normalized for marker in ("скид", "акци", "со скид")):
+        return None
+
+    _, question = next_question(form_data)
+    service_type = form_data.get("service_type")
+    if service_type and service_type != "gazebo":
+        reply = (
+            "Скидка 50% в базе указана именно на аренду беседок с понедельника по четверг.\n\n"
+            "По выбранной услуге отдельную скидку не обещаю без подтверждения."
+        )
+        return f"{reply}\n\n{question}" if question and _should_append_question(form_data, "discount") else reply
+
+    if service_type == "gazebo" and form_data.get("service_variant") and form_data.get("date"):
+        variant = selected_variant_config(form_data)
+        price = variant.get("price")
+        title = variant.get("title") or form_data.get("service_variant") or "выбранная беседка"
+        try:
+            weekday = datetime.fromisoformat(str(form_data.get("date"))).weekday()
+        except ValueError:
+            weekday = None
+        if price and weekday in {0, 1, 2, 3}:
+            discount_price = int(int(price) * 0.5)
+            reply = (
+                f"Да, на {format_date_ru(form_data.get('date'))} действует будняя скидка 50% на беседки ✅\n\n"
+                f"{title}: базовая цена {format_rub(price)} ₽, со скидкой {format_rub(discount_price)} ₽."
+            )
+            return f"{reply}\n\n{question}" if question and _should_append_question(form_data, "discount") else reply
+        if price and weekday in {4, 5, 6}:
+            reply = (
+                f"Скидка 50% на беседки действует с понедельника по четверг.\n\n"
+                f"На {format_date_ru(form_data.get('date'))} для {str(title).lower()} ориентир по базе — {format_rub(price)} ₽."
+            )
+            return f"{reply}\n\n{question}" if question and _should_append_question(form_data, "discount") else reply
+
+    reply = (
+        "На беседки действует скидка 50% с понедельника по четверг.\n\n"
+        "Чтобы точно посчитать сумму со скидкой, нужна дата и выбранная беседка."
+    )
+    return f"{reply}\n\n{question}" if question and _should_append_question(form_data, "discount") else reply
 
 
 def _should_append_question(form_data: dict[str, Any], _context: str) -> bool:

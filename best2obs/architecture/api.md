@@ -1,5 +1,13 @@
 # API / Integrations
 
+## 2026-05-27 YooKassa webhook hardening
+
+- `app/services/yookassa_webhook_runner.py` оставлен как встроенный lightweight webhook listener, который стартует вместе с `main.py`, если `YOOKASSA_WEBHOOK_ENABLED=true`.
+- Для production (`APP_ENV=production/prod`) теперь обязательно нужен `YOOKASSA_WEBHOOK_SECRET`; без него server fail-fast не стартует.
+- Входящий POST проверяет path, secret (`X-Webhook-Secret` или query `secret`) через constant-time compare, обязательный `Content-Length`, лимит `YOOKASSA_WEBHOOK_MAX_BODY_BYTES`, непустое/полное тело и JSON-object.
+- Это снижает риск мусорных/слишком больших запросов, но наружный production всё равно должен идти через reverse proxy + HTTPS + firewall/body limits на уровне сервера.
+- Smoke: `python scripts/yookassa_webhook_hardening_smoke.py`.
+
 ## Telegram
 
 Библиотека: `aiogram`.

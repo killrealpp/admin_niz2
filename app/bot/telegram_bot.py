@@ -35,6 +35,7 @@ from app.services.yclients_sync_runner import run_yclients_sync_loop
 logger = logging.getLogger(__name__)
 MEDIA_SEND_TIMEOUT_SECONDS = 45
 AUTO_MEDIA_RESEND_AFTER_SECONDS = 12 * 60 * 60
+_PROCESSING_LOCKS: dict[str, asyncio.Lock] = {}
 
 
 async def on_start(message: Message) -> None:
@@ -84,7 +85,7 @@ async def on_text(message: Message) -> None:
             (message.text or message.caption or "")[:200],
         )
         incoming = normalize_telegram_message(message)
-        processing_task = asyncio.create_task(asyncio.to_thread(handle_incoming, incoming))
+        processing_task = asyncio.create_task(_process_incoming_with_lock(incoming))
         typing_task = asyncio.create_task(_show_typing_until_done(message, processing_task))
         try:
             reply = await processing_task
@@ -128,7 +129,7 @@ async def on_voice(message: Message) -> None:
         )
 
         incoming = normalize_telegram_voice_message(message, transcribed_text)
-        processing_task = asyncio.create_task(asyncio.to_thread(handle_incoming, incoming))
+        processing_task = asyncio.create_task(_process_incoming_with_lock(incoming))
         typing_task = asyncio.create_task(_show_typing_until_done(message, processing_task))
         try:
             reply = await processing_task
@@ -153,6 +154,13 @@ async def _show_typing_until_done(message: Message, task: asyncio.Task) -> None:
             action=ChatAction.TYPING,
         )
         await asyncio.sleep(4)
+
+
+async def _process_incoming_with_lock(incoming) -> str:
+    key = f"{incoming.channel}:{incoming.external_user_id}"
+    lock = _PROCESSING_LOCKS.setdefault(key, asyncio.Lock())
+    async with lock:
+        return await asyncio.to_thread(handle_incoming, incoming)
 
 
 def _schedule_related_media(message: Message, channel: str, external_user_id: str, text: str, reply: str) -> None:

@@ -99,7 +99,10 @@ def list_for_conversation(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            SELECT
+                b.*,
+                sh.yclients_service_id AS hold_yclients_service_id,
+                sh.yclients_staff_id AS hold_yclients_staff_id
             FROM bookings b
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
             WHERE b.conversation_id = %s
@@ -120,6 +123,7 @@ def list_active_for_conversation(
             """
             SELECT b.*,
                    sh.yclients_service_id AS hold_yclients_service_id,
+                   sh.yclients_staff_id AS hold_yclients_staff_id,
                    yr.yclients_record_id AS synced_yclients_record_id,
                    yr.status AS synced_yclients_status
             FROM bookings b
@@ -152,6 +156,7 @@ def list_active_for_user(
             f"""
             SELECT b.*,
                    sh.yclients_service_id AS hold_yclients_service_id,
+                   sh.yclients_staff_id AS hold_yclients_staff_id,
                    yr.yclients_record_id AS synced_yclients_record_id,
                    yr.status AS synced_yclients_status
             FROM bookings b
@@ -187,6 +192,7 @@ def list_future_active_for_user(
             f"""
             SELECT b.*,
                    sh.yclients_service_id AS hold_yclients_service_id,
+                   sh.yclients_staff_id AS hold_yclients_staff_id,
                    yr.yclients_record_id AS synced_yclients_record_id,
                    yr.status AS synced_yclients_status
             FROM bookings b
@@ -464,7 +470,10 @@ def list_waiting_reminder_response_for_user(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            SELECT
+                b.*,
+                sh.yclients_service_id AS hold_yclients_service_id,
+                sh.yclients_staff_id AS hold_yclients_staff_id
             FROM bookings b
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
             WHERE (b.user_id = %s{phone_filter})
@@ -488,14 +497,17 @@ def list_paid_without_yclients_record(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            SELECT
+                b.*,
+                sh.yclients_service_id AS hold_yclients_service_id,
+                sh.yclients_staff_id AS hold_yclients_staff_id
             FROM bookings b
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
             WHERE b.payment_status = 'paid'
               AND b.yclients_record_id IS NULL
               AND (
                   b.yclients_create_error IS NULL
-                  OR b.updated_at < NOW() - INTERVAL '5 minutes'
+                  OR b.updated_at < NOW() - INTERVAL '30 seconds'
               )
               AND b.status NOT IN ('cancelled', 'journal_missing')
             ORDER BY b.updated_at ASC, b.id ASC
@@ -555,7 +567,10 @@ def get_by_id(conn: PgConnection, *, booking_id: int) -> dict[str, Any] | None:
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT b.*, sh.yclients_service_id AS hold_yclients_service_id
+            SELECT
+                b.*,
+                sh.yclients_service_id AS hold_yclients_service_id,
+                sh.yclients_staff_id AS hold_yclients_staff_id
             FROM bookings b
             LEFT JOIN slot_holds sh ON sh.id = b.slot_hold_id
             WHERE b.id = %s

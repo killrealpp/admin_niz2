@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 from http import HTTPStatus
@@ -18,6 +19,8 @@ from app.services.payment_status_runner import notify_paid_payments_once
 
 logger = logging.getLogger(__name__)
 
+_PRODUCTION_ENVS = {"prod", "production"}
+
 
 class _WebhookServer(ThreadingHTTPServer):
     bot: Bot | None
@@ -33,6 +36,8 @@ def start_yookassa_webhook_server(
     if not settings.yookassa_webhook_enabled:
         logger.info("YooKassa webhook server disabled")
         return None
+    if settings.app_env.lower() in _PRODUCTION_ENVS and not settings.yookassa_webhook_secret:
+        raise RuntimeError("YOOKASSA_WEBHOOK_SECRET is required when APP_ENV=production")
 
     server = _WebhookServer(
         (settings.yookassa_webhook_host, settings.yookassa_webhook_port),
@@ -70,16 +75,30 @@ class _YooKassaWebhookHandler(BaseHTTPRequestHandler):
         if parsed.path != settings.yookassa_webhook_path:
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "not_found"})
             return
-        if settings.yookassa_webhook_secret:
-            token = self.headers.get("X-Webhook-Secret") or parse_qs(parsed.query).get("secret", [""])[0]
-            if token != settings.yookassa_webhook_secret:
-                self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "forbidden"})
-                return
+        if not _is_valid_secret(settings.yookassa_webhook_secret, self.headers.get("X-Webhook-Secret"), parsed.query):
+            self._send_json(HTTPStatus.FORBIDDEN, {"ok": False, "error": "forbidden"})
+            return
 
         try:
-            length = int(self.headers.get("Content-Length") or "0")
+            length_header = self.headers.get("Content-Length")
+            if length_header is None:
+                self._send_json(HTTPStatus.LENGTH_REQUIRED, {"ok": False, "error": "content_length_required"})
+                return
+            length = int(length_header)
+            if length <= 0:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "empty_body"})
+                return
+            if length > settings.yookassa_webhook_max_body_bytes:
+                self._send_json(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, {"ok": False, "error": "payload_too_large"})
+                return
             body = self.rfile.read(length)
+            if len(body) != length:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "incomplete_body"})
+                return
             payload = json.loads(body.decode("utf-8"))
+            if not isinstance(payload, dict):
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json"})
+                return
         except Exception:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": "invalid_json"})
             return
@@ -105,8 +124,16 @@ class _YooKassaWebhookHandler(BaseHTTPRequestHandler):
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(body)
+
+
+def _is_valid_secret(expected_secret: str, header_token: str | None, query: str) -> bool:
+    if not expected_secret:
+        return True
+    token = header_token or parse_qs(query).get("secret", [""])[0]
+    return hmac.compare_digest(token, expected_secret)
 
 
 def _log_notify_result(future: asyncio.Future) -> None:

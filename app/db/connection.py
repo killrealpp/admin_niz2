@@ -6,6 +6,7 @@ from typing import Generator
 
 import psycopg2
 from psycopg2 import pool
+from psycopg2 import InterfaceError
 from psycopg2.extensions import connection as PgConnection
 from psycopg2.extras import RealDictCursor
 
@@ -86,7 +87,11 @@ def _checkout_connection() -> tuple[PgConnection, bool]:
     for attempt in range(3):
         try:
             with trace_span("db.pool.checkout"):
-                return db_pool.getconn(), True
+                conn = db_pool.getconn()
+                if conn.closed:
+                    db_pool.putconn(conn, close=True)
+                    raise psycopg2.OperationalError("Database pool returned a closed connection")
+                return conn, True
         except psycopg2.OperationalError as exc:
             last_error = exc
             logger.warning("Database pool checkout failed attempt=%s error=%s", attempt + 1, exc)
@@ -117,8 +122,12 @@ def get_connection() -> Generator[PgConnection, None, None]:
         with trace_span("db.commit"):
             conn.commit()
     except Exception:
-        with trace_span("db.rollback"):
-            conn.rollback()
+        if not conn.closed:
+            try:
+                with trace_span("db.rollback"):
+                    conn.rollback()
+            except InterfaceError:
+                logger.warning("Database rollback skipped because connection is already closed")
         raise
     finally:
         with trace_span("db.close"):

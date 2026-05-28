@@ -122,6 +122,7 @@ def _check_local_availability(
         slot_date=slot_date,
         now=now,
         yclients_service_id=variant_filter.get("yclients_service_id") if variant_filter else None,
+        yclients_staff_id=variant_filter.get("yclients_staff_id") if variant_filter else None,
     )
     if active_holds and not (service_type == "gazebo" and not variant_filter):
         return AvailabilityResult(
@@ -174,9 +175,14 @@ def _check_local_availability(
                 str(item.get("yclients_service_id") or "")
                 for item in active_holds
             }
+            held_staff_ids = {
+                str(item.get("yclients_staff_id") or "")
+                for item in active_holds
+            }
             free_variants = [
                 variant for variant in variants
                 if str(variant.get("yclients_staff_id") or "") not in busy_staff_ids
+                and str(variant.get("yclients_staff_id") or "") not in held_staff_ids
                 and str(variant.get("yclients_service_id") or "") not in held_service_ids
             ]
             if free_variants:
@@ -186,7 +192,7 @@ def _check_local_availability(
                         start_at += timedelta(days=1)
                     end_at = start_at + timedelta(minutes=requested_minutes)
                     slots = [
-                        f"{variant.get('title') or title}: {_format_time(start_at)}-{_format_time(end_at)}"
+                        f"{variant.get('title') or title}: {_format_period(start_at, end_at)}"
                         for variant in free_variants[:8]
                     ]
                 else:
@@ -212,7 +218,7 @@ def _check_local_availability(
             return AvailabilityResult(
                 True,
                 f"Дата для «{title}» свободна по локальному календарю.",
-                [f"{title}: {_format_time(start_at)}-{_format_time(end_at)}"],
+                [f"{title}: {_format_period(start_at, end_at)}"],
             )
         return AvailabilityResult(
             True,
@@ -245,7 +251,7 @@ def _check_local_availability(
                 start_at += timedelta(days=1)
             end_at = start_at + timedelta(minutes=requested_minutes)
             if any(start_at >= free_start and end_at <= free_end for free_start, free_end in windows):
-                slots.append(f"{variant.get('title') or title}: {_format_time(start_at)}-{_format_time(end_at)}")
+                slots.append(f"{variant.get('title') or title}: {_format_period(start_at, end_at)}")
             continue
         if requested_minutes:
             possible = _possible_starts(windows, requested_minutes)
@@ -253,7 +259,7 @@ def _check_local_availability(
                 slots.append(f"{variant.get('title') or title}: {_format_slots(possible)}")
             continue
         shown_windows = [
-            f"{_format_time(start)}-{_format_time(end)}"
+            _format_period(start, end)
             for start, end in windows
             if (end - start).total_seconds() >= 30 * 60
         ]
@@ -390,6 +396,11 @@ def _possible_starts(windows: list[tuple[datetime, datetime]], duration_minutes:
 
 def _format_time(value: datetime) -> str:
     return value.strftime("%H:%M")
+
+
+def _format_period(start: datetime, end: datetime) -> str:
+    suffix = " следующего дня" if end.date() > start.date() else ""
+    return f"{_format_time(start)}-{_format_time(end)}{suffix}"
 
 
 def _format_slots(slots: list[str]) -> str:

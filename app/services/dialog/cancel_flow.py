@@ -1,17 +1,38 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Callable
 
 from app.services.dialog.booking_texts import booking_line_short, booking_object_title
 from app.services.dialog.formatting import format_date_ru
+
+CancelFlowResult = tuple[str, str, str, str | None, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class CancelFlowCallbacks:
+    active_user_bookings: Callable[..., list[dict[str, Any]]]
+    get_booking_by_id: Callable[..., dict[str, Any] | None]
+    cancel_booking_by_id: Callable[..., Any]
+    delete_yclients_record_for_booking: Callable[..., bool]
+    get_user_by_id: Callable[..., dict[str, Any] | None]
+    start_user_handoff: Callable[..., Any]
+    handoff_reply: Callable[[], str]
+    confirmation_yes: Callable[[str], bool]
+    confirmation_no: Callable[[str], bool]
 
 
 def wants_cancel_booking(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
     if "доп" in normalized:
         return False
+    if (
+        any(marker in normalized for marker in ("откаж", "отказ"))
+        and any(marker in normalized for marker in ("брон", "заявк", "запис", "оформ"))
+    ):
+        return True
     negative_cancel = any(
         marker in normalized
         for marker in (
@@ -87,6 +108,140 @@ def select_cancel_bookings(
         return semantic_matches
 
     return bookings if len(bookings) == 1 else []
+
+
+def start_cancel_booking_flow(
+    conn: Any,
+    conversation: dict[str, Any],
+    text: str,
+    form_data: dict[str, Any],
+    status: str,
+    now: datetime,
+    callbacks: CancelFlowCallbacks,
+) -> CancelFlowResult:
+    bookings = callbacks.active_user_bookings(conn, conversation, form_data, now)
+    if not bookings:
+        return (
+            "Активной брони для отмены не нашла. Если нужно оформить новую бронь или проверить дату, напишите услугу и дату.",
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
+
+    selected = select_cancel_bookings(bookings, None, text)
+    booking = selected[0] if len(selected) == 1 else None
+    flow: dict[str, Any] = {"stage": "confirm_cancel"}
+    if len(selected) > 1:
+        flow["booking_ids"] = [booking["id"] for booking in selected]
+    elif booking:
+        flow["booking_id"] = booking.get("id")
+    else:
+        flow["booking_id"] = None
+
+    updated = {**form_data, "cancel_flow": flow}
+    if len(selected) > 1:
+        return cancel_many_confirmation_reply(selected, now), status, "reserved", "payment_status", updated
+    if not booking:
+        return cancel_selection_prompt(bookings), status, "reserved", "payment_status", updated
+    return cancel_confirmation_reply(booking, now), status, "reserved", "payment_status", updated
+
+
+def handle_cancel_booking_flow(
+    conn: Any,
+    conversation: dict[str, Any],
+    text: str,
+    form_data: dict[str, Any],
+    now: datetime,
+    callbacks: CancelFlowCallbacks,
+) -> CancelFlowResult:
+    bookings = callbacks.active_user_bookings(conn, conversation, form_data, now)
+    status = (
+        "payment_paid"
+        if conversation.get("status") == "payment_paid" or any(booking.get("payment_status") == "paid" for booking in bookings)
+        else "reserved"
+    )
+    flow = dict(form_data.get("cancel_flow") or {})
+    flow_booking_ids = [int(item) for item in (flow.get("booking_ids") or [])]
+    if flow.get("booking_id"):
+        flow_booking_ids.append(int(flow["booking_id"]))
+    if flow_booking_ids:
+        known_ids = {int(booking["id"]) for booking in bookings}
+        for booking_id in flow_booking_ids:
+            if booking_id in known_ids:
+                continue
+            booking = callbacks.get_booking_by_id(conn, booking_id)
+            if booking and booking.get("status") != "cancelled":
+                bookings.append(booking)
+                known_ids.add(booking_id)
+    selected = select_cancel_bookings(bookings, flow, text)
+    booking = selected[0] if len(selected) == 1 else None
+
+    if not selected:
+        flow = flow | {"stage": "confirm_cancel"}
+        return cancel_selection_prompt(bookings), status, "reserved", "payment_status", {**form_data, "cancel_flow": flow}
+
+    if not flow.get("booking_id") and not flow.get("booking_ids"):
+        if len(selected) > 1:
+            flow = flow | {"booking_ids": [item["id"] for item in selected], "stage": "confirm_cancel"}
+            return cancel_many_confirmation_reply(selected, now), status, "reserved", "payment_status", {
+                **form_data,
+                "cancel_flow": flow,
+            }
+        flow = flow | {"booking_id": booking["id"], "stage": "confirm_cancel"}
+        return cancel_confirmation_reply(booking, now), status, "reserved", "payment_status", {
+            **form_data,
+            "cancel_flow": flow,
+        }
+
+    if callbacks.confirmation_no(text):
+        cleared = {**form_data, "cancel_flow": None}
+        return "Хорошо, бронь оставила без изменений ✅", status, "reserved", "payment_status", cleared
+
+    if not callbacks.confirmation_yes(text):
+        if len(selected) > 1:
+            return cancel_many_confirmation_reply(selected, now), status, "reserved", "payment_status", {
+                **form_data,
+                "cancel_flow": flow,
+            }
+        return cancel_confirmation_reply(booking, now), status, "reserved", "payment_status", {
+            **form_data,
+            "cancel_flow": flow,
+        }
+
+    if len(selected) > 1:
+        for item in selected:
+            old_booking = callbacks.get_booking_by_id(conn, int(item["id"])) or item
+            if not callbacks.delete_yclients_record_for_booking(conn, old_booking):
+                _handoff_on_cancel_error(
+                    conn,
+                    conversation=conversation,
+                    text=text,
+                    now=now,
+                    reason="техническая ошибка: не удалось удалить несколько записей в журнале",
+                    callbacks=callbacks,
+                )
+                return callbacks.handoff_reply(), "handoff", "handoff", "handoff", form_data
+        for item in selected:
+            callbacks.cancel_booking_by_id(conn, int(item["id"]), now)
+        cleared = {**form_data, "cancel_flow": None}
+        return cancel_many_done_reply(selected, now), "payment_paid", "reserved", "payment_status", cleared
+
+    old_booking = callbacks.get_booking_by_id(conn, int(booking["id"])) or booking
+    if not callbacks.delete_yclients_record_for_booking(conn, old_booking):
+        _handoff_on_cancel_error(
+            conn,
+            conversation=conversation,
+            text=text,
+            now=now,
+            reason="техническая ошибка: не удалось удалить запись в журнале",
+            callbacks=callbacks,
+        )
+        return callbacks.handoff_reply(), "handoff", "handoff", "handoff", form_data
+
+    callbacks.cancel_booking_by_id(conn, int(booking["id"]), now)
+    cleared = {**form_data, "cancel_flow": None}
+    return cancel_done_reply(booking, now), "payment_paid", "reserved", "payment_status", cleared
 
 
 def cancel_selection_prompt(bookings: list[dict[str, Any]]) -> str:
@@ -272,6 +427,27 @@ def _mentions_booking_date(normalized: str, booking: dict[str, Any]) -> bool:
     if not booking_date:
         return False
     return format_date_ru(str(booking_date)).lower().replace("ё", "е") in normalized
+
+
+def _handoff_on_cancel_error(
+    conn: Any,
+    *,
+    conversation: dict[str, Any],
+    text: str,
+    now: datetime,
+    reason: str,
+    callbacks: CancelFlowCallbacks,
+) -> None:
+    user = callbacks.get_user_by_id(conn, int(conversation["user_id"]))
+    if user:
+        callbacks.start_user_handoff(
+            conn,
+            user=user,
+            conversation_id=conversation["id"],
+            text=text,
+            now=now,
+            reason=reason,
+        )
 
 
 def _ordinal_index(text: str) -> int | None:

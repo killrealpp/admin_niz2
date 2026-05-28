@@ -76,6 +76,14 @@ def missing_fields(form_data: dict[str, Any], *, for_booking: bool = True) -> li
         missing.remove("date")
         insert_at = missing.index("service_variant")
         missing.insert(insert_at, "date")
+    if (
+        form_data.get("service_type") == "gazebo"
+        and "service_variant" in missing
+        and "guests_count" in missing
+    ):
+        missing.remove("guests_count")
+        insert_at = missing.index("service_variant")
+        missing.insert(insert_at, "guests_count")
     return missing
 
 

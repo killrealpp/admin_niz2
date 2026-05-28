@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.services.availability_service import load_services_map
-from app.services.dialog.formatting import format_date_ru, format_duration, hours_from_minutes
+from app.services.dialog.formatting import format_date_ru, format_time_duration_range, hours_from_minutes
 
 
 def handoff_reply() -> str:
@@ -24,7 +24,7 @@ def confirmation_reply_text(form_data: dict[str, Any]) -> str:
         "Проверила заявку ✅\n\n"
         f"📍 Объект: {object_text}\n"
         f"📅 Дата: {format_date_ru(form_data.get('date'))}\n"
-        f"🕒 Время: с {form_data.get('time')} на {format_duration(form_data.get('duration'))}\n"
+        f"🕒 Время: {format_time_duration_range(form_data.get('time'), form_data.get('duration'))}\n"
         f"👥 Гостей: {guests}\n"
         f"🎉 Формат: {event_format}\n"
         f"➕ Допы: {extras}\n"
@@ -39,8 +39,8 @@ def format_hold_summary(holds: list[dict[str, Any]], form_data: dict[str, Any]) 
     for index, hold in enumerate(holds, start=1):
         title = (load_services_map().get(hold.get("service_type")) or {}).get("title") or hold.get("service_type")
         slot_time = str(hold.get("slot_time") or "")[:5]
-        duration = format_duration(hold.get("duration_minutes"))
-        lines.append(f"{index}. {title}: {format_date_ru(hold.get('slot_date'))}, с {slot_time} на {duration}.")
+        period = format_time_duration_range(slot_time, hold.get("duration_minutes"))
+        lines.append(f"{index}. {title}: {format_date_ru(hold.get('slot_date'))}, {period}.")
     phone = form_data.get("phone")
     if phone:
         lines.append(f"Номер {phone} сохранил для связи по брони.")
@@ -100,12 +100,12 @@ def format_booking_summary(bookings: list[dict[str, Any]]) -> str:
     lines = [f"У вас {count} {booking_word(count)}:"]
     for index, booking in enumerate(active, start=1):
         time_text = str(booking.get("booking_time") or "")[:5]
-        duration = format_duration(booking.get("duration_minutes"))
+        period = format_time_duration_range(time_text, booking.get("duration_minutes"))
         guests = booking.get("guests_count")
         guests_text = f", гостей: {guests}" if guests else ""
         lines.append(
             f"{index}. {booking_object_title(booking)}: "
-            f"{format_date_ru(booking.get('booking_date'))}, с {time_text} на {duration}"
+            f"{format_date_ru(booking.get('booking_date'))}, {period}"
             f"{guests_text}. {booking_status_text(booking)}."
         )
     return "\n".join(lines)
@@ -127,8 +127,8 @@ def payment_reply_text(payment: dict[str, Any] | None) -> str:
 
 def booking_line_short(booking: dict[str, Any]) -> str:
     title = booking_object_title(booking)
+    period = format_time_duration_range(str(booking.get("booking_time"))[:5], hours_from_minutes(booking.get("duration_minutes")))
     return (
         f"{title}: {format_date_ru(str(booking.get('booking_date')))}, "
-        f"с {str(booking.get('booking_time'))[:5]} "
-        f"на {format_duration(hours_from_minutes(booking.get('duration_minutes')))}"
+        f"{period}"
     )

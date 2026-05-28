@@ -130,6 +130,13 @@ def upsert_local_busy_interval_for_booking(
     service_id, staff_id = _resolve_yclients_ids(booking)
     if not staff_id:
         return
+    source_record_id = str(booking.get("id") or booking.get("yclients_record_id") or "")
+    if source_record_id:
+        yclients_records_repo.delete_busy_interval(
+            conn,
+            source=source,
+            source_record_id=source_record_id,
+        )
     start_at = _booking_datetime(booking)
     duration = int(booking.get("duration_minutes") or 60)
     end_at = start_at + timedelta(minutes=duration)
@@ -138,7 +145,7 @@ def upsert_local_busy_interval_for_booking(
         conn,
         {
             "source": source,
-            "source_record_id": str(booking.get("id") or booking.get("yclients_record_id") or ""),
+            "source_record_id": source_record_id,
             "service_type": str(booking.get("service_type") or "unknown"),
             "yclients_service_id": service_id,
             "yclients_staff_id": staff_id,
@@ -212,8 +219,11 @@ def _resolve_yclients_ids(booking: dict[str, Any]) -> tuple[str, str]:
 
     candidates = []
     hold_service_id = str(booking.get("hold_yclients_service_id") or "")
+    hold_staff_id = str(booking.get("hold_yclients_staff_id") or "")
     for variant in variants:
         if hold_service_id and str(variant.get("yclients_service_id") or "") != hold_service_id:
+            continue
+        if hold_staff_id and str(variant.get("yclients_staff_id") or "") != hold_staff_id:
             continue
         weekdays = variant.get("weekdays")
         if weekdays and weekday is not None and weekday not in weekdays:
@@ -221,6 +231,11 @@ def _resolve_yclients_ids(booking: dict[str, Any]) -> tuple[str, str]:
         if duration and variant.get("duration_minutes") and int(variant["duration_minutes"]) != int(duration):
             continue
         candidates.append(variant)
+    if not candidates and (hold_service_id or hold_staff_id):
+        return (
+            hold_service_id or str(config.get("yclients_service_id") or ""),
+            hold_staff_id or str(config.get("yclients_staff_id") or ""),
+        )
     if not candidates:
         candidates = variants or [config]
 

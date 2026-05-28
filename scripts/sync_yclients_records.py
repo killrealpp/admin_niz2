@@ -10,20 +10,17 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.core.logger import setup_logging  # noqa: E402
-from app.db.connection import get_connection  # noqa: E402
 from app.integrations.yclients_client import YClientsError  # noqa: E402
-from app.services.yclients_sync_service import sync_records  # noqa: E402
+from app.services.yclients_sync_service import sync_records_once  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 
 def run_once(days_back: int, days_forward: int) -> None:
-    with get_connection() as conn:
-        result = sync_records(
-            conn,
-            days_back=days_back,
-            days_forward=days_forward,
-        )
+    result = sync_records_once(
+        days_back=days_back,
+        days_forward=days_forward,
+    )
     print(
         f"OK: seen={result.records_seen} upserted={result.records_upserted} "
         f"window=-{days_back}/+{days_forward} days"
