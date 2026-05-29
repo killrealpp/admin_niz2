@@ -1,5 +1,37 @@
 # Backend
 
+## 2026-05-29 best3 core parity architecture
+
+- `best3` сохраняет agent-first контракт: AI выбирает `intent/action/draft_patch`, но backend валидирует patch и выполняет только safe tools. Слоты, оплата, hold, booking и YCLIENTS остаются backend-источником правды.
+- Core-parity с `best2` перенесён не через копирование веток `message_handler.py`, а через компактные правила: natural parsing, state-safe patch, service switch cleanup, info+patch, payment/current-booking routing и active/expired hold guards.
+- `answer_info` в `best3` теперь может сначала безопасно применить `draft_patch`, а потом ответить из `best2info`; это закрывает mixed cases вроде `хочу беседку, а с детьми можно?`.
+- Смена услуги очищает slot-поля старой заявки (`service_variant`, date/time/duration, guests, format, upsells, metadata hold), сохраняя контактные поля. Это переносит best2-правило `а я же хочу баньку` в чистый tool-layer.
+- Payment/hold safety: повторная ссылка переиспользует pending payment; истёкший hold не конвертируется поздней оплатой; `get_payment_status` отвечает по `best3_payments/best3_bookings`, а не по тексту агента.
+
+## 2026-05-29 live-1953 dialog guards
+
+- Post-booking info about bathhouse is now deterministic before the AI post-booking classifier: backend says only that there is a bathhouse with pool, it is a separate booking, and it is not added to a gazebo as an addon.
+- When a deterministic post-booking info answer mentions a service, `form_data.last_discussed_service_type` can store that service. Follow-ups like `а ее как бронировать нужно?` and generic phrases like `давайте начнем новую заявку` may use it to answer/start the intended service, but a new draft is still created through fresh-booking policy and keeps only contact fields.
+- Service correction phrases like `а я же хочу баньку` are treated as a clean service switch/new draft, not as continuation of the old gazebo draft. Date, time, duration, guests, event format and upsells are cleared.
+- Confirmation completion is guarded by a regression: after phone finishes a complete draft, the first reply is canonical confirmation and the next `да` creates hold/payment instead of sending a second confirmation summary.
+- Paid notification text includes `booking_line_short()` lines, so the client sees date/time of the journal record in the final payment confirmation.
+
+## 2026-05-29 live-14:29 stale/fixed-duration guards
+
+- Stale-form protection now distinguishes "resume old draft?" from a detailed new booking request. If a message contains a new service plus concrete date/time/duration signals, the coordinator starts a clean draft through the existing new-booking policy and preserves only contact fields.
+- If the user answers the stale checkpoint with `нет/не` and continues with a detailed new request in the same message, that same message is processed as the new request. The bot should not ask a second meta-question when the booking details are already present.
+- Upsell refusal has a hard-negative layer for short final refusals like `не`, `no`, `нет спасибо`. Those phrases skip the soft upsell push and write `upsell_items=["не нужны"]`, then the normal `next_question()` decides the next field.
+- Confirmation yes detection accepts soft affirmative forms such as `ну вроде да`, `вроде да`, `да вроде`, while still keeping non-confirmation side questions in confirmation-flow.
+- `availability_service.check_availability()` validates fixed-duration services before selecting slots. If service variants define `duration_minutes`, the requested duration must match one of the allowed blocks for that weekday. Invalid duration returns a validation message instead of a slot.
+- Availability/confirmation flows treat that validation message as a field error: they clear only `duration`, keep date/time/service/contact, set `current_step=duration`, and ask the client to choose one of the allowed blocks. This prevents local hold/payment creation for bathhouse durations that YCLIENTS will reject later.
+
+## 2026-05-29 live-13:07 hold/time/payment guards
+
+- Explicit time periods now have a backend guard: if the client writes a concrete range like `с 9 утра до 21 ночи`, `time_period_patch()`/`has_explicit_time_period()` wins over an AI duration guess that may appear because the same message also asks `можно на дольше остаться?`.
+- Reserved-hold payment status handling separates real payment questions from fake/simulation requests. Phrases like `сделай будто бы я оплатил` return a safe refusal and keep the hold in `reserved`; they do not call the normal "оплата получена" route.
+- Short upsell markers such as `лед` are matched by word boundaries in `form_patches`, so typos around `следующая заявка` cannot update addons accidentally.
+- Generic next-booking phrases during an active hold can start a clean next draft even when the user has not yet named the service. The fresh draft preserves contact fields and clears service/date/time/duration/guests/format/upsells.
+
 ## 2026-05-28 live payment and concurrency hardening
 
 - Telegram text/voice updates are now serialized per `channel:external_user_id` in `app/bot/telegram_bot.py`. The process can still handle different users concurrently, but two fast messages from one client cannot run two `handle_incoming` threads against the same conversation state at the same time.

@@ -33,18 +33,10 @@ def wants_cancel_booking(text: str) -> bool:
         and any(marker in normalized for marker in ("брон", "заявк", "запис", "оформ"))
     ):
         return True
-    negative_cancel = any(
-        marker in normalized
-        for marker in (
-            "не нужна",
-            "не нужен",
-            "не нужно",
-            "не надо",
-            "не актуальна",
-            "не актуально",
-            "планы поменялись",
-            "планы изменились",
-        )
+    negative_cancel = (
+        bool(re.search(r"\bне\s+(?:нужн\w*|надо|актуальн\w*)\b", normalized))
+        or "планы поменялись" in normalized
+        or "планы изменились" in normalized
     ) and any(marker in normalized for marker in ("брон", "бан", "бесед", "дом", "услуг"))
     if negative_cancel:
         return True

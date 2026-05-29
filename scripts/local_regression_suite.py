@@ -35,7 +35,7 @@ from app.db.connection import get_connection  # noqa: E402
 from app.db.repositories import bookings_repo, conversations_repo, payments_repo, slot_holds_repo, users_repo, yclients_records_repo  # noqa: E402
 from app.services.admin_notification_service import format_admin_bookings_message  # noqa: E402
 from app.services.availability_service import AvailabilityResult  # noqa: E402
-from app.services import knowledge_service, message_handler  # noqa: E402
+from app.services import knowledge_service, message_handler, payment_status_runner  # noqa: E402
 from app.services.media_service import media_for_bookings, media_for_client_message  # noqa: E402
 from app.services import message_retention_runner, payment_service  # noqa: E402
 from app.services.message_handler import IncomingMessage, handle_incoming  # noqa: E402
@@ -446,6 +446,114 @@ def _test_plain_new_service_request_resets_old_form(now: datetime) -> Check:
     finally:
         message_handler.call_ai = original_call_ai
         message_handler.generate_process_reply = original_generate
+
+
+def _test_service_correction_with_zhe_resets_old_form(now: datetime) -> Check:
+    suffix = "zhe_want_bath_reset"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date="2026-05-29",
+            time="15:00",
+            duration=9,
+            guests_count=10,
+            event_format="день рождения ребенка",
+            client_name="Ирина",
+            phone="+79099667655",
+            upsell_items=["базовый мангальный набор"],
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="date",
+            next_step="date",
+            form_data=created["conversation"]["form_data"],
+        )
+
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="booking_request",
+            action="ask_next_question",
+            current_step="date",
+            changed_fields=["service_type"],
+            form_data_patch={"service_type": "bathhouse"},
+        )
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    try:
+        reply = _send(suffix, "а я же хочу баньку", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        ok = (
+            form.get("service_type") == "bathhouse"
+            and form.get("client_name") == "Ирина"
+            and form.get("phone") == "+79099667655"
+            and not form.get("date")
+            and not form.get("time")
+            and not form.get("duration")
+            and not form.get("guests_count")
+            and not form.get("event_format")
+            and not form.get("upsell_items")
+            and state.get("current_step") == "date"
+            and "29 мая" not in reply
+            and "15:00" not in reply
+            and "10" not in reply
+        )
+        return Check("service correction with zhe resets old form", ok, f"{reply} | {form}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+
+
+def _test_next_application_while_hold_starts_blank_not_ice(now: datetime) -> Check:
+    suffix = "next_application_hold"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date="2026-06-30",
+            time="09:00",
+            duration=12,
+            guests_count=10,
+            event_format="семейный отдых",
+            upsell_items=["не нужны"],
+            client_name="Кирилл",
+            phone="+79968533502",
+        ),
+    )
+    _create_active_hold(created["conversation"], created["user"], now)
+    reply = _send(suffix, "приступим к следующуей заявке?", now)
+    state = _latest_state(suffix)
+    form = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "допы" not in lowered
+        and "обновила допы" not in lowered
+        and "допы: лед" not in lowered
+        and "что хотите забронировать" in lowered
+        and state.get("current_step") == "service_type"
+        and form.get("client_name") == "Кирилл"
+        and form.get("phone") == "+79968533502"
+        and not form.get("service_type")
+        and not form.get("date")
+        and not form.get("time")
+        and not form.get("duration")
+        and not form.get("upsell_items")
+    )
+    return Check("next application while hold starts blank not ice", ok, f"{reply} | {state}")
 
 
 def _test_reserved_yes_retries_payment_link(now: datetime) -> Check:
@@ -1232,6 +1340,63 @@ def _test_gazebo_capacity_question_sets_guests_and_skips_repeat(now: datetime) -
         message_handler.generate_process_reply = original_generate
 
 
+def _test_hypothetical_guest_count_updates_capacity_question() -> Check:
+    form = _base_form(
+        service_type="gazebo",
+        service_variant=None,
+        date="2026-06-30",
+        time=None,
+        duration=None,
+        guests_count=20,
+    )
+    phrases = (
+        "а если бы нас было 10 какие беседки подошли бы?",
+        "а если нас 10, какие варианты?",
+        "для 10 человек что подойдет?",
+        "а если будет 10 человек, что лучше?",
+    )
+    replies = [(phrase, message_handler._deterministic_info_reply(phrase, form)) for phrase in phrases]
+    ok = True
+    details: list[str] = []
+    for phrase, reply in replies:
+        lowered = (reply or "").lower().replace("ё", "е")
+        phrase_ok = bool(
+            reply
+            and "для 10 гостей" in lowered
+            and "для 20 гостей" not in lowered
+        )
+        ok = ok and phrase_ok
+        details.append(f"{phrase} => {reply}")
+    return Check("hypothetical guest count updates capacity question", ok, "\n---\n".join(details))
+
+
+def _test_on_site_upsell_refusal_paraphrases() -> Check:
+    phrases = (
+        "если что там на месте возьмем",
+        "если что там на месте возьмём",
+        "на месте возьмем если понадобится",
+        "там на месте уже разберемся",
+    )
+    patches = [(phrase, message_handler._upsell_items_patch(phrase)) for phrase in phrases]
+    ok = all(patch.get("upsell_items") == ["не нужны"] for _phrase, patch in patches)
+    return Check("on-site upsell refusal paraphrases", ok, str(patches))
+
+
+def _test_name_correction_paraphrases_keep_clean_value() -> Check:
+    cases = (
+        ("имя заменим на IVAN", "IVAN"),
+        ("имя поменяем на IVAN", "IVAN"),
+        ("замени имя на IVAN", "IVAN"),
+        ("фио измени на IVAN", "IVAN"),
+    )
+    results = [
+        (phrase, message_handler._form_detail_correction_patch(phrase, {"client_name": "Иван"}))
+        for phrase, _expected in cases
+    ]
+    ok = all(result.get("client_name") == expected for (_phrase, expected), (_actual_phrase, result) in zip(cases, results))
+    return Check("name correction paraphrases keep clean value", ok, str(results))
+
+
 def _test_live_gazebo_twenty_guests_keeps_capacity_context(now: datetime) -> Check:
     suffix = "live_gazebo_20_guests"
     original_call_ai = message_handler.call_ai
@@ -1904,6 +2069,76 @@ def _test_gazebo_start_time_defaults_until_morning(now: datetime) -> Check:
         message_handler.check_availability = original_availability
 
 
+def _test_gazebo_explicit_period_with_longer_question_keeps_end_time(now: datetime) -> Check:
+    suffix = "gazebo_period_longer_question"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date="2026-06-30",
+            time=None,
+            duration=None,
+            guests_count=10,
+            event_format=None,
+            upsell_items=[],
+            client_name="Кирилл",
+            phone="+79968533502",
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="time",
+            next_step="time",
+        )
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_availability = message_handler.check_availability
+    seen: list[dict[str, Any]] = []
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="company_info",
+            action="answer_info",
+            current_step="time",
+            form_data_patch={"time": "09:00", "duration": 23},
+            reply_to_user="До утра можно, если сразу указать такой период.",
+        )
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        form = kwargs.get("form_data") or {}
+        seen.append(form)
+        return AvailabilityResult(True, "ok", ["Беседка №4: 09:00-21:00"])
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.check_availability = fake_availability
+    try:
+        reply = _send(suffix, "с 9 утра до 21 ночи, если что можно на дольше остаться?", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        checked = seen[-1] if seen else {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            form.get("time") == "09:00"
+            and form.get("duration") == 12
+            and checked.get("duration") == 12
+            and "08:00" not in reply
+            and "23 часа" not in lowered
+            and state.get("current_step") == "event_format"
+        )
+        return Check("gazebo explicit period with longer question keeps end time", ok, f"{reply} | {form} | checked={checked}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.check_availability = original_availability
+
+
 def _test_media_waits_for_date_and_guests() -> Check:
     date_only_reply = "На 30 мая свободны: Беседка №5, Беседка №2, Беседка №4, Беседка №6."
     guest_reply = (
@@ -2362,6 +2597,64 @@ def _test_short_yes_confirms() -> Check:
     return Check("short yes confirms", ok, "д/+ should confirm")
 
 
+def _test_soft_yes_confirms_from_confirmation(now: datetime) -> Check:
+    suffix = "soft_yes_confirmation"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="bathhouse",
+            service_variant=None,
+            date="2026-06-30",
+            time="09:00",
+            duration=6,
+            guests_count=10,
+            event_format="спокойный отдых",
+            client_name="Кирилл",
+            phone="+79990000051",
+            upsell_items=["не нужны"],
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="awaiting_confirmation",
+            current_step="awaiting_confirmation",
+            next_step="confirmation",
+        )
+    original_availability = message_handler.check_availability
+    original_payment = message_handler.create_payment_link_for_holds
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(True, "Свободно.", ["Баня: свободно"])
+    message_handler.create_payment_link_for_holds = lambda *_args, **_kwargs: {
+        "payment_url": "https://example.test/soft-yes",
+        "amount": "1.00",
+        "status": "pending",
+    }
+    try:
+        reply = _send(suffix, "ну вроде да", now)
+        state = _latest_state(suffix)
+        ok = (
+            message_handler._confirmation_yes("ну вроде да")
+            and "https://example.test/soft-yes" in reply
+            and state.get("current_step") == "reserved"
+        )
+        return Check("soft yes confirms awaiting confirmation", ok, f"{reply} | {state}")
+    finally:
+        message_handler.check_availability = original_availability
+        message_handler.create_payment_link_for_holds = original_payment
+
+
+def _test_name_correction_replaces_value_after_na() -> Check:
+    patch = message_handler._form_detail_correction_patch(
+        "имя заменим на IVAN",
+        {"client_name": "Иван"},
+    )
+    ok = patch.get("client_name") == "IVAN"
+    return Check("name correction replaces value after na", ok, str(patch))
+
+
 def _test_bare_weekday_requires_confirmation(now: datetime) -> Check:
     patch = message_handler._relative_date_patch("в субботу", now)
     reply = message_handler._bare_weekday_confirmation("в субботу", now)
@@ -2455,6 +2748,30 @@ def _test_bathhouse_open_ended_duration_until_morning() -> Check:
     )
     ok = updated.get("duration") == 20
     return Check("bathhouse open-ended duration until morning", ok, str(updated))
+
+
+def _test_bathhouse_rejects_non_fixed_duration(now: datetime) -> Check:
+    with get_connection() as conn:
+        result = message_handler.check_availability(
+            conn,
+            form_data=_base_form(
+                service_type="bathhouse",
+                service_variant=None,
+                date="2026-06-30",
+                time="09:00",
+                duration=12,
+                guests_count=10,
+            ),
+            now=now,
+        )
+    lowered = result.message.lower().replace("ё", "е")
+    ok = (
+        result.ok
+        and not result.slots
+        and "фиксирован" in lowered
+        and "3, 4, 5, 6 или 7 часов" in lowered
+    )
+    return Check("bathhouse rejects non-fixed duration", ok, result.message)
 
 
 def _test_first_upsell_no_gets_soft_push() -> Check:
@@ -2668,6 +2985,179 @@ def _test_nu_net_upsell_no_two_touch(now: datetime) -> Check:
         and "телефон" in second_reply.lower()
     )
     return Check("nu net upsell no uses two-touch flow", ok, f"{first_reply} | {second_reply} | {second_state}")
+
+
+def _test_bare_ne_upsell_refusal_goes_to_name(now: datetime) -> Check:
+    suffix = "bare_ne_upsell_refusal"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="bathhouse",
+            service_variant=None,
+            date="2026-06-30",
+            time="09:00",
+            duration=6,
+            guests_count=10,
+            event_format="спокойный отдых",
+            upsell_items=[],
+            client_name=None,
+            phone="+79990000052",
+        ),
+    )
+    with get_connection() as conn:
+        message_handler.messages_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            sender="assistant",
+            text="Обычно к бане берут воду, лёд для напитков, посуду и кальян. Что подготовить для вас?",
+        )
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+        )
+
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(intent="booking_request", action="ask_next_question", current_step="client_name")
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    try:
+        first_reply = _send(suffix, "не", now)
+        first_state = _latest_state(suffix)
+        second_reply = _send(suffix, "кирюхенский", now + timedelta(seconds=5))
+        second_state = _latest_state(suffix)
+        form = second_state.get("form_data") or {}
+        ok = (
+            first_state.get("current_step") == "client_name"
+            and (first_state.get("form_data") or {}).get("upsell_items") == ["не нужны"]
+            and "имя" in first_reply.lower()
+            and "что подготовить" not in first_reply.lower()
+            and form.get("client_name") == "Кирюхенский"
+            and second_state.get("current_step") == "awaiting_confirmation"
+            and "подтверждаете бронь" in second_reply.lower()
+            and "что подготовить" not in second_reply.lower()
+        )
+        return Check("bare ne upsell refusal goes to name", ok, f"{first_reply} | {first_state} || {second_reply} | {second_state}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+
+
+def _test_on_site_upsell_refusal_keeps_no_extras(now: datetime) -> Check:
+    suffix = "onsite_upsell_refusal"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date="2026-05-29",
+            time="15:00",
+            duration=9,
+            guests_count=10,
+            event_format="день рождения ребенка",
+            client_name="Ирина",
+            phone="+79099667655",
+            upsell_items=[],
+            upsell_offer_count=1,
+        ),
+    )
+    with get_connection() as conn:
+        message_handler.messages_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            sender="assistant",
+            text="Могу поставить минимум — уголь и розжиг. Что добавим? Если точно ничего не нужно, напишите «нет» ещё раз.",
+        )
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+            form_data=created["conversation"]["form_data"],
+        )
+
+    reply = _send(suffix, "если что там на месте возьмем", now)
+    state = _latest_state(suffix)
+    form = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        form.get("upsell_items") == ["не нужны"]
+        and state.get("current_step") == "awaiting_confirmation"
+        and "допы: не нужны" in lowered
+        and "базовый мангальный набор" not in lowered
+    )
+    return Check("on-site upsell refusal keeps no extras", ok, f"{reply} | {state}")
+
+
+def _test_phone_completion_yes_creates_hold_not_second_confirmation(now: datetime) -> Check:
+    suffix = "phone_yes_no_second_confirmation"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date="2026-06-30",
+            time="15:00",
+            duration=9,
+            guests_count=10,
+            event_format="день рождения ребенка",
+            client_name="Ирина",
+            phone=None,
+            upsell_items=["не нужны"],
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="phone",
+            next_step="phone",
+        )
+    original_availability = message_handler.check_availability
+    original_payment = message_handler.create_payment_link_for_holds
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(True, "Свободно.", ["Свободно."])
+    message_handler.create_payment_link_for_holds = lambda *_args, **_kwargs: {
+        "payment_url": "https://example.test/phone-confirm",
+        "amount": "1.00",
+        "status": "pending",
+    }
+    try:
+        first_reply = _send(suffix, "+79099667655", now)
+        first_state = _latest_state(suffix)
+        second_reply = _send(suffix, "да", now + timedelta(seconds=5))
+        second_state = _latest_state(suffix)
+        first_lowered = first_reply.lower().replace("ё", "е")
+        second_lowered = second_reply.lower().replace("ё", "е")
+        ok = (
+            first_state.get("current_step") == "awaiting_confirmation"
+            and "проверила заявку" in first_lowered
+            and "допы: не нужны" in first_lowered
+            and "https://example.test/phone-confirm" in second_reply
+            and "подтверждаете бронь" not in second_lowered
+            and second_state.get("current_step") == "reserved"
+        )
+        return Check(
+            "phone completion yes creates hold not second confirmation",
+            ok,
+            f"{first_reply} | {first_state} || {second_reply} | {second_state}",
+        )
+    finally:
+        message_handler.check_availability = original_availability
+        message_handler.create_payment_link_for_holds = original_payment
 
 
 def _test_event_format_typo_moves_to_upsell(now: datetime) -> Check:
@@ -3310,6 +3800,40 @@ def _add_paid_booking(
             phone="+79990000007",
         )
         slot_holds_repo.mark_converted(conn, hold_id=hold["id"], now=now)
+
+
+def _add_paid_payment_for_latest_booking(created: dict[str, Any], now: datetime) -> None:
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id
+                FROM bookings
+                WHERE conversation_id = %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (created["conversation"]["id"],),
+            )
+            booking_id = int(cur.fetchone()["id"])
+        payment = payments_repo.create_pending(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            booking_ids=[booking_id],
+            provider="yookassa",
+            amount=Decimal("1.00"),
+            currency="RUB",
+            description="local regression paid booking",
+            raw_payload={"booking_ids": [booking_id]},
+        )
+        payments_repo.update_provider_status(
+            conn,
+            payment_id=payment["id"],
+            status="paid",
+            paid_at=now,
+            raw_payload={"booking_ids": [booking_id], "status": "succeeded"},
+        )
 
 
 def _upsert_test_yclients_record(
@@ -4044,6 +4568,75 @@ def _test_second_service_same_date_keeps_current_service(now: datetime) -> Check
         message_handler.create_missing_yclients_records = original_create_missing
 
 
+def _test_second_service_same_number_wording_keeps_current_service(now: datetime) -> Check:
+    suffix = "second_service_same_number_wording"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 30),
+        yclients_service_id="18201065",
+        provider_record_id="local_second_service_same_number_wording_gazebo",
+        phone="+79990000025",
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="date",
+            next_step="date",
+            form_data=_base_form(
+                service_type="bathhouse",
+                service_variant=None,
+                date=None,
+                time=None,
+                duration=None,
+                guests_count=None,
+                event_format=None,
+                phone="+79990000025",
+            ),
+        )
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="booking_request",
+            action="ask_next_question",
+            current_step="date",
+            changed_fields=["service_type"],
+            form_data_patch={"service_type": "gazebo"},
+        )
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(True, "Баня свободна.", ["Баня: свободно"])
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "число такое же как у беседки", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            form.get("service_type") == "bathhouse"
+            and form.get("date") == "2026-06-30"
+            and not form.get("time")
+            and not form.get("duration")
+            and "на какую дату" not in lowered
+            and state.get("current_step") in {"time", "duration"}
+        )
+        return Check("second service same number wording keeps current service", ok, f"{reply} | {form}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
 def _test_live_135_paid_gazebo_then_bathhouse_same_number(now: datetime) -> Check:
     suffix = "live_135_paid_gazebo_then_bath"
     _create_paid_booking_for_action(
@@ -4123,6 +4716,436 @@ def _test_live_135_paid_gazebo_then_bathhouse_same_number(now: datetime) -> Chec
         message_handler.generate_process_reply = original_generate
         message_handler.check_availability = original_availability
         message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_paid_booking_payment_question_is_deterministic(now: datetime) -> Check:
+    suffix = "paid_payment_question"
+    created = _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 30),
+        yclients_service_id="18201061",
+        provider_record_id="local_paid_payment_question_gazebo",
+        phone="+79990000024",
+    )
+    _add_paid_payment_for_latest_booking(created, now)
+    original_classifier = message_handler.classify_post_booking_message
+    original_create_missing = message_handler.create_missing_yclients_records
+
+    def bad_classifier(**_: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="current_booking_question",
+            reply_to_user="Нет, предоплата не поступила. Резерв истёк через 10 минут.",
+        )
+
+    message_handler.classify_post_booking_message = bad_classifier
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "а она уже активна, я вносил предоплату?", now + timedelta(seconds=5))
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "оплата получена" in lowered
+            and "бронь подтверждена" in lowered
+            and "предоплата не поступила" not in lowered
+            and "резерв истек" not in lowered
+        )
+        return Check("paid booking payment question is deterministic", ok, reply)
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_paid_notification_includes_booking_summary() -> Check:
+    text = payment_status_runner._paid_notification_text(
+        {"amount": "1.00"},
+        [
+            {
+                "service_type": "gazebo",
+                "hold_yclients_service_id": "18201061",
+                "booking_date": date(2026, 5, 29),
+                "booking_time": time(15, 0),
+                "duration_minutes": 540,
+            }
+        ],
+    )
+    lowered = text.lower().replace("ё", "е")
+    ok = (
+        "бронь в журнале" in lowered
+        and "29 мая" in lowered
+        and "15:00" in text
+        and "предоплата: 1.00 ₽" in lowered
+    )
+    return Check("paid notification includes booking summary", ok, text)
+
+
+def _test_new_bath_request_does_not_cancel_paid_gazebo(now: datetime) -> Check:
+    suffix = "new_bath_not_cancel"
+    _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 30),
+        yclients_service_id="18201061",
+        provider_record_id="local_new_bath_not_cancel_gazebo",
+        phone="+79990000025",
+    )
+    original_classifier = message_handler.classify_post_booking_message
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_create_missing = message_handler.create_missing_yclients_records
+
+    def bad_classifier(**_: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="change_existing_booking",
+            change_type="cancel",
+            reply_to_user="Могу отменить бронь.",
+        )
+
+    def fake_call_ai(**kwargs: Any) -> AIResponse:
+        text = str(kwargs.get("text") or "").lower()
+        if "бан" in text:
+            return AIResponse(
+                intent="booking_request",
+                action="ask_next_question",
+                current_step="date",
+                changed_fields=["service_type"],
+                form_data_patch={"service_type": "bathhouse"},
+            )
+        return AIResponse(intent="other", action="ask_next_question")
+
+    message_handler.classify_post_booking_message = bad_classifier
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        reply = _send(suffix, "давайте новую оформим, мне нужна баня", now + timedelta(seconds=5))
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT status
+                    FROM bookings b
+                    JOIN users u ON u.id = b.user_id
+                    WHERE u.external_id = %s
+                    ORDER BY b.id DESC
+                    LIMIT 1
+                    """,
+                    (TEST_PREFIX + suffix,),
+                )
+                booking_status = cur.fetchone()["status"]
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            form.get("service_type") == "bathhouse"
+            and state.get("current_step") == "date"
+            and "отмен" not in lowered
+            and "на какую дату" in lowered
+            and booking_status != "cancelled"
+        )
+        return Check("new bath request does not cancel paid gazebo", ok, f"{reply} | {state} | booking={booking_status}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_bathhouse_post_booking_info_then_generic_new_request(now: datetime) -> Check:
+    suffix = "bath_info_generic_new"
+    _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 5, 29),
+        yclients_service_id="18201061",
+        provider_record_id="local_bath_info_generic_new_gazebo",
+        phone="+79099667655",
+    )
+    original_classifier = message_handler.classify_post_booking_message
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_create_missing = message_handler.create_missing_yclients_records
+
+    def bad_classifier(**_: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="other",
+            reply_to_user="Да, у нас есть русская баня и финская сауна. Можно добавить к текущей брони.",
+        )
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="booking_request",
+            action="ask_next_question",
+            current_step="date",
+            changed_fields=[],
+            form_data_patch={},
+        )
+
+    message_handler.classify_post_booking_message = bad_classifier
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        info = _send(suffix, "ну все кайф, а в баньку можно будет сходить?", now + timedelta(seconds=5))
+        info_state = _latest_state(suffix)
+        how = _send(suffix, "а ее как бронировать нужно?", now + timedelta(seconds=10))
+        how_state = _latest_state(suffix)
+        start = _send(suffix, "давайте начнем новую заявку", now + timedelta(seconds=15))
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        info_lowered = info.lower().replace("ё", "е")
+        how_lowered = how.lower().replace("ё", "е")
+        start_lowered = start.lower().replace("ё", "е")
+        ok = (
+            "баня с бассейном" in info_lowered
+            and "отдельной брон" in info_lowered
+            and "не добавляется" in info_lowered
+            and "русская баня" not in info_lowered
+            and "финская сауна" not in info_lowered
+            and (info_state.get("form_data") or {}).get("last_discussed_service_type") == "bathhouse"
+            and "отдельной брон" in how_lowered
+            and "не добавляется" in how_lowered
+            and "русская баня" not in how_lowered
+            and "финская сауна" not in how_lowered
+            and (how_state.get("form_data") or {}).get("last_discussed_service_type") == "bathhouse"
+            and form.get("service_type") == "bathhouse"
+            and form.get("phone") == "+79099667655"
+            and not form.get("date")
+            and not form.get("time")
+            and not form.get("duration")
+            and not form.get("guests_count")
+            and not form.get("event_format")
+            and not form.get("upsell_items")
+            and state.get("current_step") == "date"
+            and "на какую дату" in start_lowered
+        )
+        return Check("bathhouse post-booking info then generic new request", ok, f"{info} | {how} | {start} | {state}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_bathhouse_post_booking_paraphrases_start_clean(now: datetime) -> Check:
+    cases = (
+        (
+            "bath_paraphrase_1",
+            "а банька у вас есть вообще?",
+            "а как ее оформить?",
+            "ну тогда оформим новую",
+        ),
+        (
+            "bath_paraphrase_2",
+            "баню вообще можно забронировать?",
+            "как её забронировать?",
+            "давай новую бронь тогда",
+        ),
+    )
+    original_classifier = message_handler.classify_post_booking_message
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_create_missing = message_handler.create_missing_yclients_records
+
+    def bad_classifier(**_: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="other",
+            reply_to_user="Да, можно добавить сауну к беседке.",
+        )
+
+    message_handler.classify_post_booking_message = bad_classifier
+    message_handler.call_ai = lambda **_kwargs: AIResponse(intent="booking_request", action="ask_next_question")
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    results: list[str] = []
+    ok = True
+    try:
+        for index, (suffix, info_text, how_text, start_text) in enumerate(cases):
+            _create_paid_booking_for_action(
+                suffix,
+                now,
+                service_type="gazebo",
+                booking_date=date(2026, 5, 29),
+                yclients_service_id="18201061",
+                provider_record_id=f"local_bath_paraphrase_{index}",
+                phone="+79099667655",
+            )
+            info = _send(suffix, info_text, now + timedelta(seconds=index * 10 + 1))
+            how = _send(suffix, how_text, now + timedelta(seconds=index * 10 + 2))
+            start = _send(suffix, start_text, now + timedelta(seconds=index * 10 + 3))
+            state = _latest_state(suffix)
+            form = state.get("form_data") or {}
+            combined = "\n".join([info, how, start]).lower().replace("ё", "е")
+            case_ok = (
+                "саун" not in combined
+                and "доп к беседке" not in combined
+                and form.get("service_type") == "bathhouse"
+                and form.get("phone") == "+79099667655"
+                and not form.get("date")
+                and not form.get("time")
+                and not form.get("duration")
+                and not form.get("guests_count")
+                and not form.get("event_format")
+                and not form.get("upsell_items")
+                and state.get("current_step") == "date"
+            )
+            ok = ok and case_ok
+            results.append(f"{info_text} / {how_text} / {start_text} => {state}")
+        return Check("bathhouse post-booking paraphrases start clean", ok, "\n---\n".join(results))
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
+def _test_payment_delay_does_not_start_reschedule(now: datetime) -> Check:
+    suffix = "payment_delay_not_reschedule"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="bathhouse",
+            service_variant=None,
+            date="2026-07-01",
+            time="18:00",
+            duration=3,
+            guests_count=15,
+            event_format="праздник",
+            client_name="Кирилл",
+            phone="+79990000026",
+            upsell_items=["не нужны"],
+        ),
+    )
+    actual_now = datetime.now(ZoneInfo(get_settings().app_timezone))
+    with get_connection() as conn:
+        slot_holds_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            service_type="bathhouse",
+            yclients_service_id="18490331",
+            slot_date=date(2026, 7, 1),
+            slot_time=time(18, 0),
+            duration_minutes=180,
+            expires_at=actual_now + timedelta(minutes=10),
+        )
+    original_classifier = message_handler.classify_post_booking_message
+
+    def bad_classifier(**_: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="change_existing_booking",
+            change_type="reschedule",
+            reply_to_user="Активной брони для переноса не нашла.",
+        )
+
+    message_handler.classify_post_booking_message = bad_classifier
+    try:
+        reply = _send(
+            suffix,
+            "да я и говорю что щас денег нет чтобы оплатить, щас все соберу с людей, и оплачу, подождете?",
+            now + timedelta(seconds=5),
+        )
+        state = _latest_state(suffix)
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "перенос" not in lowered
+            and "резерв держится 10 минут" in lowered
+            and state.get("current_step") == "reserved"
+        )
+        return Check("payment delay does not start reschedule", ok, f"{reply} | {state}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+
+
+def _test_fake_payment_request_does_not_mark_paid(now: datetime) -> Check:
+    suffix = "fake_payment_request"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date="2026-06-30",
+            time="09:00",
+            duration=12,
+            guests_count=10,
+            event_format="семейный отдых",
+            upsell_items=["не нужны"],
+            client_name="Кирилл",
+            phone="+79968533502",
+        ),
+    )
+    _create_active_hold(created["conversation"], created["user"], now)
+    reply = _send(suffix, "а ты можешь сделать будто бы я оплатил?", now)
+    state = _latest_state(suffix)
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "не могу" in lowered
+        and "будто" in lowered
+        and "оплата получена" not in lowered
+        and state.get("status") == "reserved"
+        and state.get("current_step") == "reserved"
+    )
+    return Check("fake payment request does not mark paid", ok, f"{reply} | {state}")
+
+
+def _test_resume_same_expired_hold_does_not_ask_date(now: datetime) -> Check:
+    suffix = "resume_same_expired_hold"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="bathhouse",
+            service_variant=None,
+            date=None,
+            time=None,
+            duration=None,
+            guests_count=None,
+            event_format=None,
+            client_name="Кирилл",
+            phone="+79990000027",
+        ),
+    )
+    actual_now = datetime.now(ZoneInfo(get_settings().app_timezone))
+    with get_connection() as conn:
+        hold = slot_holds_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            service_type="bathhouse",
+            yclients_service_id="local_resume_same_expired_hold",
+            slot_date=date(2026, 7, 1),
+            slot_time=time(18, 0),
+            duration_minutes=180,
+            expires_at=actual_now - timedelta(minutes=1),
+        )
+        slot_holds_repo.expire_old(conn, actual_now)
+        slot_holds_repo.mark_expired_notified(conn, hold_id=hold["id"], now=actual_now)
+
+    original_classifier = message_handler.classify_post_booking_message
+    original_availability = message_handler.check_availability
+    message_handler.classify_post_booking_message = lambda **_: PostBookingResponse(intent="other", reply_to_user="На какую дату планируете отдых?")
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(True, "Баня свободна.", ["Баня: свободно"])
+    try:
+        reply = _send(suffix, "я и говорю давай ее же оформлю", now + timedelta(seconds=5))
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            form.get("service_type") == "bathhouse"
+            and form.get("date") == "2026-07-01"
+            and form.get("time") == "18:00"
+            and form.get("duration") == 3
+            and "на какую дату" not in lowered
+            and state.get("current_step") != "date"
+        )
+        return Check("resume same expired hold does not ask date", ok, f"{reply} | {state}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.check_availability = original_availability
 
 
 def _test_abort_current_draft_keeps_contact(now: datetime) -> Check:
@@ -4855,6 +5878,24 @@ def _test_brooms_info_without_form_does_not_ask_booking() -> Check:
     return Check("brooms info without form does not ask booking", ok, str(reply))
 
 
+def _test_kids_pets_parking_info_without_form_does_not_start_booking(now: datetime) -> Check:
+    suffix = "kids_pets_parking_no_form"
+    reply = _send(suffix, "а с детьми и собакой можно? парковка есть?", now)
+    state = _latest_state(suffix)
+    form = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "с детьми можно" in lowered
+        and "по животным точного" in lowered
+        and "парковка есть" in lowered
+        and not form.get("service_type")
+        and state.get("current_step") == "service_type"
+        and "что хотите забронировать" not in lowered
+        and "на какую дату" not in lowered
+    )
+    return Check("kids pets parking info without form does not start booking", ok, f"{reply} | {state}")
+
+
 def _test_children_parking_info_during_form_uses_runtime_knowledge() -> Check:
     form = _base_form(
         service_type="gazebo",
@@ -4879,6 +5920,45 @@ def _test_children_parking_info_during_form_uses_runtime_knowledge() -> Check:
         and "впритык" in knowledge
     )
     return Check("children and parking info uses runtime knowledge", ok, str(reply))
+
+
+def _test_gazebo_until_morning_info_keeps_time_step(now: datetime) -> Check:
+    suffix = "gazebo_until_morning_info"
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №4",
+        date="2026-06-30",
+        time=None,
+        duration=None,
+        guests_count=10,
+        event_format=None,
+        phone="+79990000026",
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="time",
+            next_step="time",
+            form_data=form,
+        )
+    reply = _send(suffix, "а до утра можно отдыхать?", now)
+    state = _latest_state(suffix)
+    updated_form = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "до 08:00" in lowered
+        and "каждый час" in lowered
+        and updated_form.get("service_type") == "gazebo"
+        and updated_form.get("service_variant") == "Беседка №4"
+        and not updated_form.get("time")
+        and not updated_form.get("duration")
+        and state.get("current_step") == "time"
+    )
+    return Check("gazebo until morning info keeps time step", ok, f"{reply} | {state}")
 
 
 def _test_mosquito_question_during_confirmation() -> Check:
@@ -5024,6 +6104,71 @@ def _test_stale_form_after_two_hours_asks_choice(now: datetime) -> Check:
     return Check("stale form after two hours asks choice", ok, f"{first} | {second} | {second_form}")
 
 
+def _test_stale_explicit_new_bath_request_skips_choice(now: datetime) -> Check:
+    suffix = "stale_explicit_new_bath"
+    old_time = now - timedelta(hours=3)
+    created = _create_reserved_conversation(
+        suffix,
+        old_time,
+        _base_form(
+            service_type="bathhouse",
+            service_variant=None,
+            date="2026-05-29",
+            time="14:00",
+            duration=9,
+            guests_count=10,
+            event_format="день рождения ребенка",
+            client_name="Ирина",
+            phone="+79099667655",
+            upsell_items=["базовый мангальный набор"],
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            old_time,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+            form_data=created["conversation"]["form_data"],
+        )
+
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(intent="booking_request", action="ask_next_question", current_step="duration")
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    try:
+        reply = _send(
+            suffix,
+            "я бы хотел баню на 30 июня\nс 9 утра до 21 ночи, если что можно на дольше остаться?",
+            now,
+        )
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "продолжаем эту заявку" not in lowered
+            and "начнем новую анкету" not in lowered
+            and form.get("service_type") == "bathhouse"
+            and form.get("date") == "2026-06-30"
+            and form.get("time") == "09:00"
+            and form.get("guests_count") is None
+            and form.get("event_format") is None
+            and form.get("upsell_items") in (None, [])
+            and state.get("current_step") == "duration"
+            and "фиксирован" in lowered
+        )
+        return Check("stale explicit new bath request skips choice", ok, f"{reply} | {state}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+
+
 def _test_stale_davaite_continues(now: datetime) -> Check:
     suffix = "stale_davaite_continue"
     created = _create_reserved_conversation(
@@ -5063,6 +6208,71 @@ def _test_stale_davaite_continues(now: datetime) -> Check:
         and state.get("current_step") == "time"
     )
     return Check("stale davaite continues", ok, f"{reply} | {state}")
+
+
+def _test_stale_no_with_new_bath_request_processes_same_message(now: datetime) -> Check:
+    suffix = "stale_no_new_bath_same_message"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="bathhouse",
+            service_variant=None,
+            date="2026-05-29",
+            time="14:00",
+            duration=9,
+            guests_count=10,
+            event_format="день рождения ребенка",
+            client_name="Ирина",
+            phone="+79099667655",
+            upsell_items=["базовый мангальный набор"],
+            stale_form_flow={"started_at": now.isoformat(), "previous_step": "time"},
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="stale_form_choice",
+            next_step="stale_form_choice",
+            form_data=created["conversation"]["form_data"],
+        )
+
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(intent="booking_request", action="ask_next_question", current_step="duration")
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    try:
+        reply = _send(
+            suffix,
+            "нет\nя бы хотел баню на 30 июня\nс 9 утра до 21 ночи, если что можно на дольше остаться?",
+            now,
+        )
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "уточните" not in lowered
+            and not form.get("stale_form_flow")
+            and form.get("service_type") == "bathhouse"
+            and form.get("date") == "2026-06-30"
+            and form.get("time") == "09:00"
+            and form.get("guests_count") is None
+            and form.get("event_format") is None
+            and form.get("upsell_items") in (None, [])
+            and state.get("current_step") == "duration"
+            and "фиксирован" in lowered
+        )
+        return Check("stale no plus new bath request processes same message", ok, f"{reply} | {state}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
 
 
 def _test_stale_free_dates_request_starts_fresh_lookup(now: datetime) -> Check:
@@ -5876,10 +7086,17 @@ def main() -> None:
         run("fresh", lambda: _test_second_booking_does_not_inherit_old_slot(now))
         run("fresh", lambda: _test_new_service_from_waiting_date_resets_old_slot(now))
         run("fresh", lambda: _test_plain_new_service_request_resets_old_form(now))
+        run("fresh", lambda: _test_service_correction_with_zhe_resets_old_form(now))
+        run("fresh", lambda: _test_next_application_while_hold_starts_blank_not_ice(now))
         run("payments", lambda: _test_reserved_yes_retries_payment_link(now))
         run("payments", lambda: _test_paid_status_refreshes_on_any_message(now))
         run("payments", lambda: _test_expired_hold_notifies_and_resets(now))
         run("payments", lambda: _test_reserved_yes_reuses_existing_payment_link(now))
+        run("payments", lambda: _test_paid_booking_payment_question_is_deterministic(now))
+        run("payments", _test_paid_notification_includes_booking_summary)
+        run("payments", lambda: _test_payment_delay_does_not_start_reschedule(now))
+        run("payments", lambda: _test_fake_payment_request_does_not_mark_paid(now))
+        run("payments", lambda: _test_resume_same_expired_hold_does_not_ask_date(now))
         run("payments", lambda: _test_concurrent_active_hold_conflict(now))
         run("payments", lambda: _test_payment_intent_retry_no_duplicate_link(now))
         run("post_booking", lambda: _test_confirmation_info_answer_without_extra_ai(now))
@@ -5900,6 +7117,7 @@ def main() -> None:
         run("gazebo", _test_gazebo_date_reply_asks_guests_before_choice)
         run("gazebo", lambda: _test_forced_gazebo_variant_asks_guests_before_time(now))
         run("gazebo", lambda: _test_gazebo_capacity_question_sets_guests_and_skips_repeat(now))
+        run("gazebo", _test_hypothetical_guest_count_updates_capacity_question)
         run("gazebo", lambda: _test_live_gazebo_twenty_guests_keeps_capacity_context(now))
         run("gazebo", lambda: _test_gazebo_date_and_guests_first_message_checks_availability(now))
         run("gazebo", lambda: _test_gazebo_no_capacity_on_date_offers_nearest_before_requested(now))
@@ -5913,11 +7131,13 @@ def main() -> None:
         run("gazebo", lambda: _test_switch_back_to_gazebo_preserves_context(now))
         run("services", lambda: _test_house_unavailable_offers_same_date_alternatives(now))
         run("time", lambda: _test_gazebo_start_time_defaults_until_morning(now))
+        run("time", lambda: _test_gazebo_explicit_period_with_longer_question_keeps_end_time(now))
         run("time", _test_people_range_is_not_time)
         run("time", _test_afternoon_time_words_parse_pm)
         run("time", _test_duration_string_normalization_and_loose_period)
         run("time", _test_gazebo_open_ended_duration_overrides_ai_guess)
         run("time", _test_bathhouse_open_ended_duration_until_morning)
+        run("time", lambda: _test_bathhouse_rejects_non_fixed_duration(now))
         run("media", _test_media_waits_for_date_and_guests)
         run("media", _test_explicit_photo_request_ignores_availability_text)
         run("media", lambda: _test_explicit_photo_request_bypasses_ai(now))
@@ -5931,6 +7151,9 @@ def main() -> None:
         run("post_booking", lambda: _test_customer_templates_do_not_mention_admin(now))
         run("post_booking", lambda: _test_admin_notification_includes_booking_object(now))
         run("post_booking", _test_short_yes_confirms)
+        run("post_booking", lambda: _test_soft_yes_confirms_from_confirmation(now))
+        run("post_booking", _test_name_correction_replaces_value_after_na)
+        run("post_booking", _test_name_correction_paraphrases_keep_clean_value)
         run("fresh", lambda: _test_invalid_phone_reply_is_client_safe(now))
         run("dates", lambda: _test_bare_weekday_requires_confirmation(now))
         run("dates", lambda: _test_weekday_confirmation_yes_uses_saved_candidate(now))
@@ -5939,6 +7162,10 @@ def main() -> None:
         run("upsell", lambda: _test_soft_upsell_accept_after_push(now))
         run("upsell", lambda: _test_informal_upsell_no_two_touch(now))
         run("upsell", lambda: _test_nu_net_upsell_no_two_touch(now))
+        run("upsell", lambda: _test_bare_ne_upsell_refusal_goes_to_name(now))
+        run("upsell", lambda: _test_on_site_upsell_refusal_keeps_no_extras(now))
+        run("upsell", _test_on_site_upsell_refusal_paraphrases)
+        run("payments", lambda: _test_phone_completion_yes_creates_hold_not_second_confirmation(now))
         run("upsell", lambda: _test_event_format_typo_moves_to_upsell(now))
         run("upsell", lambda: _test_addon_price_during_upsell_does_not_repeat_event_format(now))
         run("upsell", lambda: _test_state_keeps_time_duration_event_after_upsell(now))
@@ -5981,7 +7208,11 @@ def main() -> None:
         run("services", lambda: _test_second_service_same_time_keeps_current_service(now))
         run("services", lambda: _test_second_service_same_time_reference_on_time_step(now))
         run("services", lambda: _test_second_service_same_date_keeps_current_service(now))
+        run("services", lambda: _test_second_service_same_number_wording_keeps_current_service(now))
         run("services", lambda: _test_live_135_paid_gazebo_then_bathhouse_same_number(now))
+        run("services", lambda: _test_new_bath_request_does_not_cancel_paid_gazebo(now))
+        run("services", lambda: _test_bathhouse_post_booking_info_then_generic_new_request(now))
+        run("services", lambda: _test_bathhouse_post_booking_paraphrases_start_clean(now))
         run("prices", _test_price_replies_use_service_map)
         run("prices", _test_addon_price_question_does_not_add_item)
         run("prices", _test_generic_upsell_price_question_uses_addon_prices)
@@ -5991,13 +7222,17 @@ def main() -> None:
         run("prices", _test_gazebo_duration_price_rule)
         run("prices", _test_brooms_are_forbidden)
         run("prices", _test_brooms_info_without_form_does_not_ask_booking)
+        run("prices", lambda: _test_kids_pets_parking_info_without_form_does_not_start_booking(now))
         run("prices", _test_children_parking_info_during_form_uses_runtime_knowledge)
+        run("prices", lambda: _test_gazebo_until_morning_info_keeps_time_step(now))
         run("prices", _test_mosquito_question_during_confirmation)
         run("time", _test_bare_duration_answer)
         run("time", lambda: _test_confirmation_time_correction_rechecks(now))
         run("gazebo", lambda: _test_gazebo_selected_variant_capacity_uses_known_free_list(now))
         run("fresh", lambda: _test_stale_form_after_two_hours_asks_choice(now))
+        run("fresh", lambda: _test_stale_explicit_new_bath_request_skips_choice(now))
         run("fresh", lambda: _test_stale_davaite_continues(now))
+        run("fresh", lambda: _test_stale_no_with_new_bath_request_processes_same_message(now))
         run("fresh", lambda: _test_stale_free_dates_request_starts_fresh_lookup(now))
         run("fresh", lambda: _test_old_form_new_free_dates_skips_stale_choice(now))
         run("fresh", lambda: _test_ai_event_format_is_not_invented(now))

@@ -20,6 +20,8 @@ from app.services.dialog.formatting import format_date_ru, format_duration
 
 def mentions_payment_status(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
+    if wants_fake_payment_simulation(text):
+        return False
     return any(
         marker in normalized
         for marker in (
@@ -33,8 +35,101 @@ def mentions_payment_status(text: str) -> bool:
             "внесла предоплату",
             "предоплату внес",
             "предоплату внесла",
+            "вносил предоплату",
+            "вносила предоплату",
+            "вносил оплат",
+            "вносила оплат",
+            "предоплата поступила",
+            "предоплату поступила",
+            "бронь оплачена",
+            "бронь активна",
+        )
+    ) or ("предоплат" in normalized and any(marker in normalized for marker in ("внос", "поступ", "прош", "актив")))
+
+
+def wants_fake_payment_simulation(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if not any(marker in normalized for marker in ("оплат", "предоплат")):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "будто",
+            "как будто",
+            "типа оплат",
+            "сделай оплат",
+            "сделать оплат",
+            "можешь сделать",
+            "можете сделать",
+            "засчитай",
+            "зачти",
+            "нарисуй",
+            "имитир",
+            "тестово",
+            "тестом",
         )
     )
+
+
+def wants_payment_delay_or_hold_extension(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in (
+            "оплачу позже",
+            "позже оплачу",
+            "оплачу через",
+            "через пол час",
+            "через час",
+            "денег нет",
+            "сейчас денег нет",
+            "щас денег нет",
+            "соберу с людей",
+            "подождете",
+            "подождите",
+            "можете подождать",
+            "резерв продл",
+        )
+    ) and any(marker in normalized for marker in ("оплат", "денег", "соберу", "подожд", "резерв"))
+
+
+def wants_resume_expired_hold(text: str) -> bool:
+    normalized = re.sub(r"[^\w]+", " ", text.lower().replace("ё", "е")).strip()
+    if normalized in {"давайте", "давай", "актуально", "еще актуально", "ещё актуально", "оформляем", "оформим"}:
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "давай ее же",
+            "давайте ее же",
+            "ее же оформ",
+            "эту же оформ",
+            "тот же слот",
+            "ту же брон",
+            "та же брон",
+            "все еще актуально",
+            "всё еще актуально",
+            "все еще хочу",
+            "всё еще хочу",
+        )
+    )
+
+
+def restore_form_from_expired_hold(form_data: dict[str, Any], hold: dict[str, Any]) -> dict[str, Any]:
+    restored = dict(form_data)
+    restored["service_type"] = hold.get("service_type") or restored.get("service_type")
+    if hold.get("slot_date"):
+        restored["date"] = hold["slot_date"].isoformat()
+    if hold.get("slot_time"):
+        restored["time"] = str(hold["slot_time"])[:5]
+    duration = hold.get("duration_minutes")
+    if duration:
+        restored["duration"] = int(duration) // 60
+    restored["payment_status"] = "not_required_yet"
+    restored.pop("cancel_flow", None)
+    restored.pop("reschedule_flow", None)
+    restored.pop("swap_reschedule_flow", None)
+    return restored
 
 
 def is_non_slot_detail_change(text: str) -> bool:
@@ -303,6 +398,27 @@ def handle_reserved_hold_command(
             )
         if form_data.get("reschedule_flow") or form_data.get("swap_reschedule_flow"):
             return None
+        if hold_context and expired_holds and wants_resume_expired_hold(text):
+            restored = restore_form_from_expired_hold(form_data, expired_holds[0])
+            availability = callbacks.check_availability(conn, form_data=restored, now=now)
+            next_key = next_question(restored)[0]
+            if availability.ok and availability.slots and not next_key:
+                return (
+                    confirmation_reply_text(restored),
+                    "awaiting_confirmation",
+                    "awaiting_confirmation",
+                    "confirmation",
+                    restored,
+                )
+            next_key = next_key or "guests_count"
+            service_title = "Баня" if restored.get("service_type") == "bathhouse" else "Бронь"
+            return (
+                f"{service_title}: прежний слот снова проверила. Продолжим ту же заявку.\n\n{next_question(restored)[1]}",
+                "waiting_user",
+                next_key,
+                next_key,
+                restored,
+            )
         if asks_summary:
             summary = callbacks.post_booking_summary(conn, conversation, form_data, now)
             next_key = next_question(form_data)[0]
@@ -343,8 +459,32 @@ def handle_reserved_hold_command(
                 conversation.get("current_step") or "waiting_user",
                 next_question(form_data)[0],
                 form_data,
-            )
+        )
         return None
+
+    if wants_fake_payment_simulation(text):
+        status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
+        return (
+            "Я не могу отметить оплату «будто бы» вручную. "
+            "Бронь закрепляется только когда реальный платёж отразится в ЮKassa.\n\n"
+            "Резерв пока активен: оплатите по ссылке выше, и после оплаты я пришлю подтверждение брони ✅",
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
+
+    if wants_payment_delay_or_hold_extension(text):
+        status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
+        return (
+            "Понимаю. Резерв держится 10 минут, поэтому надолго удержать слот без предоплаты не получится.\n\n"
+            "Если успеете оплатить по ссылке — бронь закрепится автоматически. "
+            "Если резерв истечёт, напишите «давайте» или «оформим эту же» — я заново проверю тот же слот.",
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
 
     if (
         not hold_context
@@ -623,6 +763,18 @@ def handle_awaiting_confirmation(
                 form_data=form_data,
             )
 
+        if _duration_validation_message(availability.message):
+            updated = dict(form_data)
+            updated["duration"] = None
+            updated.pop("last_unavailable", None)
+            return FlowResult(
+                reply=availability.message,
+                status="waiting_user",
+                current_step="duration",
+                next_step="duration",
+                form_data=updated,
+            )
+
         callbacks.remember_waitlist_request(
             conn,
             conversation_id=conversation["id"],
@@ -677,6 +829,11 @@ def handle_awaiting_confirmation(
         form_data=form_data,
         intent="confirmation_side_question",
     )
+
+
+def _duration_validation_message(message: str) -> bool:
+    lowered = message.lower().replace("ё", "е")
+    return message.startswith("Для «") and ("длительность" in lowered or "фиксирован" in lowered)
 
 
 def create_hold(

@@ -228,9 +228,14 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
     cleaned = normalized.strip(" .,!?:;")
     no_extras = (
         "нет",
+        "не",
+        "no",
         "неа",
         "нте",
         "ytn",
+        "нет спасибо",
+        "нет, спасибо",
+        "не спасибо",
         "не надо",
         "не нужно",
         "ничего",
@@ -242,6 +247,8 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
         "все свое",
         "с собой",
         "сами привезем",
+        "на месте возьмем",
+        "на месте возьмём",
         "обойдемся своим",
     )
     fuzzy_no_extras = (
@@ -249,6 +256,7 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
         "ну нет",
         "ну не",
         "да нет",
+        "no thanks",
         "та нет",
         "нет,",
         "нет.",
@@ -266,6 +274,9 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
         "все свое",
         "с собой",
         "сами привезем",
+        "на месте возьмем",
+        "на месте возьмём",
+        "там на месте",
         "обойдемся своим",
     )
     if cleaned in no_extras or (cleaned.startswith("нет ") and "нет ли" not in cleaned) or any(marker in normalized for marker in fuzzy_no_extras):
@@ -283,24 +294,51 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
         "вода": ("вода", "воду", "воды", "чай", "напит"),
     }
     for item, item_markers in markers.items():
-        if any(marker in normalized for marker in item_markers):
+        if any(_contains_upsell_marker(normalized, marker) for marker in item_markers):
             items.append(item)
     if items:
         return {"upsell_items": items}
     return {}
 
 
+def _contains_upsell_marker(normalized: str, marker: str) -> bool:
+    if marker in {"лед", "льда", "уголь", "розжиг", "кальян", "вода", "воду", "воды", "чай"}:
+        return bool(re.search(rf"(?<![a-zа-яё]){re.escape(marker)}(?![a-zа-яё])", normalized))
+    return marker in normalized
+
+
 def is_upsell_negative(text: str) -> bool:
     normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
     return bool(upsell_items_patch(text).get("upsell_items") == ["не нужны"]) or normalized in {
         "нет",
+        "не",
+        "no",
         "неа",
         "нте",
         "ytn",
+        "нет спасибо",
+        "не спасибо",
         "не надо",
         "не нужно",
         "ничего",
         "без допов",
+    }
+
+
+def is_upsell_final_negative(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
+    compact = re.sub(r"\s+", " ", normalized)
+    return compact in {
+        "не",
+        "no",
+        "нет спасибо",
+        "нет, спасибо",
+        "не спасибо",
+        "точно нет",
+        "точно не",
+        "точно ничего",
+        "ничего не надо",
+        "ничего не нужно",
     }
 
 
@@ -348,8 +386,11 @@ def has_upsell_signal(text: str) -> bool:
         return False
     if looks_like_price_question_text(text) and not _has_explicit_upsell_selection(normalized):
         return False
-    return bool(upsell_items_patch(text)) or any(
-        marker in text.lower().replace("ё", "е")
+    if upsell_items_patch(text):
+        return True
+    normalized = text.lower().replace("ё", "е")
+    return any(
+        _contains_upsell_marker(normalized, marker)
         for marker in ("доп", "уголь", "розжиг", "решет", "решот", "шампур", "лед", "посуд", "кальян")
     )
 
@@ -411,7 +452,7 @@ def guests_count_patch(text: str, expected_key: str | None) -> dict[str, int]:
             return {"guests_count": guests}
     match = re.fullmatch(r"(?:нас\s*)?(\d{1,3})(?:\s*(?:человек|челов|гостей|гостя|гость|чел))?", normalized)
     if not match:
-        match = re.search(r"\bнас\s+(?:будет\s+|примерно\s+|планируется\s+)?(\d{1,3})\b", normalized)
+        match = re.search(r"\bнас\s+(?:будет\s+|было\s+бы\s+|было\s+|примерно\s+|планируется\s+)?(\d{1,3})\b", normalized)
     if not match:
         match = re.search(r"\b(\d{1,3})\s*(?:человек|челов|гостей|гостя|гость|чел)\b", normalized)
     if not match:

@@ -1,5 +1,155 @@
 # Project Log
 
+## 2026-05-29 - best3 full best2obs parity and safe tools milestone
+
+- In `../best3`, full documented `best2obs` scenario-id coverage is now enforced by `scripts/best2obs_scenario_runner.py --all`: `STD-001..009`, `CTX-001..022`, `EDGE-001..014`, `STR-001..013`, `REG-001..014`.
+- This is not a copy of the old `best2` `message_handler.py`: `best3` keeps the AI-orchestrator model and adds backend safe tools for current draft, media/photos, waitlist, payment/current-booking checks and non-destructive cancel/reschedule proposals.
+- The raw `# best2info` leak class is closed in `best3`: questions like "what are we booking" now route to backend state through `show_current_draft`, and `answer_info` strips wiki/index metadata before replying.
+- Verification in `best3`: 49 unit tests OK; compile OK; `table_prefix_guard.py` OK; `core_parity_scenarios.py` OK; `best2obs_scenario_runner.py --all` OK; `shadow_compare.py` OK; live-AI smoke for current draft/media/cancel/reschedule OK; guarded smoke/payment/expired/webhook and final `test_pilot_checklist.py` OK.
+- `best2` production code was not changed. During the final guard, unrelated active best2 regression processes and one stale idle DB transaction were stopped so row-count safety could measure `best3` cleanly.
+
+## 2026-05-29 - закрыты live-14:29 stale-context, `не` на допах, soft-confirm и фиксированные блоки бани
+
+- По новому live-чату разобраны 4 сбоя: явная новая заявка бани после старого draft сначала показывала stale-checkpoint вместо обработки сообщения; ответ `не` на вопрос допов не принимался как отказ; `ну вроде да` не подтверждало готовую заявку; баня могла уйти в произвольные 12 часов `09:00-21:00`, после чего оплата проходила локально, но YCLIENTS не создавал запись.
+- Исправлено точечно без большого рефакторинга `message_handler.py`: подробная новая заявка поверх старой анкеты стартует чистый draft с сохранением только контакта; `нет + новая заявка` в одном сообщении обрабатывается сразу, без повторного вопроса; короткое `не/no/нет спасибо` считается финальным отказом от допов; мягкие подтверждения вроде `ну вроде да` принимаются в confirmation-flow.
+- Для услуг с фиксированными блоками длительности добавлена backend-валидация в availability: баня больше не принимается как произвольная почасовая бронь. Если клиент пишет `с 9 утра до 21 ночи`, бот сохраняет дату/время, сбрасывает только длительность и просит выбрать доступный блок 3, 4, 5, 6 или 7 часов.
+- Live-заявка `booking_id=1096` не ремонтировалась: локально она дошла до paid, но YCLIENTS вернул `422 service unavailable at chosen time` именно из-за недопустимого 12-часового блока. Новый код не должен создавать такую заявку заново без выбора допустимой длительности.
+- Проверки: `compileall app scripts` OK; `local_regression_suite.py --group fresh`, `--group time`, `--group upsell`, `--group post_booking`, `--group services` OK; payment-сценарии прошли через основной вывод + отдельный subset 5/5 OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; stress-сценарии прошли split-run 13/13 OK. Полный монолитный stress-прогон один раз упал на transient PostgreSQL SSL/runner-lock, но те же сценарии прошли при раздельном запуске.
+- После `scripts/sync_yclients_records.py --once` строгий `scripts/yclients_sync_status.py --strict` OK: `records_seen=125`, `records_upserted=125`, `last_error=None`. Бот не запускался.
+
+## 2026-05-29 - диагностирована причина платежей YooKassa на 1 рубль
+
+- Найден конфигурационный источник: в локальном `.env` установлено `PREPAYMENT_AMOUNT_RUB=1`, а `payment_service.calculate_prepayment_amount()` умножает это значение на количество броней и передает его в YooKassa как `amount.value`.
+- Проверка БД read-only: все 7 локальных платежей `payments` за 2026-05-28..2026-05-29 имеют `amount=1.00 RUB` (4 paid, 3 canceled).
+- Проверка YooKassa read-only: последние 30 платежей текущего магазина тоже `1.00 RUB` и все имеют booking-bot metadata, то есть это живые ссылки бота, а не только `scripts/yookassa_smoke.py`.
+- Дополнительная QR/СБП-проверка: `/me` YooKassa показывает включенный `sbp`, но `YooKassaClient.create_payment()` не передает `payment_method_data.type=sbp`, поэтому бот создает обычную ссылку на общую форму YooMoney; последние успешные платежи прошли как `tinkoff_bank`/`sberbank`, а canceled имеют `expired_on_confirmation`.
+- Production-код не менялся. Вывод записан в [[bugs/current-known-issues]]; для исправления нужно отдельно изменить `.env` на целевую сумму и перезапустить бот. Если нужна именно QR/СБП-ссылка, нужно изменить интеграцию на `payment_method_data.type=sbp` или добавить настройку платежного метода. Если нужна предоплата 50%, требуется отдельная бизнес-логика вместо фиксированной суммы.
+
+## 2026-05-29 - best3 live chat bathhouse alias fix
+
+- In `../best3`, latest Telegram pilot chat exposed a live-AI alias mismatch: AI returned `service_type=sauna` for `баньку`, backend rejected it, and the draft stayed empty.
+- Fixed in `../best3`: `sauna/banya/bath/банька/баньку/баньке` normalize to `bathhouse`; greeting fallback no longer says `уточню у администратора`; `greeting_bath_short` is now part of `agent_smoke.py --all-scenarios`.
+- Verification in `best3`: 41 unit tests OK; compile OK; prefix guard OK; core/shadow OK; full pre-pilot checklist OK; bot restarted in safe test mode. `best2` production code was not changed.
+
+## 2026-05-29 - best3 YooKassa webhook and pilot gate
+
+- In `../best3`, added the local YooKassa webhook runner/service with secret validation, max body size, `best3_webhook_events` persistence and duplicate-safe `payment.succeeded` finalization.
+- Added `../best3/app/services/notification_service.py` for client assistant notification messages and admin system logs deduped by `payment_notified_at`, `admin_notified_at` and `expired_notified_at`.
+- Added `../best3/scripts/yookassa_webhook_smoke.py` and `../best3/scripts/test_pilot_checklist.py`; final checklist passed after active best2 background suites stopped mutating old row counts.
+- Verification in `best3`: 37 unit tests OK, compile OK, SQL prefix guard OK, core/shadow OK, strict YCLIENTS OK after sync, agent smoke OK, fake paid finalization OK, expired hold smoke OK, YooKassa webhook smoke OK.
+- `best2` production code was not changed.
+
+## 2026-05-29 - закрыты live-13:07 ошибки времени, fake payment и новой заявки
+
+- По новому live-чату разобраны 3 сбоя: `с 9 утра до 21 ночи, если что можно на дольше остаться?` превращалось в `09:00-08:00` на 23 часа; `а ты можешь сделать будто бы я оплатил?` могло уйти в проверку оплаты и показать `Оплата получена`; `приступим к следующуей заявке?` во время active hold распознавалось как доп `лед`.
+- Исправлено точечно: явный период времени теперь защищён helper-ом `has_explicit_time_period()` и не проигрывает AI-guess про "подольше"; fake-payment формулировки обрабатываются как отказ от ручной имитации оплаты без смены статуса hold; upsell parser ищет короткие допы вроде `лед` по границам слова, а generic next-booking фразы поверх active hold запускают чистую новую анкету с сохранением только имени/телефона.
+- Добавлены regression checks в `scripts/local_regression_suite.py`: `gazebo explicit period with longer question keeps end time`, `fake payment request does not mark paid`, `next application while hold starts blank not ice`.
+- Проверки: `python -m compileall app scripts` OK; `local_regression_suite.py --group fresh --group payments --group time` OK; профиль `--group services --group gazebo --group upsell --group post_booking --group payments --group time --group fresh` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; после `sync_yclients_records.py --once` строгий `yclients_sync_status.py --strict` OK (`seen=125`, `upserted=125`, `last_error=None`).
+- Бот не запускался; был выполнен только one-shot sync YCLIENTS-cache для свежего strict-статуса.
+
+## 2026-05-29 - best3 safe paid finalization и expired hold cleanup
+
+- В `../best3` добавлен safe paid-finalization режим: `YCLIENTS_RECORD_MODE=fake` позволяет проверить paid payment -> local booking -> fake YCLIENTS record -> busy interval без внешнего создания записи в YCLIENTS.
+- Добавлены `../best3/scripts/payment_finalize_smoke.py`, `../best3/scripts/cleanup_expired_holds.py`, `../best3/scripts/expired_holds_smoke.py`.
+- Expired hold cleanup переводит просроченные active holds в `expired`, отмечает `expired_notified_at` и пишет событие в `best3_system_logs`.
+- Проверки `best3`: `unittest discover -s tests` 30 tests OK; `compileall app scripts tests` OK; `table_prefix_guard.py` OK; `core_parity_scenarios.py` OK; `shadow_compare.py` OK; expanded smoke/fake finalization/expired hold smoke через DB guard OK.
+- Наблюдение: во время одного guard-прогона `best2.messages` выросла на 2 строки из-за параллельной live-активности `best2`; повторные guard-прогоны игнорировали только `messages`, остальные production-таблицы `best2` не менялись. `best2` production-код не менялся.
+
+## 2026-05-29 - best3 добавил backend understanding и DB safety guard
+
+- В `../best3` добавлен `state.understanding` для agent prompt: current task, missing fields, readiness, active holds, latest payment status, active bookings и safe next actions. Это делает состояние явным для AI.
+- В `best3` добавлены backend-understanding overrides: вопрос про оплату/предоплату идёт через `get_payment_status`; явная смена услуги вроде `а я же хочу баньку` принудительно патчит новый `service_type`; policy считает readiness после service-switch cleanup.
+- Добавлен безопасный fake payment provider для smoke, чтобы проверять hold/payment link без реального YooKassa вызова.
+- Добавлен `../best3/scripts/db_safety_guard.py`: row-count snapshot production-таблиц `best2` до/после команды. Прогон `agent_smoke.py --all-scenarios --safe-payments` и `sync_yclients_records.py --once` подтвердили, что `best2` таблицы не изменились.
+- Проверки `best3`: `unittest discover -s tests` 28 tests OK; `compileall app scripts tests` OK; `table_prefix_guard.py` OK; `core_parity_scenarios.py` OK; `shadow_compare.py` OK; strict YCLIENTS OK; расширенный smoke OK.
+- `best2` production-код не менялся.
+
+## 2026-05-29 - best3 получил собственную LLM Wiki
+
+- В `../best3` создан `best3obs/` как отдельный markdown/Obsidian-граф по образцу `best2obs`: index/log, architecture, roadmap, testing, bugs, decisions, prompts и daily.
+- В корень `best3` добавлен `AGENTS.md`: будущие задачи по `best3` должны начинаться с чтения `best3obs/index.md` и `best3obs/log.md`, а значимые выводы должны сохраняться в wiki.
+- Дополнительно улучшены `best3` smoke/shadow инструменты: `agent_smoke.py --json` показывает agent/policy/tool/draft outcome, `shadow_compare.py` поддерживает multi-turn outcome scenarios.
+- Проверки `best3`: `unittest discover -s tests` 24 tests OK; `compileall app scripts tests` OK; `table_prefix_guard.py` OK; `shadow_compare.py` OK; `sync_yclients_records.py` OK; fallback `agent_smoke.py --json` OK.
+
+## 2026-05-29 - best3 core parity перенесён как agent-first правила и сценарии
+
+- В `../best3` внедрён core-parity слой по выбранному scope: новая бронь, info-вопросы, availability, hold/payment safety, paid/current-booking поведение и ключевые live-нюансы `best2`, но без копирования большого `best2` `message_handler.py`.
+- Добавлены deterministic stub/shadow сценарии `scripts/core_parity_scenarios.py` и `scripts/shadow_compare.py`: сравниваются outcome (`action`, `draft_patch`, payment/hold intent), а не буквальный текст ответа.
+- Усилены `best3` agent/policy/tools: natural date/guest/time parsing, mixed `answer_info + draft_patch`, service switch cleanup (`а я же хочу баньку`), upsell vague accept/refusal, name correction, safe `abort_draft`, payment/current-booking routing, active/expired hold guards.
+- Payment слой `best3` закреплён идемпотентностью pending-ссылки и запретом поздней конвертации истёкшего hold; paid `get_payment_status` показывает строку брони с датой/временем, если booking уже создан.
+- Проверки `best3`: `unittest discover -s tests` 23 tests OK; `compileall app scripts tests` OK; `table_prefix_guard.py` OK; `core_parity_scenarios.py` OK; `shadow_compare.py` OK; `sync_yclients_records.py` + `yclients_sync_status.py --strict` fresh; real-AI `agent_smoke.py` OK на короткой цепочке без оплаты. Реальный Telegram bot не запускался.
+- Baseline `best2`: `compileall app scripts` OK; `dialog_context_suite.py` 14/14 OK; профильный `local_regression_suite.py --group services --group gazebo --group upsell --group post_booking --group payments` OK.
+
+## 2026-05-29 - добавлены paraphrase-регрессии против словарных костылей
+
+- По просьбе проверить, что исправления не завязаны на одну конкретную фразу, расширены regression-сценарии batch-парафразами: гипотетические гости (`а если нас 10`, `для 10 человек`, `если будет 10 человек`), отказ от допов на месте (`возьмем/возьмём`, `разберемся`), исправление имени (`имя заменим/поменяем`, `замени имя`, `фио измени`) и post-booking цепочка про баню разными словами.
+- Новый прогон поймал реальный общий недочёт: `фио измени на IVAN` не доходило до parser имени, потому что prefilter знал `имя`, но не `фио`. Исправлено в `app/services/dialog/form_corrections.py`; теперь `фио` работает в том же общем name-correction flow.
+- Важный вывод: deterministic guards остаются как защита состояния, но теперь тестируются не как одно "магическое слово", а как класс смысловых формулировок. AI-route может понять свободную фразу, а backend проверяет, что результат безопасен для текущего draft/booking-state.
+- Проверки: `python -m compileall app scripts` OK; `local_regression_suite.py --group post_booking` OK; профильный `local_regression_suite.py --group services --group gazebo --group upsell --group post_booking --group payments` завершился `EXIT=0`, `FAIL`/`Traceback`/`AssertionError` не найдены.
+- Обновлены `best2obs/testing/dialog-test-matrix.md`, `best2obs/testing/scenario-run-2026-05-29.md`, `best2obs/roadmap/dialog-regression-scenarios.md`, `best2obs/bugs/current-known-issues.md`.
+- Бот не запускался.
+
+## 2026-05-29 - создан best3 agent-first baseline рядом с best2
+
+- В соседней папке `../best3` создан чистый agent-first проект без форка старого `message_handler.py`: AI возвращает JSON action/patch, backend валидирует policy и выполняет только safe tools.
+- Добавлена отдельная PostgreSQL-схема на уровне таблиц с префиксом `best3_`: users/conversations/messages/drafts/agent_runs/tool_calls/holds/bookings/payments/YCLIENTS-cache/waitlist/webhook/system_logs. Миграция `best3` применена, создано 16 таблиц `best3_*`; `best2` таблицы не изменялись.
+- Реализованы v1-компоненты: Telegram polling, agent contract, policy validator, tool executor, draft validation, info retrieval из `best2info`, local availability по `best3_yclients_records`/`best3_resource_busy_intervals`, YooKassa payment link path, paid payment finalization skeleton и YCLIENTS record creation.
+- Перенесена машинная карта `services_map.yaml`; первый `best3` YCLIENTS sync выполнен успешно: `seen=125`, `upserted=125`, strict fresh (`last_error=None`).
+- Проверки `best3`: `compileall app scripts tests` OK, `unittest discover -s tests` OK, `scripts/table_prefix_guard.py` OK, fallback `scripts/agent_smoke.py` OK без реального AI-вызова. Реальный Telegram bot не запускался.
+
+## 2026-05-29 - закрыты live-1953 контекстные сбои бани и подтверждения
+
+- По последнему live-чату `conversation_id=1953` разобраны сбои: `имя заменим на IVAN` сохраняло лишние слова, `если бы нас было 10` отвечало по старым 20 гостям, `на месте возьмем` превращалось в базовый мангальный набор, после телефона могло быть второе подтверждение, paid notification не показывало дату/время, а post-booking вопрос про баню выдумывал русскую/финскую сауну и добавление к беседке.
+- Исправлено точечно: parser имени чистит формы `заменим/замени/...` и сохраняет uppercase `IVAN`; guests parser понимает `нас было/было бы`; разговорный отказ `на месте возьмем/возьмём` оставляет `допы: не нужны`; post-booking bath reply стал deterministic и говорит только про баню с бассейном как отдельную бронь; follow-up `а ее как бронировать нужно?` отвечает по последней обсуждённой бане; generic `давайте начнем новую заявку` может использовать `last_discussed_service_type`, но стартует чистый draft; `а я же хочу баньку` чистит старые slot-поля; paid notification добавляет строку брони.
+- Добавлены regression checks: `name correction replaces value after na`, `hypothetical guest count updates capacity question`, `on-site upsell refusal keeps no extras`, `phone completion yes creates hold not second confirmation`, `paid notification includes booking summary`, `bathhouse post-booking info then generic new request`, `service correction with zhe resets old form`.
+- Проверка БД live-чата: booking `806` существует, `yclients_record_id=1741815435`, `payment_status=paid`, `status=created_in_yclients`, `admin_notified_at` заполнен. Текущий live-draft бани в БД не ремонтировался.
+- `best2info` уточнён: баня с бассейном является отдельной бронью, не доп к беседке; цены описаны как фиксированные блоки длительности по дню недели. `best2info/index.md` получил wiki-ссылки, но кодовый retrieval по-прежнему работает по тексту файлов, не по графу Obsidian.
+- Обновлены `best2obs/bugs/current-known-issues.md`, `best2obs/roadmap/dialog-regression-scenarios.md`, `best2obs/testing/dialog-test-matrix.md`, `best2obs/testing/scenarios/context-live.md`, `best2obs/testing/scenarios/broad-regression.md`, `best2obs/testing/scenario-run-2026-05-29.md`, `best2obs/architecture/backend.md`.
+- Проверки: `compileall app scripts` OK; `local_regression_suite.py --group services --group payments --group upsell` OK после нового confirmation/pronoun-follow-up теста; ранее на этой же ветке прошли полный `local_regression_suite.py`, `dialog_context_suite.py` 14/14, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13 и `yclients_sync_status.py --strict` после ручного `sync_yclients_records.py --once`.
+- Бот не запускался.
+
+## 2026-05-29 - закрыты live-135 paid/expired hold нюансы новой бани
+
+- По свежей live-цепочке Kirill найдены и закрыты 4 routing-сбоя: `а она уже активна, я вносил предоплату?` могло отвечать по старому expired hold; `давайте новую оформим, мне нужна баня` запускало отмену беседки; `денег нет... оплачу... подождете?` уходило в перенос; после expired hold `я и говорю давай ее же оформлю` теряло прежний слот и спрашивало дату заново.
+- Исправлено точечно: cancel detector больше не считает `мне нужна баня` фразой `не нужна баня`; вопросы про внесённую предоплату идут в deterministic payment-status route; active hold получил guard для просьбы подождать оплату; expired hold можно восстановить по фразам `давайте/оформим эту же/ее же оформлю` с сохранением `service_type/date/time/duration`.
+- Добавлены regression checks в `scripts/local_regression_suite.py`: `paid booking payment question is deterministic`, `new bath request does not cancel paid gazebo`, `payment delay does not start reschedule`, `resume same expired hold does not ask date`.
+- Обновлены `best2obs/bugs/current-known-issues.md`, `best2obs/roadmap/dialog-regression-scenarios.md`, `best2obs/testing/dialog-test-matrix.md`, `best2obs/testing/scenarios/context-live.md`, `best2obs/testing/scenarios/broad-regression.md`.
+- Проверки: `python -m compileall app scripts` OK; `local_regression_suite.py --group payments --group services` OK; полный `local_regression_suite.py` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; `dialog_regression_smoke.py` OK.
+- После длинных прогонов `yclients_sync_status.py --strict` стал stale (`age_seconds=1350`); выполнен `scripts/sync_yclients_records.py --once`, финальный strict fresh (`age_seconds=53`, `records_seen=124`, `last_error=None`).
+- Бот не запускался.
+
+## 2026-05-29 - матрица тестов разложена на подветки для ручной проверки
+
+- `best2obs/testing/dialog-test-matrix.md` оформлена как главная матрица-хаб: добавлены ветки Standard, Context/Live, Edge, Stress, Broad Regression, Run Report и Full Diagnostics.
+- Созданы ручные чеклисты успешных сценариев: `best2obs/testing/scenarios/standard.md`, `context-live.md`, `edge.md`, `stress.md`, `broad-regression.md`.
+- Все сценарии в новых чеклистах перенесены из успешного сценарного прогона 2026-05-29 и помечены авто-статусом `OK`; колонка `Ручная проверка` оставлена как `TODO`, чтобы владелец мог отметить результат вручную.
+- Выполнен `scripts/sync_yclients_records.py --once`: `seen=125`, `upserted=125`; затем `scripts/yclients_sync_status.py --strict` fresh (`age_seconds=54`, `records_seen=125`, `last_error=None`).
+- Полная очистка `users/messages/conversations` не выполнялась автоматически: предосмотр БД показал реальные локальные строки пользователей Евгения и Kirill, а также связанные `slot_holds` и `booking`; для полной очистки нужен явный отдельный confirm, потому что это затрагивает не только три таблицы.
+- Бот не запускался.
+
+## 2026-05-29 - сценарный прогон от стандартных до нестандартных случаев
+
+- Проведён отдельный сценарный прогон в порядке усложнения: стандартный `dialog_regression_smoke.py`, затем `dialog_context_suite.py`, `dialog_edge_suite.py`, `dialog_stress_suite.py` и широкий `local_regression_suite.py`.
+- Все сценарии прошли: `dialog_regression_smoke.py` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; полный `local_regression_suite.py` OK.
+- Отчёт по сценариям сохранён в `best2obs/testing/scenario-run-2026-05-29.md`, ссылка добавлена в `best2obs/index.md`.
+- Непрошедших сценариев нет. Наблюдения: в логах остаются `dialog_timing_slow` на AI semantic/post-booking ветках; после длинного прогона YCLIENTS-cache стал stale (`age_seconds=961`), после повторного `sync_yclients_records.py --once` финальный strict снова OK (`records_seen=125`, `last_error=None`).
+
+## 2026-05-29 - полный диагностический прогон проекта
+
+- Проведена полная диагностика проекта и тестов; подробный отчёт сохранён в `best2obs/testing/full-diagnostics-2026-05-29.md`, ссылка добавлена в `best2obs/index.md`.
+- Операционно: БД доступна, Telegram API отвечает (`pending_update_count=0`), YCLIENTS-cache в начале был stale (`age_seconds=28528`), после `sync_yclients_records.py --once` финальный strict fresh (`records_seen=125`, `last_error=None`).
+- Все основные suites зелёные: `compileall app scripts` OK; `test_db.py` OK; `yookassa_webhook_hardening_smoke.py` OK; `validate_yclients_map.py` OK; `yclients_smoke.py` OK; полный `local_regression_suite.py` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; `dialog_regression_smoke.py` OK.
+- Во время диагностики починен legacy `dialog_regression_smoke.py`: cleanup теперь удаляет `waitlist_requests`, фиксированная дата обновлена на 2026-05-29, устаревшие text assertions приведены к текущим корректным ответам.
+- Наблюдения: `validate_yclients_map.py` прошёл только после retry из-за transient SSL handshake timeout YCLIENTS; в suites остаются `dialog_timing_slow` около 5-9 секунд на AI semantic/post-booking ветках; реальный `yookassa_smoke.py` не запускался, потому что создаёт внешнюю платёжную ссылку.
+
+## 2026-05-28 - расширена матрица диалоговых тестов новой пачкой
+
+- Добавлены regression-сценарии: `число такое же как у беседки` для второй услуги, `а с детьми и собакой можно? парковка есть?` без активной анкеты, `а до утра можно отдыхать?` внутри draft беседки.
+- Добавлен edge-сценарий `Без анкеты: дети, животные и парковка не стартуют бронь`; `dialog_edge_suite.py` теперь проходит 14/14.
+- Новый same-date тест поймал баг route priority: фраза `число такое же как у беседки` ошибочно уходила в cross-service active-booking info reply и не переносила дату в текущую баню. Исправлено точечно: same-date/same-time reference больше не обрабатывается как info-ответ про активную бронь.
+- Обновлена `best2obs/testing/dialog-test-matrix.md`: добавлены новые успешные сценарии и результаты точечного прогона.
+- Проверки: `compileall app scripts` OK; `local_regression_suite.py --group services --group prices --group time` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK.
+
 ## 2026-05-28 - создана матрица успешных диалоговых тестов
 
 - Добавлен `best2obs/testing/dialog-test-matrix.md`: единая таблица успешных сценариев, их покрытия (`local_regression_suite.py`, `dialog_context_suite.py`, `dialog_edge_suite.py`, `dialog_stress_suite.py`) и статуса последнего прогона.

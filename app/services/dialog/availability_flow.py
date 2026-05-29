@@ -70,8 +70,8 @@ def should_check_availability(action: str, changed_fields: list[str], form_data:
 
 def availability_reply(message: str, slots: list[str], form_data: dict[str, Any]) -> tuple[str, str | None]:
     next_key, question = next_question(form_data)
-    if message.startswith("Для «") and "длительность" in message:
-        return "На сколько часов хотите забронировать?", "duration"
+    if _duration_validation_message(message):
+        return message, "duration"
     title = (load_services_map().get(form_data.get("service_type")) or {}).get("title") or "объект"
     date_text = format_date_ru(form_data.get("date"))
     if slots:
@@ -520,6 +520,16 @@ def execute_availability_check(
 ) -> AvailabilityExecutionResult:
     availability = callbacks.check_availability(conn, form_data=form_data, now=now)
     if availability.ok and not availability.slots:
+        if _duration_validation_message(availability.message):
+            updated = dict(form_data)
+            updated["duration"] = None
+            updated.pop("last_unavailable", None)
+            return AvailabilityExecutionResult(
+                reply=availability.message,
+                next_key="duration",
+                current_step="duration",
+                form_data=updated,
+            )
         alternative = callbacks.alternative_services_for_unavailable_date(conn, form_data, now)
         used_alternative = bool(alternative)
         if alternative:
@@ -591,3 +601,8 @@ def execute_availability_check(
         current_step=next_key,
         form_data=updated,
     )
+
+
+def _duration_validation_message(message: str) -> bool:
+    lowered = message.lower().replace("ё", "е")
+    return message.startswith("Для «") and ("длительность" in lowered or "фиксирован" in lowered)

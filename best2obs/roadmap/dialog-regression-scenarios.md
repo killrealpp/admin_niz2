@@ -1,5 +1,13 @@
 # Dialog Regression Scenarios
 
+## Best3 core-parity baseline 2026-05-29
+
+- `best3/scripts/core_parity_scenarios.py`: быстрый deterministic baseline для date-only, date+guests, gazebo-number, mixed info+booking, upsell accept, name correction, payment question и expired hold resume.
+- `best3/scripts/shadow_compare.py`: static best2-outcome comparison для agent-first `best3`; сравнивает `action` и `draft_patch`, не буквальный текст.
+- `best3/tests/test_core_parity_rules.py`: unit-сценарии по ключевым best2-нюансам без DB.
+- `best3/tests/test_payment_core.py`: idempotent payment link и запрет конвертации expired hold.
+- Перед расширением cancel/reschedule/media/voice сначала добавить новые rows сюда и в best3 shadow/scenario runner, затем внедрять tools.
+
 ## Обязательные живые сценарии
 
 - `просто отдыз` на шаге формата: бот сохраняет "просто отдых" и переходит к допам.
@@ -11,6 +19,24 @@
 - `хочу еще баню` -> `на ту же дату что и беседка`: текущая услуга остается баней, дата берется из активной брони беседки.
 - После оплаченной беседки: `можно еще что нибудь забронировать?` не должен возвращать старое подтверждение; `давайте еще баню на то же число что и беседка` должен создать draft бани с датой активной беседки и следующим вопросом про время.
 - Внутри draft бани: `а вообще норм беседка?` должен ответить по активной беседке клиента и затем вернуть актуальный вопрос бани, не меняя `service_type`.
+- После оплаченной беседки вопрос `а она уже активна, я вносил предоплату?` должен отвечать по реальному `payments/bookings`, а не по старому истёкшему hold.
+- После оплаченной беседки фраза `давайте новую оформим, мне нужна баня` должна стартовать новую анкету бани и не запускать cancel-flow старой беседки.
+- После оплаченной беседки вопрос `а в баньку можно будет сходить?` должен отвечать: есть баня с бассейном, она оформляется отдельной бронью; нельзя обещать русскую/финскую сауну или добавление бани к беседке.
+- После такого ответа follow-up `а ее как бронировать нужно?` должен отвечать по последней обсуждённой бане, даже если слово `баня` во втором сообщении не повторено.
+- После ответа про баню фраза `давайте начнем новую заявку` должна стартовать чистую анкету бани, если последняя обсуждаемая услуга была баня, и не подтягивать дату/время/гостей/формат/допы старой беседки.
+- Если текущий draft испорчен старой беседкой, фраза `а я же хочу баньку` должна исправлять услугу на баню и чистить slot-поля, сохраняя только контакт.
+- После контекста на 20 гостей вопрос `а если бы нас было 10 какие беседки подошли бы?` должен считать варианты для 10 гостей, а не использовать старое число 20.
+- Фраза `если что там на месте возьмем` после отказа от допов должна оставлять `допы: не нужны`, а не подставлять базовый мангальный набор.
+- На confirmation фраза `имя заменим на IVAN` должна заменить имя на `IVAN`, без префикса `Заменим На`.
+- После ввода телефона, когда анкета уже полная, следующее `да` должно создавать резерв/ссылку, а не отправлять вторую confirmation-сводку.
+- Финальное paid notification должно содержать дату/время брони, чтобы клиент понимал, какая запись создана в журнале.
+- Во время active hold фраза `денег нет... оплачу... подождете?` должна отвечать про 10-минутный резерв, а не запускать перенос.
+- После уведомления об истёкшем резерве фразы `давайте`, `оформим эту же`, `я и говорю давай ее же оформлю` должны восстановить прежний слот хотя бы до даты/времени/длительности и не спрашивать дату заново.
+- После старой анкеты/паузы подробная новая фраза `я бы хотел баню на 30 июня с 9 утра до 21 ночи` должна сразу начать новую анкету, не показывая checkpoint старой заявки и не подтягивая старые гости/формат/допы.
+- Если клиент отвечает на stale-checkpoint `нет` и в том же сообщении пишет новую заявку, бот должен обработать эту новую заявку сразу, без повторного вопроса `продолжаем старую или новую?`.
+- На шаге допов короткий отказ `не` должен считаться отказом от допов и переводить к следующему полю, а не запускать повторную продажу.
+- На confirmation мягкое подтверждение `ну вроде да` должно создавать hold/payment так же, как обычное `да`.
+- Для бани нельзя принимать произвольную почасовую длительность: если клиент просит 12 часов, backend должен сказать, что доступны фиксированные блоки 3, 4, 5, 6 или 7 часов, сохранить дату/время и спросить длительность заново.
 - `на то же время что и беседка`: текущая услуга остается баней, время и длительность берутся из активной брони беседки.
 - `можно ли веники в баню?` без активной анкеты: бот отвечает про запрет и штраф, без вопроса "Что планируете".
 - `а детям можно? и парковка далеко?` внутри анкеты: бот отвечает по базе знаний, не сбивает текущую услугу и возвращается только к актуальному следующему вопросу.
@@ -24,6 +50,28 @@
 - `addon price during upsell does not repeat event format`
 - `second service same date keeps current service`
 - `second service same time keeps current service`
+- `paid booking payment question is deterministic`
+- `new bath request does not cancel paid gazebo`
+- `bathhouse post-booking info then generic new request`
+- `bathhouse post-booking paraphrases start clean`
+- `service correction with zhe resets old form`
+- `hypothetical guest count updates capacity question`
+- `name correction paraphrases keep clean value`
+- `on-site upsell refusal keeps no extras`
+- `on-site upsell refusal paraphrases`
+- `phone completion yes creates hold not second confirmation`
+- `name correction replaces value after na`
+- `paid notification includes booking summary`
+- `payment delay does not start reschedule`
+- `resume same expired hold does not ask date`
+- `gazebo explicit period with longer question keeps end time`
+- `fake payment request does not mark paid`
+- `next application while hold starts blank not ice`
+- `stale explicit new bath request skips choice`
+- `stale no plus new bath request processes same message`
+- `bare ne upsell refusal goes to name`
+- `soft yes confirms awaiting confirmation`
+- `bathhouse rejects non-fixed duration`
 - `brooms info without form does not ask booking`
 - `paid cancel refund window text`
 - `gazebo budget preference filters cheapest`

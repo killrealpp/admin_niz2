@@ -4,21 +4,23 @@
 
 ## Карта тем
 
-- `runtime.md` - короткие правила ответа клиенту.
-- `objects/gazebos.md` - беседки, вместимость, удобства и подбор.
-- `objects/bathhouse.md` - баня с бассейном.
-- `objects/house.md` - гостевой дом.
-- `objects/warm_gazebo.md` - теплая беседка.
-- `prices/gazebos.md` - цены беседок.
-- `prices/bathhouse.md` - цены бани.
-- `prices/house.md` - цены гостевого дома.
-- `prices/addons.md` - допы и цены.
-- `rules/payment.md` - предоплата, остаток, возврат.
-- `rules/discounts.md` - скидки и акции.
-- `rules/location.md` - адрес и парковка.
-- `rules/kids-pets.md` - дети и животные.
-- `rules/rest.md` - правила отдыха.
+- [[runtime]] - короткие правила ответа клиенту.
+- [[objects/gazebos]] - беседки, вместимость, удобства и подбор.
+- [[objects/bathhouse]] - баня с бассейном.
+- [[objects/house]] - гостевой дом.
+- [[objects/warm_gazebo]] - теплая беседка.
+- [[prices/gazebos]] - цены беседок.
+- [[prices/bathhouse]] - цены бани.
+- [[prices/house]] - цены гостевого дома.
+- [[prices/addons]] - допы и цены.
+- [[rules/payment]] - предоплата, остаток, возврат.
+- [[rules/discounts]] - скидки и акции.
+- [[rules/location]] - адрес и парковка.
+- [[rules/kids-pets]] - дети и животные.
+- [[rules/rest]] - правила отдыха.
 
 ## Главный принцип
 
 AI определяет смысл вопроса, но факты берутся отсюда. Если точного факта нет, бот должен честно сказать, что нужно уточнить, и не придумывать условия.
+
+Код использует содержимое `best2info/**/*.md` как текстовую базу знаний через keyword/token retrieval. Obsidian-ссылки нужны для удобной навигации и графа, но сам retrieval работает по тексту файлов, а не по связям графа.

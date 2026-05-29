@@ -66,6 +66,11 @@ def check_availability(
 
     service_config = load_services_map().get(service_type) or {}
     title = service_config.get("title") or service_type
+    duration_issue = _fixed_duration_issue(service_config, form_data, date_value, title)
+    if duration_issue:
+        result = AvailabilityResult(True, duration_issue, [])
+        _availability_cache[cache_key] = (time_module.monotonic(), result)
+        return result
     variants = _select_variants(service_config, form_data, date_value)
 
     if not variants or not any(str(variant.get("yclients_service_id") or "").strip() for variant in variants):
@@ -454,6 +459,61 @@ def _select_variants(
             )
         )
     return candidates[:12] if duration is None else candidates[:8]
+
+
+def _fixed_duration_issue(
+    service_config: dict[str, Any],
+    form_data: dict[str, Any],
+    date_value: str,
+    title: str,
+) -> str | None:
+    variants = [variant for variant in (service_config.get("variants") or []) if variant.get("duration_minutes")]
+    if not variants:
+        return None
+    duration = _duration_minutes(form_data.get("duration"))
+    if duration is None:
+        return None
+    slot_date = datetime.fromisoformat(date_value).date()
+    weekday = slot_date.weekday()
+    allowed = sorted(
+        {
+            int(variant["duration_minutes"])
+            for variant in variants
+            if not variant.get("weekdays") or weekday in variant.get("weekdays")
+        }
+    )
+    if not allowed:
+        allowed = sorted({int(variant["duration_minutes"]) for variant in variants})
+    if int(duration) in allowed:
+        return None
+    return (
+        f"Для «{title}» нельзя оформить {_format_duration_for_reply(duration)}: "
+        f"доступны фиксированные блоки {_format_allowed_durations(allowed)}. "
+        "Напишите нужную длительность из этих вариантов."
+    )
+
+
+def _format_allowed_durations(minutes_values: list[int]) -> str:
+    hours = [minutes // 60 for minutes in minutes_values if minutes % 60 == 0]
+    if len(hours) == len(minutes_values) and hours:
+        parts = [str(value) for value in hours]
+        if len(parts) == 1:
+            return f"{parts[0]} часов"
+        return f"{', '.join(parts[:-1])} или {parts[-1]} часов"
+    return ", ".join(f"{minutes} минут" for minutes in minutes_values)
+
+
+def _format_duration_for_reply(minutes: int) -> str:
+    if minutes % 60 == 0:
+        hours = minutes // 60
+        if hours % 10 == 1 and hours % 100 != 11:
+            suffix = "час"
+        elif hours % 10 in {2, 3, 4} and hours % 100 not in {12, 13, 14}:
+            suffix = "часа"
+        else:
+            suffix = "часов"
+        return f"{hours} {suffix}"
+    return f"{minutes} минут"
 
 
 def _duration_minutes(value: Any) -> int | None:

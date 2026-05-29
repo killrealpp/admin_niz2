@@ -69,6 +69,10 @@ def time_period_patch(text: str) -> dict[str, Any]:
     }
 
 
+def has_explicit_time_period(text: str) -> bool:
+    return bool(time_period_patch(text))
+
+
 def single_time_patch(text: str, expected_key: str | None = None) -> dict[str, Any]:
     normalized = text.lower().replace("ё", "е").replace(",", ".")
     if not (

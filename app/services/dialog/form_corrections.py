@@ -8,14 +8,14 @@ from app.services.dialog.formatting import format_date_ru, format_duration
 def extract_corrected_client_name(text: str) -> str | None:
     normalized = re.sub(r"\s+", " ", text.strip())
     lowered = normalized.lower().replace("ё", "е")
-    if not any(marker in lowered for marker in ("имя", "зовут", "назови", "запиши", "укажи")):
+    if not any(marker in lowered for marker in ("имя", "фио", "зовут", "назови", "запиши", "укажи")):
         return None
     if re.search(r"(?:меня\s+зовут|зовут)\s+не\b", lowered) and not re.search(r"\bа\s+[a-zа-яё]", lowered):
         return None
 
     patterns = (
-        r"(?:заменить|поменять|изменить|поправить)\s+(?:имя|фио)\s+(?:на\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
-        r"(?:имя|фио)\s+(?:заменить|поменять|изменить|поправить)\s+(?:на\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
+        r"(?:заменить|замени|заменим|поменять|поменяй|поменяем|изменить|измени|изменим|поправить|поправь|поправим)\s+(?:имя|фио)\s+(?:на\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
+        r"(?:имя|фио)\s+(?:заменить|замени|заменим|поменять|поменяй|поменяем|изменить|измени|изменим|поправить|поправь|поправим)\s+(?:на\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
         r"(?:меня\s+зовут|зовут)\s+не\s+[A-Za-zА-Яа-яЁё -]{2,40}?[,\s]+(?:а|а\s+именно)\s+([A-Za-zА-Яа-яЁё -]{2,40})",
         r"(?:меня\s+зовут|зовут)\s+(?:как\s+)?([A-Za-zА-Яа-яЁё -]{2,40})",
         r"(?:имя|фио)\s*(?:будет|пусть\s+будет|:|-|=)?\s*([A-Za-zА-Яа-яЁё -]{2,40})",
@@ -34,6 +34,12 @@ def extract_corrected_client_name(text: str) -> str | None:
 def clean_name_candidate(value: str) -> str | None:
     candidate = re.sub(r"\s+", " ", value.strip(" .,!?:;\"'«»"))
     candidate = re.sub(r"^(?:на|как|не|а)\s+", "", candidate, flags=re.IGNORECASE)
+    candidate = re.sub(
+        r"^(?:заменить|замени|заменим|поменять|поменяй|поменяем|изменить|измени|изменим|поправить|поправь|поправим)\s+(?:на\s+)?",
+        "",
+        candidate,
+        flags=re.IGNORECASE,
+    )
     candidate = re.sub(r"\s+(?:пожалуйста|плиз)$", "", candidate, flags=re.IGNORECASE)
     blocked = {
         "имя",
@@ -48,12 +54,14 @@ def clean_name_candidate(value: str) -> str | None:
         return None
     if not looks_like_name(candidate):
         return None
+    if re.fullmatch(r"[A-Z -]{2,40}", candidate):
+        return candidate
     return candidate.title()
 
 
 def maybe_name_correction_without_value(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
-    return any(marker in normalized for marker in ("имя", "зовут")) and any(
+    return any(marker in normalized for marker in ("имя", "фио", "зовут")) and any(
         marker in normalized for marker in ("не ", "невер", "ошиб", "не так")
     )
 

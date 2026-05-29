@@ -11,10 +11,14 @@
             "id": "5aa060f1bde3cef0",
             "type": "leaf",
             "state": {
-              "type": "graph",
-              "state": {},
-              "icon": "lucide-git-fork",
-              "title": "Граф"
+              "type": "markdown",
+              "state": {
+                "file": "testing/scenarios/context-live.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "context-live"
             }
           }
         ]
@@ -70,8 +74,7 @@
               "title": "Закладки"
             }
           }
-        ],
-        "currentTab": 1
+        ]
       }
     ],
     "direction": "horizontal",
@@ -91,6 +94,7 @@
             "state": {
               "type": "backlink",
               "state": {
+                "file": "testing/dialog-test-matrix.md",
                 "collapseAll": false,
                 "extraContext": false,
                 "sortOrder": "alphabetical",
@@ -100,7 +104,7 @@
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
-              "title": "Обратные ссылки"
+              "title": "Обратные ссылки для dialog-test-matrix"
             }
           },
           {
@@ -109,11 +113,12 @@
             "state": {
               "type": "outgoing-link",
               "state": {
+                "file": "testing/dialog-test-matrix.md",
                 "linksCollapsed": false,
                 "unlinkedCollapsed": true
               },
               "icon": "links-going-out",
-              "title": "Исходящие ссылки"
+              "title": "Исходящие ссылки из dialog-test-matrix"
             }
           },
           {
@@ -151,12 +156,13 @@
             "state": {
               "type": "outline",
               "state": {
+                "file": "testing/dialog-test-matrix.md",
                 "followCursor": false,
                 "showSearch": false,
                 "searchQuery": ""
               },
               "icon": "lucide-list",
-              "title": "Структура"
+              "title": "Структура dialog-test-matrix"
             }
           }
         ]
@@ -179,10 +185,17 @@
   },
   "active": "5aa060f1bde3cef0",
   "lastOpenFiles": [
+    "decisions/2026-05-29-best3-core-parity.md",
+    "testing/dialog-test-matrix.md",
+    "testing/scenarios/context-live.md",
+    "testing/scenarios/standard.md",
+    "testing/scenarios/stress.md",
+    "testing/scenarios/edge.md",
+    "testing/scenarios/broad-regression.md",
+    "testing/scenarios",
     "decisions/2026-05-28-best2info-client-knowledge.md",
     "Без названия 1.canvas",
     "Без названия.canvas",
-    "testing/dialog-test-matrix.md",
     "testing",
     "roadmap/dialog-regression-scenarios.md",
     "decisions/2026-05-27-dialog-state-policy.md",
@@ -204,8 +217,6 @@
     "daily/2026-05-26-scenario-check.md",
     "daily/regression-suite-2026-05-26.err.log",
     "daily/regression-suite-2026-05-26.out.log",
-    "architecture/overview.md",
-    "roadmap/pre-launch.md",
     "prompts",
     "daily",
     "roadmap",

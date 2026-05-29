@@ -232,6 +232,22 @@ def edge_form_abort_during_upsell(now: datetime) -> EdgeResult:
     return EdgeResult("Анкета: отказ от брони на шаге допов отменяет черновик", ok, f"reply={reply} | state={state}", transcript)
 
 
+def edge_no_form_kids_pets_parking_info(now: datetime) -> EdgeResult:
+    suffix = "edge_no_form_kids_pets_parking"
+    transcript: list[tuple[str, str]] = []
+    reply = _say(suffix, "а с детьми и собакой можно? парковка есть?", now, transcript)
+    state = _state(suffix)
+    form = state.get("form_data") or {}
+    ok = (
+        _has(reply, "С детьми можно")
+        and _has(reply, "По животным точного")
+        and _has(reply, "Парковка есть")
+        and not form.get("service_type")
+        and state.get("current_step") == "service_type"
+    )
+    return EdgeResult("Без анкеты: дети, животные и парковка не стартуют бронь", ok, f"reply={reply} | state={state}", transcript)
+
+
 def edge_confirmation_summary_question(now: datetime) -> EdgeResult:
     suffix = "edge_confirmation_summary"
     transcript: list[tuple[str, str]] = []
@@ -424,6 +440,7 @@ def main() -> None:
         edge_form_unrelated_question_keeps_state,
         edge_form_phone_plus_info,
         edge_form_abort_during_upsell,
+        edge_no_form_kids_pets_parking_info,
         edge_confirmation_summary_question,
         edge_confirmation_info_then_yes,
         edge_confirmation_cancel_immediately,

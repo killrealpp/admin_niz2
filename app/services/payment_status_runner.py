@@ -14,6 +14,7 @@ from app.db.repositories import bookings_repo, conversations_repo, messages_repo
 from app.db.repositories import users_repo
 from app.services.admin_telegram_service import notify_admin_about_new_bookings, notify_admin_text
 from app.services.availability_service import load_services_map
+from app.services.dialog.booking_texts import booking_line_short
 from app.services.media_service import media_for_bookings
 from app.services.payment_service import sync_payment_statuses
 from app.services.yclients_record_service import create_missing_yclients_records
@@ -96,7 +97,7 @@ async def notify_paid_payments_once(bot: Bot) -> None:
                 bookings=bookings,
             )
             continue
-        text = _paid_notification_text(payment)
+        text = _paid_notification_text(payment, bookings)
         media_paths = media_for_bookings(bookings)
         try:
             await bot.send_message(chat_id=chat_id, text=text)
@@ -534,10 +535,17 @@ def _hold_ids_from_payment(payment: dict) -> list[int]:
     return []
 
 
-def _paid_notification_text(payment: dict) -> str:
+def _paid_notification_text(payment: dict, bookings: list[dict] | None = None) -> str:
     amount = payment.get("amount")
+    booking_block = ""
+    if bookings:
+        lines = ["Бронь в журнале:"]
+        for booking in bookings:
+            lines.append(f"- {booking_line_short(booking)}")
+        booking_block = "\n".join(lines) + "\n\n"
     return (
         "Поздравляем, бронь успешно подтверждена ✅\n\n"
+        f"{booking_block}"
         "Запись создана в журнале, ждём вас на отдых. "
         "Пусть всё пройдёт легко, уютно и с хорошим настроением.\n\n"
         f"Предоплата: {amount} ₽.\n\n"

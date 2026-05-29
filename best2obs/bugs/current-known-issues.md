@@ -1,5 +1,58 @@
 # Current Known Issues
 
+## 2026-05-29 YooKassa 1-ruble live payment configuration
+
+- Статус: найдено диагностикой, production-код не менялся.
+- Симптомы: реальные ссылки YooKassa из `best2` создавались на `1.00 RUB`; в локальной таблице `payments` все 7 платежей за 2026-05-28..2026-05-29 имеют `amount=1.00`, включая paid/canceled.
+- Причина: в локальном `.env` задано `PREPAYMENT_AMOUNT_RUB=1`. `app/services/payment_service.py` считает сумму как `prepayment_amount_rub * bookings_count`, а `app/integrations/yookassa_client.py` отправляет это значение в `amount.value` и чек. В `.env.example` дефолт остается `PREPAYMENT_AMOUNT_RUB=2000`.
+- Дополнительная проверка: read-only запрос к YooKassa по текущему магазину показал последние 30 платежей на `1.00 RUB`; все они имеют metadata booking bot (`conversation_id/user_id/payment_id/hold_ids/booking_ids`), то есть это не отдельный `scripts/yookassa_smoke.py` и не внешний источник без metadata.
+- QR/СБП-диагностика: `/me` YooKassa показывает, что у магазина включен `sbp`, но текущий `YooKassaClient.create_payment()` не передает `payment_method_data={"type":"sbp"}`. Он создает обычную redirect-ссылку на общую форму `yoomoney.ru/checkout/payments/v2/contract`, где способ выбирается на стороне YooMoney; последние успешные платежи прошли как `tinkoff_bank`/`sberbank`, а не `sbp`. Отмененные платежи имеют `cancellation_details.reason=expired_on_confirmation`, то есть не завершены на странице оплаты вовремя.
+- Смежный риск: `scripts/yookassa_smoke.py` тоже создает реальную внешнюю ссылку на `1.00 RUB`, но с metadata `source=booking_bot_smoke`; запускать его только как осознанный live-smoke.
+- Следующий шаг: перед live-работой поставить в `.env` целевую сумму предоплаты и перезапустить бот. Если нужна именно QR/СБП-ссылка, нужно отдельное изменение интеграции: передавать `payment_method_data.type=sbp` или добавить настройку выбора платежного метода. Если нужна предоплата 50%, это отдельная логика: текущий код умеет только фиксированную сумму за бронь.
+
+## 2026-05-29 live-dialog 14:29: stale draft, upsell refusal, soft yes and bath fixed duration
+
+- Статус: закрыто кодом и regression/context/edge/stress split-проверками 2026-05-29.
+- Симптомы: старая анкета бани на 29 мая мешала новой явной заявке `я бы хотел баню на 30 июня...`; ответ `не` на допы не принимался как отказ и бот снова продавал допы; `ну вроде да` не считалось подтверждением; баня принимала произвольный интервал `09:00-21:00` на 12 часов, хотя в YCLIENTS она продаётся фиксированными блоками.
+- Причины: stale-form guard требовал отдельного ответа "новая/старая", даже когда в этом же сообщении уже были новая услуга/дата/время; upsell negative parser не считал короткое `не` финальным отказом; confirmation yes parser был слишком строгим; availability не валидировала `duration` против фиксированных `duration_minutes` вариантов до создания hold/payment.
+- Исправлено: явная подробная новая заявка поверх старой анкеты стартует чистый draft с сохранением только имени/телефона; `нет/не + новая заявка` в stale-choice обрабатывается тем же сообщением; `не/no/нет спасибо` закрывает допы как `не нужны`; `ну вроде да/вроде да` подтверждает заявку; услуги с фиксированными duration-variant блоками отклоняют неподдерживаемую длительность и возвращают клиента на шаг `duration`.
+- Защищено: `stale explicit new bath request skips choice`, `stale no plus new bath request processes same message`, `bare ne upsell refusal goes to name`, `soft yes confirms awaiting confirmation`, `bathhouse rejects non-fixed duration` в `scripts/local_regression_suite.py`; дополнительно пройдены context 14/14, edge 14/14 и stress 13/13 через split-run.
+- Не ремонтировалось: live `booking_id=1096` остался историческим артефактом paid-local без `yclients_record_id`; причина зафиксирована как недопустимый 12-часовой блок, который новый код больше не должен пропускать.
+
+## 2026-05-29 live-dialog 13:07: explicit period, fake payment and next-request typo
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-29.
+- Симптомы: фраза `с 9 утра до 21 ночи, если что можно на дольше остаться?` дала беседку `с 09:00 до 08:00 следующего дня (23 часа)` вместо явного `09:00-21:00`; фраза `а ты можешь сделать будто бы я оплатил?` могла получить ответ `Оплата получена`, хотя реальной оплаты не было; фраза `приступим к следующуей заявке?` во время active hold распозналась как обновление допов `лед`.
+- Причины: duration из AI-patch мог перетереть явный период, если сообщение одновременно выглядело как info-вопрос; payment-status route не отличал вопрос про имитацию оплаты от реальной проверки оплаты; короткий marker допа `лед` искался как substring и находился внутри слова `следующуей/следующей`; generic-фраза про следующую заявку поверх hold не стартовала чистую анкету без указанной услуги.
+- Исправлено: `time_parsing.has_explicit_time_period()` защищает явный период `с ... до ...`; fake-payment формулировки обрабатываются отдельным guard в `confirmation_flow` и `message_handler` без смены статуса оплаты; `form_patches` проверяет короткие upsell markers по границам слова; generic next-booking request поверх active hold запускает чистую анкету с сохранением только имени/телефона.
+- Защищено: `gazebo explicit period with longer question keeps end time`, `fake payment request does not mark paid`, `next application while hold starts blank not ice` в `scripts/local_regression_suite.py`; пройдены `compileall`, профиль `fresh/payments/time`, расширенный профиль `services/gazebo/upsell/post_booking/payments/time/fresh`, `dialog_context_suite.py` 14/14, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13 и `yclients_sync_status.py --strict` после one-shot sync.
+
+## 2026-05-29 live-dialog 1953: bath boundary, inherited gazebo draft and confirmation glitches
+
+- Статус: закрыто кодом и профильными regression-проверками 2026-05-29.
+- Симптомы: `имя заменим на IVAN` сохранялось как `Заменим На Ivan`; вопрос `а если бы нас было 10` отвечал по старым 20 гостям; после `не нужны` + `если что там на месте возьмем` в подтверждение попадал `базовый мангальный набор`; после ввода телефона клиент видел вторую confirmation-сводку; paid notification не показывало дату/время брони; post-booking вопрос про баню выдумывал русскую/финскую сауну и возможность добавить баню к беседке; generic `давайте начнем новую заявку` и `а я же хочу баньку` наследовали поля старой беседки.
+- Причины: name-correction regex не покрывал форму `заменим`; hypothetical guest parser не понимал `нас было/было бы`; разговорное `на месте возьмем` не считалось отказом от допов; после info-вопроса про баню не сохранялся безопасный контекст последней обсуждаемой услуги для generic new booking; service-correction фраза `я же хочу` могла продолжать старый draft вместо чистой новой услуги; paid text не включал краткую строку брони.
+- Исправлено: расширен parser исправления имени и сохранение uppercase Latin; добавлен parser `нас было/было бы`; `на месте возьмем/возьмём` считается отказом от допов; post-booking bath info стал deterministic: только баня с бассейном, отдельная бронь, не доп к беседке; follow-up `а ее как бронировать нужно?` отвечает по последней обсуждённой бане через `last_discussed_service_type`; generic new booking использует этот контекст, но создаёт чистый draft с сохранением только контакта; `а я же хочу баньку` сбрасывает старые slot-поля; paid notification добавляет строку `Бронь в журнале`; добавлен regression на `телефон -> да`, чтобы не возвращалась вторая confirmation-сводка.
+- Проверка БД по live-чату: booking `806` в локальной БД есть, `yclients_record_id=1741815435`, `payment_status=paid`, `status=created_in_yclients`, `admin_notified_at` заполнен. Значит backend создал запись и отметил admin notification; отдельная проблема могла быть в видимости/доставке, но не в отсутствии записи в БД.
+- Защищено: `name correction replaces value after na`, `hypothetical guest count updates capacity question`, `on-site upsell refusal keeps no extras`, `phone completion yes creates hold not second confirmation`, `paid notification includes booking summary`, `bathhouse post-booking info then generic new request`, `service correction with zhe resets old form` в `scripts/local_regression_suite.py`; профильный прогон `local_regression_suite.py --group services --group payments --group upsell` OK, ранее полный набор suites на 2026-05-29 зелёный.
+- Дополнительно защищено paraphrase-пакетом 2026-05-29: разные формулировки `имя/фио ... на IVAN`, `если нас 10/для 10 человек`, `на месте возьмем/возьмём/разберемся`, а также post-booking цепочки про баню. Этот пакет поймал и закрыл общий prefilter-баг `фио измени на IVAN`; профиль `local_regression_suite.py --group services --group gazebo --group upsell --group post_booking --group payments` завершился `EXIT=0`.
+
+## 2026-05-29 live-dialog 135: paid/expired hold context around new bath request
+
+- Статус: закрыто кодом и regression/context/edge/stress/smoke проверками 2026-05-29.
+- Симптомы: на вопрос `а она уже активна, я вносил предоплату?` бот мог ответить, что предоплата не поступила, хотя по локальной БД была оплаченная беседка; фраза `давайте новую оформим, мне нужна баня` запускала отмену оплаченной беседки; фраза про ожидание оплаты `денег нет... подождете?` уходила в перенос; после истечения резерва `давайте` / `я и говорю давай ее же оформлю` теряли старый слот и снова спрашивали дату.
+- Причины: `мне нужна баня` матчилась как `не нужна баня` из-за substring-поиска в cancel detector; вопросы про внесённую предоплату не попадали в deterministic payment-status route и могли уйти в AI/post-booking текст; фразы про задержку оплаты не имели reserved-hold guard и могли быть классифицированы как reschedule; после expired hold не было восстановления контекста "этот же слот".
+- Исправлено: cancel detector теперь использует word-boundary для `не нужна/не нужен/не нужно`; payment-status detector расширен на вопросы `вносил предоплату/бронь активна`; для active hold добавлен ответ про 10-минутный резерв и повторную проверку после истечения; для expired hold добавлено восстановление `service_type/date/time/duration` из последнего истёкшего hold по фразам `давайте`, `оформим эту же`, `ее же оформлю`.
+- Защищено: `paid booking payment question is deterministic`, `new bath request does not cancel paid gazebo`, `payment delay does not start reschedule`, `resume same expired hold does not ask date` в `scripts/local_regression_suite.py`; пройдены `compileall app scripts`, полный `local_regression_suite.py`, `dialog_context_suite.py` 14/14, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13, `dialog_regression_smoke.py`, `yclients_sync_status.py --strict`.
+
+## 2026-05-28 same-date wording: `число такое же как у беседки`
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-28.
+- Симптом: в новой регрессии для второй услуги фраза `число такое же как у беседки` внутри draft бани не переносила дату активной беседки. Бот отвечал справкой `По активной брони у вас...` и затем снова спрашивал дату по бане.
+- Причина: cross-service active-booking info route был слишком широким и принимал same-date/same-time reference как информационный вопрос про активную беседку.
+- Исправлено: `_active_booking_reference_info_reply` теперь не обрабатывает сообщения, которые являются same-date/same-time reference; такие фразы уходят в `_same_booking_reference_patch` и обновляют текущий draft.
+- Защищено: `second service same number wording keeps current service` в `scripts/local_regression_suite.py`; дополнительно пройдены `dialog_context_suite.py` 14/14, `dialog_edge_suite.py` 14/14 и `dialog_stress_suite.py` 13/13.
+
 ## 2026-05-28 live-dialog 135: second booking after paid gazebo lost context
 
 - Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-28.
@@ -145,6 +198,8 @@
 - Рефакторинг `message_handler.py` начат, но не завершен: вынесены formatting/price-info/stale-form/routing guards/semantic-router/response-builder/performance/post-booking/cancel/reschedule/availability helpers, confirmation-flow, direct free-dates lookup и explicit photo reply; дальше нужны оставшийся media scheduling и glue-код fresh-start/stale-form.
 - AI может ошибаться в неоднозначных сообщениях, поэтому backend должен продолжать валидировать state и доступность.
 - Проверка свободности зависит от свежести `yclients_records` и `resource_busy_intervals`.
+- 2026-05-29 full diagnostics: если основной bot/sync runner выключен больше 10 минут, `yclients_sync_status.py --strict` и availability freshness снова падают; перед live smoke обязательно запускать/проверять `sync_yclients_records.py --once`.
+- 2026-05-29 full diagnostics: `validate_yclients_map.py` прошёл, но YCLIENTS несколько раз дал transient SSL handshake timeout на `book_staff`; retry спасает, внешний API остаётся infra-ризком.
 - ЮKassa webhook пока зависит от серверной настройки; без него подтверждение оплаты идет через polling или следующее сообщение.
 - Голосовые сообщения зависят от provider/model и формата Telegram audio.
 - Media flow зависит от имен файлов в `app/images/`; после замены фото нужно проверять реальные отправки.

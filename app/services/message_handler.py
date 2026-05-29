@@ -83,6 +83,7 @@ from app.services.dialog.form_patches import (
     explicit_new_service_request as _explicit_new_service_request,
     guests_count_patch as _guests_count_patch,
     has_upsell_signal as _has_upsell_signal,
+    is_upsell_final_negative as _is_upsell_final_negative,
     is_upsell_negative as _is_upsell_negative,
     join_preferences as _join_preferences,
     looks_like_name as _looks_like_name,
@@ -149,6 +150,7 @@ from app.services.dialog.confirmation_flow import (
     pending_payment_for_holds as _pending_payment_for_holds,
     reply_with_hold_summary as _reply_with_hold_summary_impl,
     wants_cancel_or_change_hold as _wants_cancel_or_change_hold,
+    wants_fake_payment_simulation as _wants_fake_payment_simulation,
 )
 from app.services.dialog.handoff import (
     handoff_active as _handoff_active,
@@ -229,6 +231,7 @@ from app.services.dialog.time_parsing import (
     bare_duration_from_text as _bare_duration_from_text,
     duration_from_text as _duration_from_text,
     gazebo_open_ended_duration_requested as _gazebo_open_ended_duration_requested,
+    has_explicit_time_period as _has_explicit_time_period,
     period_conflict as _period_conflict,
     single_time_patch as _single_time_patch,
     time_period_patch as _time_period_patch,
@@ -530,6 +533,10 @@ def _confirmation_yes(text: str) -> bool:
     tokens = normalized.split()
     if tokens and all(token in yes_words for token in tokens):
         return True
+    if re.fullmatch(r"(?:ну\s+)?(?:вроде|похоже)\s+да", normalized):
+        return True
+    if re.fullmatch(r"да\s+(?:вроде|похоже)", normalized):
+        return True
     return normalized in {
         "да",
         "дя",
@@ -616,6 +623,9 @@ def _starts_new_booking_request(text: str) -> bool:
         for marker in (
             "нужн",
             "хочу",
+            "хотел",
+            "хотела",
+            "хотим",
             "давай",
             "заброни",
             "брон",
@@ -635,6 +645,90 @@ def _starts_new_booking_request(text: str) -> bool:
             for marker in ("нужн", "хочу", "заброни", "брон", "заказ", "оформ")
         ) or bool(_explicit_numeric_dates(text, _now_local()))
     return True
+
+
+def _generic_new_booking_request(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if _wants_cancel_booking(text) or _wants_reschedule(text) or _wants_swap_bookings(text):
+        return False
+    return (
+        any(
+            marker in normalized
+            for marker in (
+                "новую заявку",
+                "новая заявка",
+                "новую брон",
+                "новая брон",
+                "следующую заявку",
+                "следующая заявка",
+                "следующую брон",
+                "следующая брон",
+                "следующуей заяв",
+            )
+        )
+        and any(marker in normalized for marker in ("начн", "оформ", "давай", "давайте", "хочу", "приступ"))
+    ) or any(
+        marker in normalized
+        for marker in (
+            "начнем новую",
+            "начнём новую",
+            "давайте начнем",
+            "давайте начнём",
+            "оформим новую",
+            "новую оформим",
+            "приступим к следующ",
+        )
+    )
+
+
+def _context_service_for_generic_new_booking(conversation: dict[str, Any], text: str) -> str | None:
+    if not _generic_new_booking_request(text):
+        return None
+    service_type = (conversation.get("form_data") or {}).get("last_discussed_service_type")
+    if service_type in load_services_map():
+        return str(service_type)
+    return None
+
+
+def _fresh_booking_form_data_for_text(previous: dict[str, Any], text: str) -> dict[str, Any]:
+    fresh = _new_booking_form_data(previous)
+    service_patch = _service_type_patch(text)
+    if not service_patch and _generic_new_booking_request(text):
+        service_type = previous.get("last_discussed_service_type")
+        if service_type in load_services_map():
+            service_patch = {"service_type": str(service_type)}
+    if service_patch:
+        fresh.update(service_patch)
+        fresh = _normalize_service_aliases(fresh)
+    if fresh.get("service_type") != "gazebo":
+        fresh["service_variant"] = None
+    return fresh
+
+
+def _fresh_start_immediate_reply(form_data: dict[str, Any], text: str, now: datetime) -> tuple[str, str, str | None] | None:
+    if not form_data.get("service_type") and _generic_new_booking_request(text):
+        return (
+            "Хорошо, начнём следующую заявку ✅\n\nЧто хотите забронировать: беседку, баню или дом?",
+            "service_type",
+            "service_type",
+        )
+    if not form_data.get("service_type"):
+        return None
+    if _asks_for_free_slots(text) or _asks_nearest_free_dates(text):
+        return None
+    if _has_specific_date_signal(text, now) or _looks_like_same_date_reference_text(text):
+        return None
+    if _time_period_patch(text) or _looks_like_same_time_reference_text(text):
+        return None
+    if any(form_data.get(key) for key in ("date", "time", "duration", "guests_count", "event_format", "upsell_items")):
+        return None
+    title = (load_services_map().get(form_data.get("service_type")) or {}).get("title") or "услугу"
+    contact_note = ""
+    if form_data.get("client_name") and form_data.get("phone"):
+        contact_note = "\n\nИмя и телефон уже есть, повторно их спрашивать не буду."
+    elif form_data.get("phone"):
+        contact_note = "\n\nТелефон уже есть, повторно его спрашивать не буду."
+    return f"Хорошо, начнём новую заявку: {title.lower()} ✅{contact_note}\n\nНа какую дату планируете?", "date", "date"
 
 
 def _explicit_numeric_dates(text: str, now: datetime) -> list[str]:
@@ -832,6 +926,8 @@ def _continues_current_draft_service_switch(conversation: dict[str, Any], text: 
     normalized = text.lower().replace("ё", "е")
     if any(marker in normalized for marker in ("еще", "ещё", "вторую", "вторая", "добав", "новую брон", "еще одну", "ещё одну")):
         return False
+    if "хочу" in normalized or "нужн" in normalized or re.search(r"\b(?:я\s+)?же\s+хочу\b", normalized):
+        return False
     has_draft_context = any(
         form_data.get(key)
         for key in (
@@ -873,8 +969,8 @@ def _should_start_fresh_booking(conversation: dict[str, Any], text: str) -> bool
     if _continues_current_draft_service_switch(conversation, text):
         return False
     wants_additional = _wants_additional_booking(text)
-    starts_new = _starts_new_booking_request(text)
-    requested_service = (_service_type_patch(text) or {}).get("service_type")
+    requested_service = (_service_type_patch(text) or {}).get("service_type") or _context_service_for_generic_new_booking(conversation, text)
+    starts_new = _starts_new_booking_request(text) or _generic_new_booking_request(text)
     return _should_start_fresh_booking_decision(
         conversation,
         requested_service=requested_service,
@@ -898,11 +994,12 @@ def _ai_should_start_fresh_booking(
     action = str(getattr(ai_result, "action", "") or "")
     requested_service = _normalize_service_aliases(
         {"service_type": patch.get("service_type")}
-    ).get("service_type")
+    ).get("service_type") or _context_service_for_generic_new_booking(conversation, text)
+    starts_new = _starts_new_booking_request(text) or _generic_new_booking_request(text)
     return _ai_should_start_fresh_booking_decision(
         conversation,
         requested_service=requested_service,
-        starts_new_request=_starts_new_booking_request(text),
+        starts_new_request=starts_new,
         wants_additional_booking=_wants_additional_booking(text),
         is_existing_booking_command=(
             _wants_cancel_booking(text) or _wants_reschedule(text) or _wants_swap_bookings(text)
@@ -1093,10 +1190,31 @@ def _asks_specific_service_exists(text: str) -> bool:
 
 def _specific_service_exists_reply(text: str) -> str:
     service_type = (_service_type_patch(text) or {}).get("service_type")
+    return _specific_service_exists_reply_for_type(service_type)
+
+
+def _specific_service_exists_reply_for_type(service_type: str | None) -> str:
     title = (load_services_map().get(service_type) or {}).get("title") or "эта услуга"
+    if service_type == "bathhouse":
+        return (
+            "Да, есть баня с бассейном. Она оформляется отдельной бронью, "
+            "не добавляется к беседке как доп.\n\n"
+            "Если хотите забронировать баню, напишите дату, время и длительность — проверю свободность."
+        )
     return (
         f"Да, {title.lower()} есть. Если хотите добавить её отдельной бронью, "
         "напишите дату — проверю свободность."
+    )
+
+
+def _asks_how_to_book_last_discussed_service(text: str, form_data: dict[str, Any]) -> bool:
+    service_type = form_data.get("last_discussed_service_type")
+    if service_type not in load_services_map():
+        return False
+    normalized = text.lower().replace("ё", "е")
+    return (
+        any(marker in normalized for marker in ("как бронир", "как заброни", "как оформ", "как ее", "как её", "ее как", "её как"))
+        and any(marker in normalized for marker in ("?", "нужно", "надо", "можно", "брони", "оформ"))
     )
 
 
@@ -1218,7 +1336,26 @@ def _wants_continue_stale_form(text: str) -> bool:
 
 def _wants_new_form_after_stale(text: str) -> bool:
     normalized = text.lower().replace("ё", "е").strip()
-    return _confirmation_no(text) or any(marker in normalized for marker in ("нов", "сначала", "заново", "другую заявку", "другая заявка"))
+    compact = re.sub(r"[^\w]+", " ", normalized).strip()
+    starts_with_no = bool(re.match(r"^(?:нет|не)\b", compact))
+    return (
+        _confirmation_no(text)
+        or any(marker in normalized for marker in ("нов", "сначала", "заново", "другую заявку", "другая заявка"))
+        or (starts_with_no and _stale_message_has_new_booking_details(text))
+    )
+
+
+def _stale_message_has_new_booking_details(text: str) -> bool:
+    if not _service_type_patch(text):
+        return False
+    now = _now_local()
+    return bool(
+        _has_specific_date_signal(text, now)
+        or _relative_date_patch(text, now)
+        or _time_period_patch(text)
+        or _has_explicit_duration_signal(text)
+        or _guests_count_patch(text, "guests_count")
+    )
 
 
 def _stale_message_starts_new_context(text: str) -> bool:
@@ -1230,9 +1367,35 @@ def _stale_message_starts_new_context(text: str) -> bool:
     service_patch = _service_type_patch(text)
     if not service_patch:
         return False
+    if _stale_message_has_new_booking_details(text) and any(
+        marker in normalized
+        for marker in ("хочу", "хотел", "хотела", "хотим", "нужн", "заброн", "брон", "оформ")
+    ):
+        return True
     if _asks_for_free_slots(text) or _starts_new_booking_request(text):
         return True
     return any(marker in normalized for marker in ("какие", "когда", "свобод", "хочу", "нужн", "заброн", "брон"))
+
+
+def _explicit_new_booking_with_details(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if not _stale_message_has_new_booking_details(text):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "я бы хотел",
+            "я бы хотела",
+            "хотел бы",
+            "хотела бы",
+            "я хочу",
+            "хочу оформить",
+            "хочу заброн",
+            "мне нужна",
+            "мне нужен",
+            "мне нужно",
+        )
+    )
 
 
 def _continue_stale_form_reply(form_data: dict[str, Any]) -> tuple[str, str | None]:
@@ -1741,6 +1904,8 @@ def _active_booking_reference_info_reply(
     text: str,
     now: datetime,
 ) -> str | None:
+    if _means_same_date(text) or _means_same_time(text):
+        return None
     referenced_service = _referenced_service_type_for_same_time(text)
     current_service = form_data.get("service_type")
     if not referenced_service or referenced_service == current_service:
@@ -1795,7 +1960,9 @@ def _capacity_info_reply(text: str, form_data: dict[str, Any]) -> str | None:
             "помест",
             "рассчит",
             "если нас",
+            "если бы нас",
             "нас будет",
+            "нас было",
             "человек",
             "гостей",
             "гостя",
@@ -2070,6 +2237,21 @@ def _handle_post_booking_message(
             form_data,
         )
 
+    if _wants_fake_payment_simulation(text):
+        return (
+            "Я не могу отметить оплату «будто бы» вручную. "
+            "Бронь закрепляется только когда реальный платёж отразится в ЮKassa.\n\n"
+            "Если ссылка ещё активна, оплатите по ней — после оплаты я пришлю подтверждение брони ✅",
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
+
+    if _mentions_payment_status(text):
+        reply, payment_status = _payment_status_reply(conn, conversation, form_data)
+        return reply, payment_status, "reserved", "payment_status", form_data
+
     if _asks_for_free_slots(text):
         lookup_form = form_data | _service_type_patch(text)
         if lookup_form.get("service_type") != "gazebo":
@@ -2077,6 +2259,17 @@ def _handle_post_booking_message(
         reply = _next_free_dates_reply(conn, conversation, lookup_form, now)
         if reply:
             return reply, status, "reserved", "payment_status", form_data
+
+    if _asks_specific_service_exists(text):
+        service_type = (_service_type_patch(text) or {}).get("service_type")
+        updated = dict(form_data)
+        if service_type in load_services_map():
+            updated["last_discussed_service_type"] = service_type
+        return _specific_service_exists_reply(text), status, "reserved", "payment_status", updated
+
+    if _asks_how_to_book_last_discussed_service(text, form_data):
+        service_type = form_data.get("last_discussed_service_type")
+        return _specific_service_exists_reply_for_type(str(service_type)), status, "reserved", "payment_status", form_data
 
     try:
         classified = _classify_post_booking(
@@ -2098,6 +2291,8 @@ def _handle_post_booking_message(
             if _asks_booking_summary(text)
             else _specific_service_exists_reply(text)
             if _asks_specific_service_exists(text)
+            else _specific_service_exists_reply_for_type(str(form_data.get("last_discussed_service_type")))
+            if _asks_how_to_book_last_discussed_service(text, form_data)
             else _deterministic_info_reply(text, form_data)
             or "Спасибо! Заявка у меня сохранена. Если хотите добавить новую бронь или изменить текущую, напишите это прямо."
         )
@@ -2124,6 +2319,15 @@ def _handle_post_booking_message(
     if intent == "new_booking_request":
         return None
     if intent == "payment_status":
+        if _wants_fake_payment_simulation(text):
+            return (
+                "Я не могу отметить оплату «будто бы» вручную. "
+                "Бронь закрепляется только когда реальный платёж отразится в ЮKassa.",
+                status,
+                "reserved",
+                "payment_status",
+                form_data,
+            )
         reply, payment_status = _payment_status_reply(conn, conversation, form_data)
         return reply, payment_status, "reserved", "payment_status", form_data
     if intent == "current_booking_question":
@@ -3127,6 +3331,8 @@ def _is_likely_form_answer(
         normalized = text.lower().replace("ё", "е").strip()
         if _upsell_items_patch(text) or normalized in {
             "нет",
+            "не",
+            "no",
             "не надо",
             "не нужно",
             "ничего",
@@ -3544,7 +3750,7 @@ def _expected_step_detected_patch(
         result: dict[str, Any] = {}
         if detected_patch.get("time"):
             result["time"] = detected_patch["time"]
-        if detected_patch.get("duration") and _has_explicit_duration_signal(text):
+        if detected_patch.get("duration") and (_has_explicit_duration_signal(text) or _has_explicit_time_period(text)):
             result["duration"] = detected_patch["duration"]
         return result
     if expected_key == "duration" and detected_patch.get("duration"):
@@ -3978,32 +4184,51 @@ def handle_incoming(message: IncomingMessage) -> str:
         if (
             not conv_created
             and _should_offer_stale_form_choice(conversation, now)
-            and not (_wants_new_form_after_stale(message.text) and _asks_for_free_slots(message.text))
         ):
-            form_data = {
-                **current_form_data,
-                "stale_form_flow": {
-                    "started_at": now.isoformat(),
-                    "previous_step": conversation.get("current_step"),
-                },
-            }
-            reply = _stale_form_choice_reply(current_form_data)
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
-                status="waiting_user",
-                current_step="stale_form_choice",
-                next_step="stale_form_choice",
-                form_data=form_data,
-            )
-            return reply
+            if _stale_message_has_new_booking_details(message.text) and _stale_message_starts_new_context(message.text):
+                form_data = _new_booking_form_data(current_form_data)
+                conversation = {
+                    **conversation,
+                    "form_data": form_data,
+                    "status": "waiting_user",
+                    "current_step": None,
+                    "next_step": None,
+                }
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status="waiting_user",
+                    current_step=None,
+                    next_step=None,
+                    form_data=form_data,
+                )
+                current_form_data = form_data
+            elif not (_wants_new_form_after_stale(message.text) and _asks_for_free_slots(message.text)):
+                form_data = {
+                    **current_form_data,
+                    "stale_form_flow": {
+                        "started_at": now.isoformat(),
+                        "previous_step": conversation.get("current_step"),
+                    },
+                }
+                reply = _stale_form_choice_reply(current_form_data)
+                messages_repo.create(
+                    conn,
+                    conversation_id=conversation["id"],
+                    sender=SENDER_ASSISTANT,
+                    text=reply,
+                )
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status="waiting_user",
+                    current_step="stale_form_choice",
+                    next_step="stale_form_choice",
+                    form_data=form_data,
+                )
+                return reply
 
         explicit_photo_reply = _explicit_photo_reply(message.text, conversation.get("form_data") or {})
         if explicit_photo_reply:
@@ -4366,6 +4591,25 @@ def handle_incoming(message: IncomingMessage) -> str:
         started_new_booking = False
         if (
             not has_change_flow
+            and _explicit_new_booking_with_details(message.text)
+            and any(
+                current_flow_form.get(key)
+                for key in ("service_type", "date", "time", "duration", "guests_count", "event_format", "upsell_items")
+            )
+        ):
+            fresh_form_data = _fresh_booking_form_data_for_text(current_flow_form, message.text)
+            conversation = {
+                **conversation,
+                "form_data": fresh_form_data,
+                "current_step": None,
+                "next_step": None,
+                "status": "waiting_user",
+            }
+            started_new_booking = True
+        if (
+            not started_new_booking
+            and
+            not has_change_flow
             and (
                 (
                     conversation.get("current_step") != "awaiting_confirmation"
@@ -4375,14 +4619,35 @@ def handle_incoming(message: IncomingMessage) -> str:
             )
             and _should_start_fresh_booking(conversation, message.text)
         ):
+            fresh_form_data = _fresh_booking_form_data_for_text(current_flow_form, message.text)
             conversation = {
                 **conversation,
-                "form_data": _new_booking_form_data(current_flow_form),
+                "form_data": fresh_form_data,
                 "current_step": None,
                 "next_step": None,
                 "status": "waiting_user",
             }
             started_new_booking = True
+            immediate = _fresh_start_immediate_reply(fresh_form_data, message.text, now)
+            if immediate:
+                reply, current_step, next_key = immediate
+                messages_repo.create(
+                    conn,
+                    conversation_id=conversation["id"],
+                    sender=SENDER_ASSISTANT,
+                    text=reply,
+                )
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status="waiting_user",
+                    intent="booking_request",
+                    current_step=current_step,
+                    next_step=next_key,
+                    form_data=fresh_form_data,
+                )
+                return reply
 
         post_booking_checked = False
         if (
@@ -4550,14 +4815,35 @@ def handle_incoming(message: IncomingMessage) -> str:
             not any((conversation.get("form_data") or {}).get(key) for key in ("cancel_flow", "reschedule_flow", "swap_reschedule_flow"))
             and _should_start_fresh_booking(conversation, message.text)
         ):
+            fresh_form_data = _fresh_booking_form_data_for_text(conversation.get("form_data") or {}, message.text)
             conversation = {
                 **conversation,
-                "form_data": _new_booking_form_data(conversation.get("form_data") or {}),
+                "form_data": fresh_form_data,
                 "current_step": None,
                 "next_step": None,
                 "status": "waiting_user",
             }
             started_new_booking = True
+            immediate = _fresh_start_immediate_reply(fresh_form_data, message.text, now)
+            if immediate:
+                reply, current_step, next_key = immediate
+                messages_repo.create(
+                    conn,
+                    conversation_id=conversation["id"],
+                    sender=SENDER_ASSISTANT,
+                    text=reply,
+                )
+                conversations_repo.update_after_message(
+                    conn,
+                    conversation["id"],
+                    now,
+                    status="waiting_user",
+                    intent="booking_request",
+                    current_step=current_step,
+                    next_step=next_key,
+                    form_data=fresh_form_data,
+                )
+                return reply
 
         if _starts_gazebo_browsing_after_booking(conversation, message.text):
             reply, status, current_step, next_key, form_data = _handle_gazebo_browsing_start(
@@ -4752,7 +5038,11 @@ def handle_incoming(message: IncomingMessage) -> str:
             return reply
         if expected_key_before == "upsell_items" and _is_upsell_negative(message.text):
             offer_count = int(current_form_data.get("upsell_offer_count") or 0)
-            should_push_once = offer_count < 1 and (not current_upsells or current_upsells == ["не нужны"])
+            should_push_once = (
+                not _is_upsell_final_negative(message.text)
+                and offer_count < 1
+                and (not current_upsells or current_upsells == ["не нужны"])
+            )
             if should_push_once:
                 form_data = {
                     **current_form_data,
@@ -5118,9 +5408,10 @@ def handle_incoming(message: IncomingMessage) -> str:
                 not started_new_booking
                 and _ai_should_start_fresh_booking(conversation, ai_result, patch, message.text)
             ):
+                fresh_form_data = _fresh_booking_form_data_for_text(conversation.get("form_data") or {}, message.text)
                 conversation = {
                     **conversation,
-                    "form_data": _new_booking_form_data(conversation.get("form_data") or {}),
+                    "form_data": fresh_form_data,
                     "current_step": None,
                     "next_step": None,
                     "status": "waiting_user",
@@ -5222,11 +5513,12 @@ def handle_incoming(message: IncomingMessage) -> str:
                 conversation.get("form_data") or {},
                 patch,
             )
-            form_data = _restore_draft_context_after_service_switch(
-                form_data,
-                conversation.get("form_data") or {},
-                message.text,
-            )
+            if not started_new_booking:
+                form_data = _restore_draft_context_after_service_switch(
+                    form_data,
+                    conversation.get("form_data") or {},
+                    message.text,
+                )
             if form_data.get("date") and not (conversation.get("form_data") or {}).get("date"):
                 changed_fields.add("date")
             if form_data.get("guests_count") and not (conversation.get("form_data") or {}).get("guests_count"):

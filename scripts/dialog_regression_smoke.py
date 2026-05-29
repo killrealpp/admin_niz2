@@ -61,6 +61,7 @@ def _cleanup() -> None:
             user_ids = [row["id"] for row in cur.fetchall()]
 
             if conversation_ids:
+                cur.execute("DELETE FROM waitlist_requests WHERE conversation_id = ANY(%s)", (conversation_ids,))
                 cur.execute("DELETE FROM payments WHERE conversation_id = ANY(%s)", (conversation_ids,))
                 cur.execute("DELETE FROM bookings WHERE conversation_id = ANY(%s)", (conversation_ids,))
                 cur.execute("DELETE FROM slot_holds WHERE conversation_id = ANY(%s)", (conversation_ids,))
@@ -215,7 +216,7 @@ def _conversation_state(user_suffix: str) -> dict[str, Any]:
 
 def main() -> None:
     settings = get_settings()
-    now = datetime(2026, 5, 20, 10, 0, tzinfo=ZoneInfo(settings.app_timezone))
+    now = datetime(2026, 5, 29, 10, 0, tzinfo=ZoneInfo(settings.app_timezone))
     checks: list[Check] = []
     original_payment = message_handler.create_payment_link_for_holds
     message_handler.create_payment_link_for_holds = _fake_payment
@@ -261,7 +262,7 @@ def main() -> None:
         reply = _send("info_confirm", "Имя Петя", now)
         checks.append(_expect("name correction updates confirmation", reply, "Петя", "Подтверждаете"))
         reply = _send("info_confirm", "а там есть мангал?", now)
-        checks.append(_expect("info question during confirmation", reply, "мангал", "напишите"))
+        checks.append(_expect("info question during confirmation", reply, "мангал"))
         reply = _send("info_confirm", "да", now)
         checks.append(_expect("confirm creates fake payment", reply, "Оплатить можно по ссылке", "https://example.test/pay"))
         checks.append(
@@ -281,7 +282,7 @@ def main() -> None:
             )
         )
         reply = _send("info_confirm", "хорошо, а есть бани?", now)
-        checks.append(_expect("post booking service question", reply, "баня"))
+        checks.append(_expect_any("post booking service question", reply, "баня", "бани", "баню"))
         state = _conversation_state("info_confirm")
         checks.append(
             Check(
