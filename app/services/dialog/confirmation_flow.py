@@ -642,6 +642,15 @@ def handle_awaiting_confirmation(
     callbacks: AwaitingConfirmationCallbacks,
 ) -> FlowResult:
     form_data = conversation.get("form_data") or {}
+    if callbacks.confirmation_no(text) and not _looks_like_explicit_upsell_correction(text):
+        return FlowResult(
+            reply="Хорошо, что нужно изменить: дату, время, объект, гостей, допы или отменить заявку?",
+            status="waiting_user",
+            current_step="change_booking",
+            next_step=None,
+            form_data=form_data,
+        )
+
     correction_patch = callbacks.form_detail_correction_patch(text, form_data)
     if not correction_patch and callbacks.last_assistant_asked_name_correction(history) and callbacks.looks_like_name(text):
         correction_patch = {"client_name": text.strip().title()}
@@ -775,6 +784,18 @@ def handle_awaiting_confirmation(
                 form_data=updated,
             )
 
+        if _capacity_validation_message(availability.message):
+            updated = dict(form_data)
+            updated["guests_count"] = None
+            updated.pop("last_unavailable", None)
+            return FlowResult(
+                reply=availability.message,
+                status="waiting_user",
+                current_step="guests_count",
+                next_step="guests_count",
+                form_data=updated,
+            )
+
         callbacks.remember_waitlist_request(
             conn,
             conversation_id=conversation["id"],
@@ -796,7 +817,7 @@ def handle_awaiting_confirmation(
 
     if callbacks.confirmation_no(text):
         return FlowResult(
-            reply="Хорошо, что нужно изменить: дату, время, беседку, гостей или телефон?",
+            reply="Хорошо, что нужно изменить: дату, время, объект, гостей, допы или отменить заявку?",
             status="waiting_user",
             current_step="change_booking",
             next_step=None,
@@ -834,6 +855,38 @@ def handle_awaiting_confirmation(
 def _duration_validation_message(message: str) -> bool:
     lowered = message.lower().replace("ё", "е")
     return message.startswith("Для «") and ("длительность" in lowered or "фиксирован" in lowered)
+
+
+def _capacity_validation_message(message: str) -> bool:
+    lowered = message.lower().replace("ё", "е")
+    return "слишком большая компания" in lowered or "не оформляю больше чем" in lowered
+
+
+def _looks_like_explicit_upsell_correction(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in (
+            "доп",
+            "уголь",
+            "розжиг",
+            "решет",
+            "решот",
+            "шампур",
+            "лед",
+            "лёд",
+            "посуд",
+            "кальян",
+            "вода",
+            "уберите",
+            "убрать",
+            "не готовьте",
+            "ниче не готовьте",
+            "ничего не готовьте",
+            "все с собой",
+            "всё с собой",
+        )
+    )
 
 
 def create_hold(

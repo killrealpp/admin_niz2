@@ -63,7 +63,7 @@ def should_check_availability(action: str, changed_fields: list[str], form_data:
     if action == "check_availability":
         return True
     changed = set(changed_fields)
-    if form_data.get("service_type") == "gazebo" and "guests_count" in changed:
+    if form_data.get("service_type") in {"gazebo", "bathhouse"} and "guests_count" in changed:
         return True
     return bool({"service_type", "service_variant", "date", "time", "duration"} & changed)
 
@@ -520,6 +520,26 @@ def execute_availability_check(
 ) -> AvailabilityExecutionResult:
     availability = callbacks.check_availability(conn, form_data=form_data, now=now)
     if availability.ok and not availability.slots:
+        if _capacity_validation_message(availability.message):
+            updated = dict(form_data)
+            updated["guests_count"] = None
+            updated.pop("last_unavailable", None)
+            alternative = callbacks.alternative_services_for_unavailable_date(conn, form_data, now)
+            if alternative:
+                alternative_reply, next_key = alternative
+                return AvailabilityExecutionResult(
+                    reply=f"{availability.message}\n\n{alternative_reply}",
+                    next_key=next_key,
+                    current_step="service_type",
+                    form_data=updated,
+                    used_alternative=True,
+                )
+            return AvailabilityExecutionResult(
+                reply=availability.message,
+                next_key="guests_count",
+                current_step="guests_count",
+                form_data=updated,
+            )
         if _duration_validation_message(availability.message):
             updated = dict(form_data)
             updated["duration"] = None
@@ -606,3 +626,8 @@ def execute_availability_check(
 def _duration_validation_message(message: str) -> bool:
     lowered = message.lower().replace("ё", "е")
     return message.startswith("Для «") and ("длительность" in lowered or "фиксирован" in lowered)
+
+
+def _capacity_validation_message(message: str) -> bool:
+    lowered = message.lower().replace("ё", "е")
+    return "слишком большая компания" in lowered or "не оформляю больше чем" in lowered

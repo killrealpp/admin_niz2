@@ -1,5 +1,5 @@
 import re
-from typing import Any
+from typing import Any, Literal
 
 from app.services.dialog.price_info import (
     looks_like_forbidden_broom_request,
@@ -203,8 +203,12 @@ def phone_patch(text: str) -> dict[str, str]:
 
 def event_format_patch(text: str) -> dict[str, str]:
     normalized = text.lower().replace("ё", "е")
+    if any(
+        marker in normalized
+        for marker in ("день рождения", "днюха", "юбилей")
+    ) or re.search(r"(?<![a-zа-яе])др(?![a-zа-яе])", normalized):
+        return {"event_format": "день рождения"}
     formats = (
-        ("день рождения", ("день рождения", "др", "днюха", "юбилей")),
         ("корпоратив", ("корпоратив", "работ", "коллег")),
         ("свадьба", ("свадьб", "выездная регистрация")),
         ("семейный отдых", ("семейн", "семьей", "семья", "родствен")),
@@ -282,6 +286,13 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
     if cleaned in no_extras or (cleaned.startswith("нет ") and "нет ли" not in cleaned) or any(marker in normalized for marker in fuzzy_no_extras):
         return {"upsell_items": ["не нужны"]}
 
+    if _selects_first_mangal_set(normalized):
+        return {"upsell_items": ["мангальный набор №1"]}
+    if _selects_second_mangal_set(normalized):
+        return {"upsell_items": ["мангальный набор №2"]}
+    if _selects_small_mangal_set(normalized):
+        return {"upsell_items": ["малый мангальный набор"]}
+
     items: list[str] = []
     markers = {
         "базовый мангальный набор": ("базовый набор", "мангальный набор", "набор для мангала"),
@@ -307,6 +318,30 @@ def _contains_upsell_marker(normalized: str, marker: str) -> bool:
     return marker in normalized
 
 
+def _selects_first_mangal_set(normalized: str) -> bool:
+    if not any(marker in normalized for marker in ("набор", "мангальн", "решет", "решот")):
+        return False
+    return bool(
+        re.search(r"\b(?:перв(?:ый|ая|ую|ого|ому|ым|ом)?|1|№\s*1|номер\s*1)\b", normalized)
+        or "за 500" in normalized
+        or "500" in normalized and "набор" in normalized
+    )
+
+
+def _selects_second_mangal_set(normalized: str) -> bool:
+    if not any(marker in normalized for marker in ("набор", "мангальн", "шампур")):
+        return False
+    return bool(
+        re.search(r"\b(?:втор(?:ой|ая|ую|ого|ому|ым|ом)?|2|№\s*2|номер\s*2)\b", normalized)
+        or "1000" in normalized
+        or "1 000" in normalized
+    )
+
+
+def _selects_small_mangal_set(normalized: str) -> bool:
+    return "мал" in normalized and any(marker in normalized for marker in ("набор", "мангальн", "шампур"))
+
+
 def is_upsell_negative(text: str) -> bool:
     normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
     return bool(upsell_items_patch(text).get("upsell_items") == ["не нужны"]) or normalized in {
@@ -329,17 +364,45 @@ def is_upsell_final_negative(text: str) -> bool:
     normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
     compact = re.sub(r"\s+", " ", normalized)
     return compact in {
-        "не",
-        "no",
-        "нет спасибо",
-        "нет, спасибо",
-        "не спасибо",
         "точно нет",
         "точно не",
         "точно ничего",
+        "нет же",
+        "не надо же",
+        "я же сказал нет",
+        "я же сказала нет",
+        "говорю нет",
+        "нет же говорю",
+        "не нужно же",
+        "без всего",
         "ничего не надо",
         "ничего не нужно",
     }
+
+
+UpsellReplyKind = Literal["negative", "final_negative", "positive_selection", "price_question", "unclear"]
+
+
+def classify_upsell_reply(
+    text: str,
+    history: list[dict[str, Any]] | None = None,
+    form_data: dict[str, Any] | None = None,
+) -> UpsellReplyKind:
+    normalized = text.lower().replace("ё", "е")
+    price_question = looks_like_price_question_text(text)
+    explicit_selection = _has_explicit_upsell_selection(normalized)
+    patch = upsell_items_patch(text)
+    selected = patch.get("upsell_items") or []
+    if selected and selected != ["не нужны"]:
+        return "positive_selection"
+    if price_question and not explicit_selection:
+        return "price_question"
+    if is_upsell_negative(text):
+        offer_count = int((form_data or {}).get("upsell_offer_count") or 0)
+        if offer_count > 0 or is_upsell_final_negative(text):
+            return "final_negative"
+        return "negative"
+    return "unclear"
 
 
 def upsell_push_reply(form_data: dict[str, Any]) -> str:
@@ -358,13 +421,18 @@ def upsell_push_reply(form_data: dict[str, Any]) -> str:
 def upsell_sales_messages(service_type: Any) -> list[tuple[str, str, str]]:
     if service_type == "bathhouse":
         return [
-            ("к бане чаще всего берут воду, лёд для напитков, посуду и кальян", "Так компания не отвлекается на мелочи, а отдых сразу получается собранным 🧊", "Могу добавить хотя бы воду или лёд — это обычно точно пригождается."),
-            ("для бани удобно сразу подготовить воду, лёд и посуду", "После парной не хочется искать стаканы или напитки — всё уже будет под рукой 💧", "Добавим минимально воду и лёд?"),
-            ("к бане часто добавляют кальян и лёд", "Получается более полноценный вечер, особенно если компания остаётся отдыхать после парной.", "Могу отметить только кальян или только лёд."),
+            ("к бане чаще всего берут воду, лёд для напитков, посуду и кальян", "После парной эти мелочи быстро становятся самыми нужными, а отдых получается спокойнее 🧊", "Могу добавить хотя бы воду или лёд — это обычно точно пригождается."),
+            ("для бани удобно сразу подготовить воду, лёд и посуду", "Не придётся искать стаканы и напитки уже после парной — всё будет под рукой 💧", "Добавим минимально воду и лёд?"),
+            ("к бане часто добавляют кальян и лёд", "Так вечер после парной получается более собранным, особенно если компания остаётся посидеть.", "Могу отметить только кальян или только лёд."),
+        ]
+    if service_type == "warm_gazebo":
+        return [
+            ("к тёплой беседке часто берут мангальный набор, воду, лёд и посуду", "Так можно сразу накрыть стол и заняться отдыхом, без лишних пакетов и заездов по дороге 🔥", "Могу добавить только мангальный минимум — уголь и розжиг."),
+            ("для тёплой беседки удобны лёд, вода и посуда", "Внутри тепло и комфортно, поэтому чаще хочется просто сесть за стол, а не разбирать мелочи.", "Добавим минимально воду и посуду?"),
         ]
     if service_type == "gazebo":
         return [
-            ("к беседке чаще всего берут базовый набор для мангала: уголь, розжиг, решётку или шампуры, плюс посуду и лёд", "Это экономит время перед заездом: не нужно срочно искать магазин перед отдыхом 🔥", "Могу поставить минимум — уголь и розжиг, а остальное не добавлять."),
+            ("к беседке чаще всего берут базовый набор для мангала: уголь, розжиг, решётку или шампуры, плюс посуду и лёд", "Это экономит время перед заездом: можно сразу разжигать мангал и накрывать стол 🔥", "Могу поставить минимум — уголь и розжиг, а остальное не добавлять."),
             ("для шашлыков обычно берут уголь, розжиг и решётку/шампуры", "Мангал есть, а вот расходники удобнее подготовить заранее, чтобы сразу начать готовить.", "Добавим только мангальный минимум?"),
             ("на компанию часто берут лёд, посуду и воду", "Это мелочи, но именно они чаще всего вспоминаются уже на месте 🧊", "Могу отметить только лёд или посуду."),
             ("для дня рождения обычно берут мангальный набор, лёд и посуду", "Так стол и мангал можно собрать без лишних заездов по дороге.", "Добавим самый базовый набор для праздника?"),
@@ -373,7 +441,7 @@ def upsell_sales_messages(service_type: Any) -> list[tuple[str, str, str]]:
     if service_type == "house":
         return [
             ("к дому обычно берут посуду, лёд, воду и кальян", "Это удобно, если компания планирует отдыхать дольше и не хочет везти всё с собой 🏡", "Могу добавить только воду или посуду, без лишнего."),
-            ("для дома часто выбирают воду, посуду и лёд", "Когда всё подготовлено заранее, можно сразу заняться отдыхом, а не раскладкой мелочей.", "Добавим минимальный набор?"),
+            ("для дома часто выбирают воду, посуду и лёд", "Когда всё подготовлено заранее, можно сразу заняться отдыхом, а не раскладывать бытовые мелочи.", "Добавим минимальный набор?"),
         ]
     return [
         ("обычно берут посуду, лёд, воду или кальян", "Можно добавить только то, что действительно пригодится ✅", "Могу отметить самый базовый вариант, без лишнего."),
@@ -443,18 +511,18 @@ def guests_count_patch(text: str, expected_key: str | None) -> dict[str, int]:
         return {}
     normalized = text.lower().replace("ё", "е").strip()
     range_match = re.search(
-        r"\b(\d{1,3})\s*(?:-|–|—|до)\s*(\d{1,3})\s*(?:человек|челов|гостей|гостя|гость|чел)\b",
+        r"\b(\d{1,3})\s*(?:-|–|—|до)\s*(\d{1,3})\s*(?:человек\w*|челов\w*|гостей|гостя|гость|чел\w*)\b",
         normalized,
     )
     if range_match:
         guests = max(int(range_match.group(1)), int(range_match.group(2)))
         if 0 < guests <= 300:
             return {"guests_count": guests}
-    match = re.fullmatch(r"(?:нас\s*)?(\d{1,3})(?:\s*(?:человек|челов|гостей|гостя|гость|чел))?", normalized)
+    match = re.fullmatch(r"(?:нас\s*)?(\d{1,3})(?:\s*(?:человек\w*|челов\w*|гостей|гостя|гость|чел\w*))?", normalized)
     if not match:
         match = re.search(r"\bнас\s+(?:будет\s+|было\s+бы\s+|было\s+|примерно\s+|планируется\s+)?(\d{1,3})\b", normalized)
     if not match:
-        match = re.search(r"\b(\d{1,3})\s*(?:человек|челов|гостей|гостя|гость|чел)\b", normalized)
+        match = re.search(r"\b(\d{1,3})\s*(?:человек\w*|челов\w*|гостей|гостя|гость|чел\w*)\b", normalized)
     if not match:
         match = re.search(r"\b(\d{1,3})\s*(?:взрослых|взрослые|взрослый)\b", normalized)
     if not match:

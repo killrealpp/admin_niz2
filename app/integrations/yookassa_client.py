@@ -23,6 +23,7 @@ class YooKassaClient:
         self.shop_id = settings.payment_shop_id
         self.secret_key = settings.payment_secret_key
         self.return_url = settings.payment_success_url or "https://t.me/fnsmvsvmpvpovbot"
+        self.http_trust_env = settings.http_trust_env
         if not self.shop_id or not self.secret_key:
             raise YooKassaError("YooKassa credentials are not configured")
 
@@ -86,13 +87,13 @@ class YooKassaClient:
         last_error: httpx.HTTPError | None = None
         for attempt in range(1, attempts + 1):
             try:
-                response = httpx.request(
-                    method,
-                    f"{self.BASE_URL}{path}",
-                    auth=(self.shop_id, self.secret_key),
-                    timeout=30,
-                    **kwargs,
-                )
+                with httpx.Client(timeout=30, trust_env=self.http_trust_env) as client:
+                    response = client.request(
+                        method,
+                        f"{self.BASE_URL}{path}",
+                        auth=(self.shop_id, self.secret_key),
+                        **kwargs,
+                    )
             except (httpx.TimeoutException, httpx.NetworkError) as exc:
                 last_error = exc
                 if attempt >= attempts:

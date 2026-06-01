@@ -11,6 +11,16 @@
 - Если появились задачи, обновлять `best2obs/roadmap/`.
 - Не менять production-код без отдельного запроса.
 
+## Graphify workflow
+
+- `best2graph/` содержит Graphify-карту кода.
+- `best2obs/` остается памятью решений проекта; Graphify ее не заменяет.
+- `best2info/` остается клиентской базой знаний.
+- Для архитектуры, рефакторинга и поиска места правки сначала использовать Graphify, затем открывать конкретные файлы.
+- Не запускать `graphify codex install` без отдельного разрешения.
+- После значимых изменений кода обновлять карту: `.\best2graph\update_graph.ps1`.
+- Запрос к карте: `.\best2graph\.venv\Scripts\graphify.exe query "QUESTION" --graph .\best2graph\graphify-out\graph.json --budget 1200`.
+
 ## LLM Wiki workflow
 
 `best2obs/` ведется как LLM Wiki: агент не просто отвечает в чат, а поддерживает постоянную, связанную базу знаний проекта.

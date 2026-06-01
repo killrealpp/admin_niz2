@@ -1,5 +1,26 @@
 # best2 Project Memory
 
+## 2026-06-01 stable test-run package
+
+- Live Telegram 11:45 fixes are guarded: `нас будет 30 человек, какая беседка подойдет` now saves guests and does not ask them again; `давайте первый набор` selects mangal set №1; after a gazebo booking, `что еще можно забронировать?` answers `Кроме вашей беседки...` instead of `Помимо бани...`.
+- `best2info/` is now a client-facing markdown graph for runtime answers: retrieval scores pages by text/tokens/headings, always includes `runtime.md`, and expands relevant pages through one-hop `[[wikilinks]]`. `scripts/lint_best2info.py` checks links, orphans and prices against `config/services_map.yaml`.
+- Local config is intentionally in test mode: `PREPAYMENT_MODE=fixed`, `PREPAYMENT_AMOUNT_RUB=1`, `PREPAYMENT_PERCENT=50`. Production target is `PREPAYMENT_MODE=percent` with `PREPAYMENT_PERCENT=50`, calculated from the main service/package price and gazebo weekday discount; addons are not included in the advance payment yet.
+- Bathhouse test artifact is cleaned up: `bookings.id=1` is `cancelled`, the `bot_booking` busy interval for `2026-06-30 12:00-16:00` is removed, `payments.id=2` remains `paid` with `payment_notified_at`, and `system_logs` has `manual_cleanup_test_bathhouse_2026_06_30`.
+- Regression side effect was repaired and guarded: live `waitlist_requests.id=35` is active again without `notified_at`; the waitlist regression now filters to its own test rows instead of touching unrelated live waitlist requests.
+- Verification: `compileall`, `lint_best2info.py`, `validate_yclients_map.py`, webhook hardening smoke, all grouped `local_regression_suite.py` blocks, latest `dialog_context_suite.py` 17/17, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13 and `dialog_regression_smoke.py` passed after fresh YCLIENTS sync. Details: [[log]], [[bugs/current-known-issues]], [[architecture/backend]], [[roadmap/pre-launch]], [[decisions/2026-06-01-best2info-graph-and-prepayment]].
+
+## 2026-05-31 best2 pre-live fallback/proxy fixes
+
+- Закрыт regression `bathhouse blocks large group`: общий capacity guard теперь работает в normal/fallback/AI-unavailable paths; баня на `40` гостей очищает `guests_count` и не переходит к `event_format`. По пути smoke поймал и закрыл баг `давай беседку номер 2` -> `guests_count=2`.
+- Добавлен безопасный HTTP default `HTTP_TRUST_ENV=false` для OpenAI/OpenRouter, YCLIENTS, YooKassa и voice transcription, чтобы системный Windows `socks4://127.0.0.1:10808` не ломал `httpx`. Локальный `.env` теперь держит `PREPAYMENT_AMOUNT_RUB=2000`.
+- Проверки: compileall OK; все listed chunks `local_regression_suite.py` OK; `dialog_context_suite.py` 16/16, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13; YCLIENTS strict fresh (`records_seen=129`, `last_error=None`); `dialog_regression_smoke.py` OK. Детали: [[log]], [[bugs/current-known-issues]], [[roadmap/pre-launch]], [[testing/dialog-test-matrix]].
+
+## 2026-05-30 best2 live waitlist/context hardening
+
+- `best2` production-код обновлён для live-нюансов 17:48: safe waitlist gate, лимит бани 15 гостей, контекстное `на 30 число`, отказ `нет` на confirmation и нейтральный `ну окей` на upsell-info.
+- Проверки: compileall OK; targeted `local_regression_suite.py` groups dates/gazebo/services/upsell/waitlist/payments/post_booking OK; `dialog_context_suite.py` 16/16, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13, `yclients_sync_status.py --strict` OK после one-shot sync.
+- Детали: [[log]], [[bugs/current-known-issues]], [[testing/dialog-test-matrix]], [[roadmap/dialog-regression-scenarios]], [[architecture/backend]].
+
 ## 2026-05-29 best3 full parity milestone
 
 - `../best3` now has a full `best2obs` outcome-parity gate for all documented scenario ids (`STD-001..009`, `CTX-001..022`, `EDGE-001..014`, `STR-001..013`, `REG-001..014`).
@@ -81,6 +102,8 @@
 - [[architecture/api]] - внешние API и интеграции.
 - [[roadmap/pre-launch]] - проверки и задачи перед релизом.
 - [[roadmap/dialog-regression-scenarios]] - живые и автоматические сценарии, которые защищают диалог от повторяющихся ошибок.
+- [[roadmap/message-handler-refactor]] - план безопасного уменьшения `message_handler.py` без потери контекстной логики.
+- [[roadmap/large-file-decomposition-plan]] - будущий план разгрузки `message_handler.py`, `local_regression_suite.py` и соседних крупных сервисов.
 - [[testing/dialog-test-matrix]] - матрица успешно проверенных диалоговых сценариев: что покрыто, где покрыто и какой статус последнего прогона.
 - [[testing/scenarios/standard]] - ручной чеклист стандартного happy-path.
 - [[testing/scenarios/context-live]] - ручной чеклист context/live-like сценариев.
@@ -94,6 +117,7 @@
 - [[prompts/llm-wiki-method]] - правила LLM Wiki: ingest, query, lint, index/log.
 - [[decisions/2026-05-26-use-llm-wiki]] - решение вести `best2obs` как LLM Wiki.
 - [[decisions/2026-05-27-dialog-state-policy]] - правило: AI понимает смысл, backend валидирует состояние и переходы анкеты.
+- [[decisions/2026-06-01-best2info-graph-and-prepayment]] - graph-aware retrieval для `best2info` и явные режимы предоплаты.
 - [[daily/2026-05-26-scenario-check]] - отчет о самостоятельной проверке сценариев после последних правок.
 - [[daily/2026-05-27-project-review]] - обзор проекта senior Python-разработчиком: логика, сильные стороны, риски, что исправлять и удалять.
 

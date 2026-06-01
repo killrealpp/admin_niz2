@@ -1,0 +1,532 @@
+{
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\__init__.py": {
+    "mtime": 1779283837.9417365,
+    "ast_hash": "175f8c087fbd5995051f3cc8ce0c50c2",
+    "semantic_hash": "175f8c087fbd5995051f3cc8ce0c50c2"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\ai\\__init__.py": {
+    "mtime": 1778941372.4295366,
+    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
+    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\ai\\ai_orchestrator.py": {
+    "mtime": 1779357071.2387943,
+    "ast_hash": "6439a767c25c9501ecd4721e08e4d327",
+    "semantic_hash": "6439a767c25c9501ecd4721e08e4d327"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\ai\\errors.py": {
+    "mtime": 1779257042.4720137,
+    "ast_hash": "721dced57012531c131dafe89aa171f9",
+    "semantic_hash": "721dced57012531c131dafe89aa171f9"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\ai\\openai_client.py": {
+    "mtime": 1780246787.3412385,
+    "ast_hash": "30892ee91c2fc00e714a290d08f9ba29",
+    "semantic_hash": "30892ee91c2fc00e714a290d08f9ba29"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\ai\\prompt_loader.py": {
+    "mtime": 1778941991.8435614,
+    "ast_hash": "6fffc1a712d8ed238f715e482fe37794",
+    "semantic_hash": "6fffc1a712d8ed238f715e482fe37794"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\ai\\schemas.py": {
+    "mtime": 1779437597.3355048,
+    "ast_hash": "8e0b7406e6093fba439fe106a66fdb65",
+    "semantic_hash": "8e0b7406e6093fba439fe106a66fdb65"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\bot\\__init__.py": {
+    "mtime": 1779283837.9407341,
+    "ast_hash": "81051bcc2cf1bedf378224b0a93e2877",
+    "semantic_hash": "81051bcc2cf1bedf378224b0a93e2877"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\bot\\router.py": {
+    "mtime": 1779437019.6088746,
+    "ast_hash": "240431b47b3f54585e6de2e899ea4b0f",
+    "semantic_hash": "240431b47b3f54585e6de2e899ea4b0f"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\bot\\telegram_bot.py": {
+    "mtime": 1779987379.4330807,
+    "ast_hash": "693b09a76e04137cd021986bb000aaf4",
+    "semantic_hash": "693b09a76e04137cd021986bb000aaf4"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\bot\\telegram_session.py": {
+    "mtime": 1779199823.1442676,
+    "ast_hash": "7b651bd90a60ffec8c3c5c5608ac2bc9",
+    "semantic_hash": "7b651bd90a60ffec8c3c5c5608ac2bc9"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\core\\__init__.py": {
+    "mtime": 1779283837.9417365,
+    "ast_hash": "81051bcc2cf1bedf378224b0a93e2877",
+    "semantic_hash": "81051bcc2cf1bedf378224b0a93e2877"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\core\\config.py": {
+    "mtime": 1780300316.160303,
+    "ast_hash": "b5c81795099945919c483fd91f952fd7",
+    "semantic_hash": "b5c81795099945919c483fd91f952fd7"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\core\\constants.py": {
+    "mtime": 1779367843.5810926,
+    "ast_hash": "4a1658fb00e2efa1bedcb5b7dc41a0aa",
+    "semantic_hash": "4a1658fb00e2efa1bedcb5b7dc41a0aa"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\core\\logger.py": {
+    "mtime": 1779452954.4045064,
+    "ast_hash": "6e8ef2ba8c1944046182de78d47b8ec5",
+    "semantic_hash": "6e8ef2ba8c1944046182de78d47b8ec5"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\__init__.py": {
+    "mtime": 1779283837.9417365,
+    "ast_hash": "81051bcc2cf1bedf378224b0a93e2877",
+    "semantic_hash": "81051bcc2cf1bedf378224b0a93e2877"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\connection.py": {
+    "mtime": 1779899204.9042292,
+    "ast_hash": "d226580dc3a93fb0a2cebfa66b288b75",
+    "semantic_hash": "d226580dc3a93fb0a2cebfa66b288b75"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\migrations\\001_init.sql": {
+    "mtime": 1779897409.9213293,
+    "ast_hash": "e2fd564aba30cbcd45fcf914fa292515",
+    "semantic_hash": "e2fd564aba30cbcd45fcf914fa292515"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\__init__.py": {
+    "mtime": 1779283837.9407341,
+    "ast_hash": "81051bcc2cf1bedf378224b0a93e2877",
+    "semantic_hash": "81051bcc2cf1bedf378224b0a93e2877"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\bookings_repo.py": {
+    "mtime": 1779987304.6755,
+    "ast_hash": "1550cef2f9fca8dfb0714627f45fc33c",
+    "semantic_hash": "1550cef2f9fca8dfb0714627f45fc33c"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\conversation_summaries_repo.py": {
+    "mtime": 1779437252.0185862,
+    "ast_hash": "15361f8f33778df43f22777bb3f007fb",
+    "semantic_hash": "15361f8f33778df43f22777bb3f007fb"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\conversations_repo.py": {
+    "mtime": 1779285204.5727446,
+    "ast_hash": "285404af4bc0f5e82206cf6aa8cfe475",
+    "semantic_hash": "285404af4bc0f5e82206cf6aa8cfe475"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\messages_repo.py": {
+    "mtime": 1779283837.9417365,
+    "ast_hash": "5a23ba0bcf40c59b747975e8c17d47c2",
+    "semantic_hash": "5a23ba0bcf40c59b747975e8c17d47c2"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\payments_repo.py": {
+    "mtime": 1779897482.3357413,
+    "ast_hash": "94ce1561fb23b2cd65edf51784ecba92",
+    "semantic_hash": "94ce1561fb23b2cd65edf51784ecba92"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\slot_holds_repo.py": {
+    "mtime": 1779898296.2641578,
+    "ast_hash": "e053b3f44f11db2c26066acb505df2ab",
+    "semantic_hash": "e053b3f44f11db2c26066acb505df2ab"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\system_logs_repo.py": {
+    "mtime": 1779257042.61991,
+    "ast_hash": "a8582fc19b6e0ca4db8354dbf7215865",
+    "semantic_hash": "a8582fc19b6e0ca4db8354dbf7215865"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\users_repo.py": {
+    "mtime": 1779367874.9924133,
+    "ast_hash": "2bbbad5fe836123c53944c2151d08662",
+    "semantic_hash": "2bbbad5fe836123c53944c2151d08662"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\waitlist_repo.py": {
+    "mtime": 1780153658.1315105,
+    "ast_hash": "f44b92ee6bd7369bfb3bbe73dfaf7be5",
+    "semantic_hash": "f44b92ee6bd7369bfb3bbe73dfaf7be5"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\webhook_events_repo.py": {
+    "mtime": 1779367909.9940186,
+    "ast_hash": "20143798e327c5b0e6f098b2bf39415f",
+    "semantic_hash": "20143798e327c5b0e6f098b2bf39415f"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\yclients_records_repo.py": {
+    "mtime": 1779686236.9411469,
+    "ast_hash": "93107499d3044af4303df5632dac64e6",
+    "semantic_hash": "93107499d3044af4303df5632dac64e6"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\integrations\\__init__.py": {
+    "mtime": 1778999116.355456,
+    "ast_hash": "68b329da9893e34099c7d8ad5cb9c940",
+    "semantic_hash": "68b329da9893e34099c7d8ad5cb9c940"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\integrations\\yclients_client.py": {
+    "mtime": 1780246787.3432412,
+    "ast_hash": "15c58c6d1562e2cd0c3bc6c3a7907dfa",
+    "semantic_hash": "15c58c6d1562e2cd0c3bc6c3a7907dfa"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\integrations\\yookassa_client.py": {
+    "mtime": 1780246787.3463118,
+    "ast_hash": "7c36fb947465569a1223a81186f4ab52",
+    "semantic_hash": "7c36fb947465569a1223a81186f4ab52"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\__init__.py": {
+    "mtime": 1779283837.9417365,
+    "ast_hash": "81051bcc2cf1bedf378224b0a93e2877",
+    "semantic_hash": "81051bcc2cf1bedf378224b0a93e2877"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\admin_notification_service.py": {
+    "mtime": 1779816728.4948092,
+    "ast_hash": "86f8bc043a866f9fdcf52d0fd325491f",
+    "semantic_hash": "86f8bc043a866f9fdcf52d0fd325491f"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\admin_telegram_service.py": {
+    "mtime": 1779201535.7524452,
+    "ast_hash": "ecc2c33b453b4f5972303bf3d952c89e",
+    "semantic_hash": "ecc2c33b453b4f5972303bf3d952c89e"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\availability_service.py": {
+    "mtime": 1780153781.8979795,
+    "ast_hash": "c41f6de0ecdc6cea07e8bb80b7368b3c",
+    "semantic_hash": "c41f6de0ecdc6cea07e8bb80b7368b3c"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\booking_finalize_service.py": {
+    "mtime": 1779285131.5326962,
+    "ast_hash": "1b175a564c95b9ada4a1fce5ec39ac70",
+    "semantic_hash": "1b175a564c95b9ada4a1fce5ec39ac70"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\booking_form_service.py": {
+    "mtime": 1780296797.9032314,
+    "ast_hash": "606707c5d891ecf8b6a27f3382718b2f",
+    "semantic_hash": "606707c5d891ecf8b6a27f3382718b2f"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\conversation_service.py": {
+    "mtime": 1779283837.9407341,
+    "ast_hash": "567a0f63a8ae3e3981df17eeac3a0c66",
+    "semantic_hash": "567a0f63a8ae3e3981df17eeac3a0c66"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\__init__.py": {
+    "mtime": 1779794657.3589258,
+    "ast_hash": "93aea8ee37a0935edd4885df1ebc6190",
+    "semantic_hash": "93aea8ee37a0935edd4885df1ebc6190"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\availability_flow.py": {
+    "mtime": 1780246840.5410893,
+    "ast_hash": "2f68b63462b07f50b2fb84462cd61df0",
+    "semantic_hash": "2f68b63462b07f50b2fb84462cd61df0"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\booking_context.py": {
+    "mtime": 1779797722.3468802,
+    "ast_hash": "ad2f144c1a81fd4dc3b8602d6efb36cf",
+    "semantic_hash": "ad2f144c1a81fd4dc3b8602d6efb36cf"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\booking_texts.py": {
+    "mtime": 1779978632.1929915,
+    "ast_hash": "3c6c11c346d88fcb8e4d97552582eeb7",
+    "semantic_hash": "3c6c11c346d88fcb8e4d97552582eeb7"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\cancel_flow.py": {
+    "mtime": 1780034730.1909885,
+    "ast_hash": "2f068cc94695c56b2a2750d885ffc709",
+    "semantic_hash": "2f068cc94695c56b2a2750d885ffc709"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\confirmation_flow.py": {
+    "mtime": 1780153829.9915338,
+    "ast_hash": "4be1efdbc1846714d1389a01a688019c",
+    "semantic_hash": "4be1efdbc1846714d1389a01a688019c"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\date_parsing.py": {
+    "mtime": 1779798125.052395,
+    "ast_hash": "354c4576b25ab2d6feae87cb2337ea99",
+    "semantic_hash": "354c4576b25ab2d6feae87cb2337ea99"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\form_corrections.py": {
+    "mtime": 1780043243.0657268,
+    "ast_hash": "828019d9502e2287a85dad3af5324a72",
+    "semantic_hash": "828019d9502e2287a85dad3af5324a72"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\form_patches.py": {
+    "mtime": 1780304553.4415624,
+    "ast_hash": "76969614ed494284a7ea51441c7b0660",
+    "semantic_hash": "76969614ed494284a7ea51441c7b0660"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\formatting.py": {
+    "mtime": 1779978567.901177,
+    "ast_hash": "6fdf340d503d5d0b67ed2a0def0b3567",
+    "semantic_hash": "6fdf340d503d5d0b67ed2a0def0b3567"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\fresh_start.py": {
+    "mtime": 1779797407.3931074,
+    "ast_hash": "87fbc0824557c42f3ac6e6144bcab7c5",
+    "semantic_hash": "87fbc0824557c42f3ac6e6144bcab7c5"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\gazebo_options.py": {
+    "mtime": 1779981353.5566242,
+    "ast_hash": "2d7378afb7887f26d67e071dbfc1bf14",
+    "semantic_hash": "2d7378afb7887f26d67e071dbfc1bf14"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\handoff.py": {
+    "mtime": 1779955616.6665354,
+    "ast_hash": "175672eebc783ce4a0599170c45ff187",
+    "semantic_hash": "175672eebc783ce4a0599170c45ff187"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\media_flow.py": {
+    "mtime": 1779947792.013523,
+    "ast_hash": "8ef380e7f5092738a3ae20ea4b38d028",
+    "semantic_hash": "8ef380e7f5092738a3ae20ea4b38d028"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\performance.py": {
+    "mtime": 1779810951.919892,
+    "ast_hash": "d312e4a2550ce96f65636c0accc8dcbd",
+    "semantic_hash": "d312e4a2550ce96f65636c0accc8dcbd"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\post_booking_flow.py": {
+    "mtime": 1779901775.307127,
+    "ast_hash": "4838095acae7a48e9f4e3f503381735e",
+    "semantic_hash": "4838095acae7a48e9f4e3f503381735e"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\price_info.py": {
+    "mtime": 1780300509.6968112,
+    "ast_hash": "4557d3976bea61f445ae8e11fa98538a",
+    "semantic_hash": "4557d3976bea61f445ae8e11fa98538a"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\reschedule_flow.py": {
+    "mtime": 1779990556.3716395,
+    "ast_hash": "c5d249bf45f1e564b1b38ca8fbbd4d4b",
+    "semantic_hash": "c5d249bf45f1e564b1b38ca8fbbd4d4b"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\response_builder.py": {
+    "mtime": 1779860126.2897685,
+    "ast_hash": "7275a3d2506b58ca0efbd74b34910760",
+    "semantic_hash": "7275a3d2506b58ca0efbd74b34910760"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\routing_guards.py": {
+    "mtime": 1779889835.9047692,
+    "ast_hash": "b774e76cdd747cc5e4216aabc7a58a76",
+    "semantic_hash": "b774e76cdd747cc5e4216aabc7a58a76"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\semantic_router.py": {
+    "mtime": 1779955626.297457,
+    "ast_hash": "99196fcb9e1682fd70966bf291dfeade",
+    "semantic_hash": "99196fcb9e1682fd70966bf291dfeade"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\stale_form.py": {
+    "mtime": 1779978661.5302103,
+    "ast_hash": "e8602133002ed67528670e39ea11cdb1",
+    "semantic_hash": "e8602133002ed67528670e39ea11cdb1"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\time_parsing.py": {
+    "mtime": 1780150411.3607666,
+    "ast_hash": "0eb96e8df9ecaee11f85cd1ca8c95689",
+    "semantic_hash": "0eb96e8df9ecaee11f85cd1ca8c95689"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\knowledge_service.py": {
+    "mtime": 1780300555.745663,
+    "ast_hash": "6dd0755f1f4bcabc22ea116b6d8bf72e",
+    "semantic_hash": "6dd0755f1f4bcabc22ea116b6d8bf72e"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\media_service.py": {
+    "mtime": 1780150378.877212,
+    "ast_hash": "85bf6e07d6491e205c93e699170ba541",
+    "semantic_hash": "85bf6e07d6491e205c93e699170ba541"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_handler.py": {
+    "mtime": 1780304635.489432,
+    "ast_hash": "9b873b8397f077c3557b37c6705052f9",
+    "semantic_hash": "9b873b8397f077c3557b37c6705052f9"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_retention_runner.py": {
+    "mtime": 1779435384.5563242,
+    "ast_hash": "2781ecf8a8952f148dd702b060222f59",
+    "semantic_hash": "2781ecf8a8952f148dd702b060222f59"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\payment_service.py": {
+    "mtime": 1780300350.5492942,
+    "ast_hash": "94ca55aea6f48c1950e5b2db2704527d",
+    "semantic_hash": "94ca55aea6f48c1950e5b2db2704527d"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\payment_status_runner.py": {
+    "mtime": 1780039264.1625893,
+    "ast_hash": "7be71f5c200780ba5be80d5ee01d3f34",
+    "semantic_hash": "7be71f5c200780ba5be80d5ee01d3f34"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\user_service.py": {
+    "mtime": 1779283837.9417365,
+    "ast_hash": "d7bd65016fb4645344d2557cfddc4444",
+    "semantic_hash": "d7bd65016fb4645344d2557cfddc4444"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\voice_transcription_service.py": {
+    "mtime": 1780246795.1578493,
+    "ast_hash": "68f252050f4f9ca12c302f232e7528e2",
+    "semantic_hash": "68f252050f4f9ca12c302f232e7528e2"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\waitlist_service.py": {
+    "mtime": 1780153716.6164045,
+    "ast_hash": "0503d44e798ace0690a86a7d724a9103",
+    "semantic_hash": "0503d44e798ace0690a86a7d724a9103"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\yclients_record_service.py": {
+    "mtime": 1779987317.2214892,
+    "ast_hash": "d7b3a7c8a4b6005d49d30393d7890ae4",
+    "semantic_hash": "d7b3a7c8a4b6005d49d30393d7890ae4"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\yclients_sync_runner.py": {
+    "mtime": 1779897895.474487,
+    "ast_hash": "3a39e7c51338b2dd90c3fa435220b645",
+    "semantic_hash": "3a39e7c51338b2dd90c3fa435220b645"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\yclients_sync_service.py": {
+    "mtime": 1779897883.6085715,
+    "ast_hash": "3c525aa47f49b6215531e673d7c2d506",
+    "semantic_hash": "3c525aa47f49b6215531e673d7c2d506"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\yookassa_webhook_runner.py": {
+    "mtime": 1779900317.583292,
+    "ast_hash": "7ac1d9e680869a2bd9cff1b3cb77d034",
+    "semantic_hash": "7ac1d9e680869a2bd9cff1b3cb77d034"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\best2info\\.obsidian\\app.json": {
+    "mtime": 1780311063.355921,
+    "ast_hash": "99914b932bd37a50b983c5e7c90ae93b",
+    "semantic_hash": "99914b932bd37a50b983c5e7c90ae93b"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\best2info\\.obsidian\\appearance.json": {
+    "mtime": 1780311063.3649192,
+    "ast_hash": "86d9f6137e6a7f85b82e26b03cbcde9d",
+    "semantic_hash": "86d9f6137e6a7f85b82e26b03cbcde9d"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\best2info\\.obsidian\\core-plugins.json": {
+    "mtime": 1780311063.34192,
+    "ast_hash": "7c877bea49eaeabb100563bd157b9051",
+    "semantic_hash": "7c877bea49eaeabb100563bd157b9051"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\best2info\\.obsidian\\graph.json": {
+    "mtime": 1780311088.937,
+    "ast_hash": "75fc9e44e633f9451e4d1feead069090",
+    "semantic_hash": "75fc9e44e633f9451e4d1feead069090"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\best2info\\.obsidian\\workspace.json": {
+    "mtime": 1780311087.8452365,
+    "ast_hash": "54c5c04d3c3388cc5f31374d3094200b",
+    "semantic_hash": "54c5c04d3c3388cc5f31374d3094200b"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\main.py": {
+    "mtime": 1779283837.9417365,
+    "ast_hash": "7616486861057a884f8803f184a1759b",
+    "semantic_hash": "7616486861057a884f8803f184a1759b"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\admin_bookings.py": {
+    "mtime": 1779173721.8598971,
+    "ast_hash": "06827b0ab4b6ca31c10c9dd0af6b8256",
+    "semantic_hash": "06827b0ab4b6ca31c10c9dd0af6b8256"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\admin_notification_preview.py": {
+    "mtime": 1779173794.5601263,
+    "ast_hash": "889383a747727f696c8948114c917117",
+    "semantic_hash": "889383a747727f696c8948114c917117"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\cleanup_yclients_test_records.py": {
+    "mtime": 1779885542.4811487,
+    "ast_hash": "e10d93fa8108150a04b4ecc84a2b6a51",
+    "semantic_hash": "e10d93fa8108150a04b4ecc84a2b6a51"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\clear_db.py": {
+    "mtime": 1779101180.6447923,
+    "ast_hash": "8336440bb26567c38d5caca7d3100dc7",
+    "semantic_hash": "8336440bb26567c38d5caca7d3100dc7"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\db_status.py": {
+    "mtime": 1779101150.5603337,
+    "ast_hash": "39ec0cd9e27cec92165d4e9e9dda4d4e",
+    "semantic_hash": "39ec0cd9e27cec92165d4e9e9dda4d4e"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\dialog_context_suite.py": {
+    "mtime": 1780304593.912279,
+    "ast_hash": "4b22193a3537d821db6504020e4a6fde",
+    "semantic_hash": "4b22193a3537d821db6504020e4a6fde"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\dialog_edge_suite.py": {
+    "mtime": 1779995920.3966603,
+    "ast_hash": "8f3fae05d0bff3176e94da3797b5286a",
+    "semantic_hash": "8f3fae05d0bff3176e94da3797b5286a"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\dialog_regression_smoke.py": {
+    "mtime": 1780249927.7215016,
+    "ast_hash": "494f43a3faf93c3993f95d865beb11b3",
+    "semantic_hash": "494f43a3faf93c3993f95d865beb11b3"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\dialog_stress_suite.py": {
+    "mtime": 1780286378.0000138,
+    "ast_hash": "11cf5f023ee69c87642bc6785cec5e29",
+    "semantic_hash": "11cf5f023ee69c87642bc6785cec5e29"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\init_db.py": {
+    "mtime": 1779283837.9407341,
+    "ast_hash": "395f6a04a56743e4fae7d0babd463de6",
+    "semantic_hash": "395f6a04a56743e4fae7d0babd463de6"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\inspect_last_dialog.py": {
+    "mtime": 1779452975.9633677,
+    "ast_hash": "6461f55a5eeb948d9d495816bbd6c472",
+    "semantic_hash": "6461f55a5eeb948d9d495816bbd6c472"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\lint_best2info.py": {
+    "mtime": 1780300496.8928285,
+    "ast_hash": "23205b579617d4f2b76184de52f327e5",
+    "semantic_hash": "23205b579617d4f2b76184de52f327e5"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\local_regression_suite.py": {
+    "mtime": 1780304622.733218,
+    "ast_hash": "e3e5e2549a4e941db409519baf31dbee",
+    "semantic_hash": "e3e5e2549a4e941db409519baf31dbee"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\register_yookassa_webhook.py": {
+    "mtime": 1779430959.770257,
+    "ast_hash": "b2fd428302f4b4a0bd9e723142771ae2",
+    "semantic_hash": "b2fd428302f4b4a0bd9e723142771ae2"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\summarize_old_messages.py": {
+    "mtime": 1779101058.5351038,
+    "ast_hash": "d9ebdf53744713bc2a9b4af90c1178ce",
+    "semantic_hash": "d9ebdf53744713bc2a9b4af90c1178ce"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\sync_payment_statuses.py": {
+    "mtime": 1779296512.197124,
+    "ast_hash": "8d37c38f9d8035fa512ab2bcb0cf5219",
+    "semantic_hash": "8d37c38f9d8035fa512ab2bcb0cf5219"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\sync_yclients_records.py": {
+    "mtime": 1779897895.4764898,
+    "ast_hash": "7fd6c90bc598b5838e5cee58c6a18b26",
+    "semantic_hash": "7fd6c90bc598b5838e5cee58c6a18b26"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\telegram_status.py": {
+    "mtime": 1779199932.8266702,
+    "ast_hash": "119d8d7cf4e9abe335bc2c5c76ead952",
+    "semantic_hash": "119d8d7cf4e9abe335bc2c5c76ead952"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\test_db.py": {
+    "mtime": 1779453073.284914,
+    "ast_hash": "c715f232da366d4c65922b422d10aeba",
+    "semantic_hash": "c715f232da366d4c65922b422d10aeba"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\validate_yclients_map.py": {
+    "mtime": 1779335127.347345,
+    "ast_hash": "618db97fcf5d2b0e21fe703c5484bb49",
+    "semantic_hash": "618db97fcf5d2b0e21fe703c5484bb49"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\yclients_smoke.py": {
+    "mtime": 1778999475.7429802,
+    "ast_hash": "ac9e3626db2c47292fe26ad928d16f9d",
+    "semantic_hash": "ac9e3626db2c47292fe26ad928d16f9d"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\yclients_sync_status.py": {
+    "mtime": 1779895161.425265,
+    "ast_hash": "30a9dd4fe583d3d3604ae51bfd66dec2",
+    "semantic_hash": "30a9dd4fe583d3d3604ae51bfd66dec2"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\yookassa_smoke.py": {
+    "mtime": 1779180554.4602447,
+    "ast_hash": "936e2df534a6078e745a19444217fe0d",
+    "semantic_hash": "936e2df534a6078e745a19444217fe0d"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\yookassa_webhook_hardening_smoke.py": {
+    "mtime": 1779900377.16286,
+    "ast_hash": "73a09e122404971a9098614d366ad373",
+    "semantic_hash": "73a09e122404971a9098614d366ad373"
+  }
+}

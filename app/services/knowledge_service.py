@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from functools import lru_cache
 import re
 from typing import Any
@@ -12,6 +13,16 @@ CLIENT_RUNTIME_KNOWLEDGE_PATH = KNOWLEDGE_DIR / "client_runtime.md"
 RUNTIME_KNOWLEDGE_PATH = KNOWLEDGE_DIR / "runtime.md"
 MAX_KNOWLEDGE_CHARS = 24000
 MAX_RETRIEVED_KNOWLEDGE_CHARS = 12000
+WIKILINK_RE = re.compile(r"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|[^\]]+)?\]\]")
+HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class KnowledgeDocument:
+    rel_path: str
+    content: str
+    headings: tuple[str, ...]
+    links: tuple[str, ...]
 
 
 TOPIC_KEYWORDS: dict[str, tuple[str, ...]] = {
@@ -79,21 +90,28 @@ def load_knowledge() -> str:
 
 
 @lru_cache
-def _load_best2info_documents() -> list[tuple[str, str]]:
+def _load_best2info_documents() -> tuple[KnowledgeDocument, ...]:
     if not BEST2INFO_DIR.exists():
-        return []
+        return ()
     paths = sorted(
         path
         for path in BEST2INFO_DIR.rglob("*.md")
         if path.is_file() and path.name != "runtime.md"
     )
-    documents: list[tuple[str, str]] = []
+    documents: list[KnowledgeDocument] = []
     for path in paths:
         rel_path = path.relative_to(BEST2INFO_DIR).as_posix()
         text = path.read_text(encoding="utf-8").strip()
         if text:
-            documents.append((rel_path, text))
-    return documents
+            documents.append(
+                KnowledgeDocument(
+                    rel_path=rel_path,
+                    content=text,
+                    headings=tuple(match.strip() for match in HEADING_RE.findall(text)),
+                    links=_wikilinks_for_document(text),
+                )
+            )
+    return tuple(documents)
 
 
 def retrieve_client_knowledge(
@@ -115,23 +133,27 @@ def retrieve_client_knowledge(
 
     query = _normalize_text(" ".join(str(part or "") for part in (text, _form_context_text(form_data or {}))))
     query_tokens = _tokens(query)
-    scored: list[tuple[int, str, str]] = []
-    for rel_path, content in documents:
-        score = _knowledge_score(rel_path, content, query, query_tokens)
+    by_path = {document.rel_path: document for document in documents}
+    scored: list[tuple[int, KnowledgeDocument]] = []
+    for document in documents:
+        score = _knowledge_score(document, query, query_tokens)
         if score > 0:
-            scored.append((score, rel_path, content))
+            scored.append((score, document))
 
     if not scored:
         scored = [
-            (1, rel_path, content)
-            for rel_path, content in documents
-            if rel_path in {"index.md", "rules/payment.md", "rules/location.md"}
+            (1, document)
+            for document in documents
+            if document.rel_path in {"index.md", "rules/payment.md", "rules/location.md"}
         ]
-    scored.sort(key=lambda item: (-item[0], item[1]))
+    scored.sort(key=lambda item: (-item[0], item[1].rel_path))
 
     chunks = [f"# runtime.md\n\n{runtime}"]
-    for _score, rel_path, content in scored[:limit]:
-        chunks.append(f"# {rel_path}\n\n{content}")
+    selected_paths = _selected_graph_paths(scored[:limit], by_path, limit=limit)
+    for rel_path in selected_paths:
+        document = by_path.get(rel_path)
+        if document:
+            chunks.append(f"# {rel_path}\n\n{document.content}")
 
     result = "\n\n".join(chunks)
     if len(result) <= max_chars:
@@ -139,15 +161,53 @@ def retrieve_client_knowledge(
     return result[:max_chars] + "\n\n[Клиентская база знаний обрезана для контекста.]"
 
 
-def _knowledge_score(rel_path: str, content: str, query: str, query_tokens: set[str]) -> int:
-    haystack = _normalize_text(f"{rel_path} {content}")
+def _selected_graph_paths(
+    scored: list[tuple[int, KnowledgeDocument]],
+    by_path: dict[str, KnowledgeDocument],
+    *,
+    limit: int,
+) -> list[str]:
+    selected: list[str] = []
+    seen: set[str] = set()
+
+    def add(rel_path: str) -> None:
+        if rel_path in by_path and rel_path not in seen:
+            selected.append(rel_path)
+            seen.add(rel_path)
+
+    for _score, document in scored:
+        add(document.rel_path)
+
+    seeds = list(selected)
+    for rel_path in seeds:
+        document = by_path.get(rel_path)
+        if not document:
+            continue
+        if document.rel_path != "index.md":
+            for linked_path in document.links:
+                add(linked_path)
+        for candidate in by_path.values():
+            if rel_path in candidate.links:
+                add(candidate.rel_path)
+
+    return selected[: max(limit * 2, limit)]
+
+
+def _knowledge_score(document: KnowledgeDocument, query: str, query_tokens: set[str]) -> int:
+    haystack = _normalize_text(f"{document.rel_path} {' '.join(document.headings)} {document.content}")
     score = 0
     for token in query_tokens:
         if len(token) >= 3 and token in haystack:
             score += 2
-    for keyword in TOPIC_KEYWORDS.get(rel_path, ()):
+    for heading in document.headings:
+        normalized_heading = _normalize_text(heading)
+        if normalized_heading and normalized_heading in query:
+            score += 4
+    for keyword in TOPIC_KEYWORDS.get(document.rel_path, ()):
         if _normalize_text(keyword) in query:
             score += 8
+    if document.rel_path == "index.md" and score > 0:
+        return 1
     return score
 
 
@@ -161,6 +221,24 @@ def _tokens(value: str) -> set[str]:
         for token in re.findall(r"[a-zа-я0-9]+", value.lower().replace("ё", "е"))
         if len(token) >= 3
     }
+
+
+def _wikilinks_for_document(content: str) -> tuple[str, ...]:
+    links: list[str] = []
+    for raw_target in WIKILINK_RE.findall(content):
+        rel_path = _normalize_wikilink_target(raw_target)
+        if rel_path and rel_path not in links:
+            links.append(rel_path)
+    return tuple(links)
+
+
+def _normalize_wikilink_target(raw_target: str) -> str:
+    target = raw_target.strip().replace("\\", "/")
+    if not target:
+        return ""
+    if not target.endswith(".md"):
+        target = f"{target}.md"
+    return target.lstrip("/")
 
 
 def _form_context_text(form_data: dict[str, Any]) -> str:

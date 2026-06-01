@@ -1,5 +1,63 @@
 # Backend
 
+## 2026-06-01 live dialog state guards for guests, addons and post-booking service context
+
+- `message_handler._gazebo_guest_options_shortcut()` handles mixed guest-count + gazebo-selection questions before the generic upsell/form path. If the active draft is a gazebo, no variant is selected yet, and the message contains a guest-count signal such as `нас будет 30 человек`, backend stores `guests_count`, reuses known available variants, returns capacity-filtered gazebo options and moves the state to `service_variant` instead of asking guests again.
+- `form_patches.upsell_items_patch()` now supports ordinal selections from the immediately shown addon price list: first/second/small mangal set, `№1/№2`, and clear price references for 500/1000 rubles. This keeps addon selection deterministic and avoids falling through to availability or repeating the upsell question.
+- `message_handler._available_services_reply()` is service-aware. After a confirmed/paid gazebo it says `Кроме вашей беседки...`; only bathhouse context uses `Помимо бани...`. The function remains informational and does not start a new booking until the user names a service/date.
+- These guards follow the project rule: AI can understand free text, but backend owns state transitions for fields already requested by the form and for post-booking context that depends on local bookings/form data.
+
+## 2026-06-01 best2info retrieval, prepayment modes and cleanup boundary
+
+- `best2info/` remains the client-facing knowledge source, but runtime retrieval is now graph-aware. `knowledge_service` builds `KnowledgeDocument` entries with `rel_path`, content, headings and parsed `[[wikilinks]]`; scoring still uses normalized tokens/topic keywords/headings, then selected pages are expanded through one-hop outgoing and incoming links. `runtime.md` is always included.
+- `best2info/index.md` is treated as the map of truth sources: prices for code come from `config/services_map.yaml`, availability comes from local DB tables (`yclients_records`, `resource_busy_intervals`, active holds/bookings), facts for natural-language answers come from `best2info`, and YCLIENTS is the external journal/source for sync.
+- `scripts/lint_best2info.py` is the maintenance guard for the client wiki: broken links, orphan pages, gazebo base/discount prices, fixed service package prices and "fact without exact price" notes are checked before manual Telegram smoke.
+- Prepayment now has an explicit mode boundary. Fixed mode uses `PREPAYMENT_AMOUNT_RUB` per booking/hold and is used locally for safe 1-ruble tests. Percent mode uses `PREPAYMENT_PERCENT` against the main service/package price from `services_map`; gazebo ПН-ЧТ discount is included, addons are excluded from advance payment.
+- Payment link creation passes booking/hold base prices into `calculate_prepayment_amount()` only when percent mode is active. Unknown base price in percent mode raises a payment error instead of silently creating an incorrect payment.
+- The 2026-06-01 bathhouse cleanup was operational DB repair, not a schema or production-flow change: failed local test booking `#1` is archived as `cancelled`, its `bot_booking` busy interval is removed, payment history remains, and a `system_logs` event records the repair.
+- Regression tests that exercise waitlist notifications must isolate their own waitlist rows. The 2026-06-01 fix stubs `waitlist_repo.list_active_due` inside the test so live waitlist requests are not marked `notified` by local regression runs.
+
+## 2026-05-31 pre-live fallback/proxy guards
+
+- Capacity validation is now centralized in `message_handler._capacity_mismatch_reply()`: after form patches are applied, normal and exception/fallback paths run gazebo capacity first and bathhouse capacity second. This keeps fallback behavior aligned with the AI/normal path.
+- Bathhouse over-capacity remains a backend state rule: if `service_type=bathhouse` and `guests_count > 15`, the handler clears only `guests_count`, keeps the rest of the draft, and asks for manual clarification/alternative instead of advancing to `event_format`.
+- HTTP outbound clients use explicit trust-env policy. `Settings.http_trust_env` defaults to `False` (`HTTP_TRUST_ENV=false`), and OpenAI/OpenRouter, YCLIENTS, YooKassa and voice transcription pass it into `DefaultHttpxClient`/`httpx.Client`. This prevents a machine-level unsupported `socks4` proxy from silently breaking AI/sync/payment calls.
+- Guest-count parsing now treats explicit gazebo variant references (`Беседка №2`, `номер 2`, `№2`) as object selection, not as an expected-step guest count, unless the text also has an explicit guest marker.
+
+## 2026-05-30 waitlist and confirmation safety guards
+
+- Waitlist remains on the existing `waitlist_requests` table. `yclients_sync_runner` can still call `notify_waitlist_matches`, but notification now passes a relevance gate first: request is active, date is not past, the client has no matching active booking/payment or active hold, recent user messages do not say the request is irrelevant, and availability is freshly confirmed after sync.
+- Obsolete waitlist requests are closed as `closed`; sent notifications are marked `notified`. The bot text is normal UTF-8 Russian and does not create a new schema/table.
+- Bathhouse capacity is a backend validation, not an AI prompt convention: `availability_service` blocks `bathhouse` drafts above 15 guests, and both availability/confirmation flows clear only `guests_count` and return to that step instead of creating hold/payment.
+- Day-only references (`30 число`, `на 30`, `на 30-е`) use the freshest local date context from current `form_data.date` or `last_unavailable.date` when there is no explicit month. This protects follow-ups after a June discussion from falling back to the current month.
+- `awaiting_confirmation` treats bare negative replies as refusal to confirm before correction patches. Only explicit addon-correction wording can change `upsell_items` at that stage.
+- Neutral acknowledgements after info-answers on the upsell step do not select addons. Addons require semantic positive selection or the existing two-touch negative flow.
+
+## 2026-05-30 live-30.05 context and availability guards
+
+- Price routing is semantic-first when AI classifies `intent=price_question`: backend computes the price from `services_map` and the current draft, even if the user did not use exact words like `цена/стоить/сколько`. Deterministic price markers remain a fast path, not the only way to understand price intent.
+- Common-info for children no longer uses broad substring `дет`; it uses word-form matching so words like `будет` cannot trigger a children-policy answer.
+- Upsell replies now pass through `form_patches.classify_upsell_reply()`: `negative`, `final_negative`, `positive_selection`, `price_question`, `unclear`. First semantic negative on `upsell_items` increments `upsell_offer_count` and sends the soft second offer; a repeated/final negative writes `upsell_items=["не нужны"]` and advances by `next_question()`.
+- Fixed-package services (`bathhouse`, `house`) validate selected start times against live YCLIENTS `book_times` before local hold/payment creation. Local busy intervals still matter, but a start missing from `book_times` is treated as unavailable and the bot shows available starts instead.
+- If YCLIENTS `book_times` is unavailable for those fixed services, availability returns a safe non-free response rather than claiming the slot is free.
+- Media selection for booking summaries now resolves gazebo photos from `service_variant`, `hold_yclients_service_id`, `yclients_service_id`, and booking-list text. This lets summaries with both `Беседка №1` and `Баня` send both images.
+
+## 2026-05-29 live-19:02 subsequent booking boundary
+
+- Generic new-booking detection now treats `отдельной/отдельную бронью`, `добавить отдельной` and typo `добвить отдельной` as a request to start a separate booking when a `last_discussed_service_type` exists.
+- Service-exists/info routing is intentionally narrower: it answers `есть/какие варианты` questions, but does not intercept booking requests that contain date/time/same-reference or explicit additional-booking wording.
+- `а какие беседки есть` can set `form_data.last_discussed_service_type="gazebo"` without changing the active draft service. A follow-up like `хочу добвить отдельной бронью` then creates a clean gazebo draft through the normal new-booking policy and preserves only contact fields.
+- Post-booking common info such as mosquitoes bypasses the AI post-booking classifier and uses deterministic `price_info.policy_or_common_info_reply`, preventing invented answers.
+- Bathhouse wording is aligned with `config/services_map.yaml`: not arbitrary hourly rental, but fixed YCLIENTS packages of 3, 4, 5, 6 or 7 hours.
+
+## 2026-05-29 message_handler refactor direction
+
+- `app/services/message_handler.py` остаётся production-координатором, но его нужно дальше уменьшать только безопасными behavior-preserving разрезами.
+- Текущая проблема не в одном конкретном helper-е, а в смешении уровней: `handle_incoming` одновременно выбирает route, применяет patches, вызывает flow, пишет assistant message и обновляет conversation state.
+- Целевая форма: handler загружает user/conversation/history, собирает контекст, вызывает flow по явному приоритету и одним общим helper-ом сохраняет `FlowResult`.
+- Следующие безопасные разрезы зафиксированы в [[roadmap/message-handler-refactor]]: единый commit/result helper, stale/new-booking flow, info-flow, same-reference/unavailable UX и затем явный route table.
+- Ключевое ограничение: AI остаётся semantic layer, backend остаётся state validator. Рефакторинг не должен превращать понимание клиента в набор одноразовых keyword-костылей.
+
 ## 2026-05-29 best3 core parity architecture
 
 - `best3` сохраняет agent-first контракт: AI выбирает `intent/action/draft_patch`, но backend валидирует patch и выполняет только safe tools. Слоты, оплата, hold, booking и YCLIENTS остаются backend-источником правды.
@@ -20,7 +78,7 @@
 
 - Stale-form protection now distinguishes "resume old draft?" from a detailed new booking request. If a message contains a new service plus concrete date/time/duration signals, the coordinator starts a clean draft through the existing new-booking policy and preserves only contact fields.
 - If the user answers the stale checkpoint with `нет/не` and continues with a detailed new request in the same message, that same message is processed as the new request. The bot should not ask a second meta-question when the booking details are already present.
-- Upsell refusal has a hard-negative layer for short final refusals like `не`, `no`, `нет спасибо`. Those phrases skip the soft upsell push and write `upsell_items=["не нужны"]`, then the normal `next_question()` decides the next field.
+- Upsell refusal uses the two-touch policy: the first short/semantic refusal like `не`, `нет`, `неа`, `ничего` triggers one soft second offer; the repeated/final refusal writes `upsell_items=["не нужны"]`, then the normal `next_question()` decides the next field.
 - Confirmation yes detection accepts soft affirmative forms such as `ну вроде да`, `вроде да`, `да вроде`, while still keeping non-confirmation side questions in confirmation-flow.
 - `availability_service.check_availability()` validates fixed-duration services before selecting slots. If service variants define `duration_minutes`, the requested duration must match one of the allowed blocks for that weekday. Invalid duration returns a validation message instead of a slot.
 - Availability/confirmation flows treat that validation message as a field error: they clear only `duration`, keep date/time/service/contact, set `current_step=duration`, and ask the client to choose one of the allowed blocks. This prevents local hold/payment creation for bathhouse durations that YCLIENTS will reject later.

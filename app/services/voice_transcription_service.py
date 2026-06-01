@@ -7,7 +7,7 @@ from io import BytesIO
 import httpx
 from aiogram import Bot
 from aiogram.types import Message
-from openai import OpenAI
+from openai import DefaultHttpxClient, OpenAI
 
 from app.core.config import get_settings
 
@@ -46,6 +46,7 @@ async def transcribe_telegram_voice(bot: Bot, message: Message) -> str:
         settings.openrouter_base_url,
         settings.voice_transcription_model,
         settings.voice_transcription_language or None,
+        settings.http_trust_env,
     )
     if not text:
         raise VoiceTranscriptionError("Empty voice transcription")
@@ -59,6 +60,7 @@ def _transcribe_audio(
     openrouter_base_url: str,
     model: str,
     language: str | None,
+    http_trust_env: bool,
 ) -> str:
     if provider == "openrouter":
         return _transcribe_audio_openrouter(
@@ -67,8 +69,12 @@ def _transcribe_audio(
             base_url=openrouter_base_url,
             model=model,
             language=language,
+            http_trust_env=http_trust_env,
         )
-    client = OpenAI(api_key=api_key, timeout=45.0)
+    client = OpenAI(
+        api_key=api_key,
+        http_client=DefaultHttpxClient(timeout=45.0, trust_env=http_trust_env),
+    )
     transcription = client.audio.transcriptions.create(
         model=model,
         file=audio,
@@ -84,6 +90,7 @@ def _transcribe_audio_openrouter(
     base_url: str,
     model: str,
     language: str | None,
+    http_trust_env: bool,
 ) -> str:
     url = base_url.rstrip("/") + "/audio/transcriptions"
     audio_bytes = audio.getvalue()
@@ -98,7 +105,7 @@ def _transcribe_audio_openrouter(
     formats = _openrouter_format_candidates(audio_format)
     models = _unique([model, "openai/whisper-1"])
     last_response: httpx.Response | None = None
-    with httpx.Client(timeout=60.0) as client:
+    with httpx.Client(timeout=60.0, trust_env=http_trust_env) as client:
         for candidate_model in models:
             for candidate_format in formats:
                 payload: dict[str, object] = {

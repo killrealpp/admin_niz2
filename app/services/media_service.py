@@ -66,6 +66,10 @@ def media_for_client_message(text: str, reply: str) -> list[Path]:
         and _reply_has_date_and_guest_count(normalized_reply)
     ):
         return media_for_gazebo_titles(reply_variants)
+    if _reply_is_booking_list(normalized_reply):
+        booking_list_paths = media_for_gazebo_titles(_gazebo_variants_from_text(normalized_reply))
+        booking_list_paths.extend(media_for_service_types(_service_types_from_text(normalized_reply)))
+        return _existing(booking_list_paths)
     service_types = _service_types_for_auto_media(normalized_reply)
     if service_types:
         return media_for_service_types(service_types)
@@ -264,10 +268,25 @@ def _media_for_booking(booking: dict[str, Any]) -> Path | None:
 
 
 def _booking_title(booking: dict[str, Any]) -> str:
-    title = str(booking.get("preferences") or "")
+    title = str(
+        booking.get("service_variant")
+        or booking.get("object_title")
+        or booking.get("service_title")
+        or booking.get("title")
+        or booking.get("preferences")
+        or ""
+    )
+    fallback_title = str(booking.get("preferences") or "")
+    if fallback_title and fallback_title not in title:
+        title = f"{title} {fallback_title}".strip()
     if "крыт" in title.lower().replace("ё", "е"):
         return "Крытая беседка"
-    service_id = str(booking.get("hold_yclients_service_id") or "")
+    service_id = str(
+        booking.get("hold_yclients_service_id")
+        or booking.get("yclients_service_id")
+        or booking.get("service_id")
+        or ""
+    )
     for name in GAZEBO_IMAGE_BY_VARIANT:
         number = re.search(r"№(\d+)", name)
         if number and number.group(1) in title:
@@ -466,6 +485,13 @@ def _reply_has_date(text: str) -> bool:
             text,
         )
     ) or "выбранную дату" in text
+
+
+def _reply_is_booking_list(text: str) -> bool:
+    return bool(
+        re.search(r"\bу вас\s+\d+\s+брон", text)
+        or ("у вас" in text and "бронь" in text and "оплата" in text)
+    )
 
 
 def _unique(values: list[str]) -> list[str]:

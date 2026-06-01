@@ -383,6 +383,52 @@ def context_gazebo_choice_question_keeps_date_without_guests(now: datetime) -> C
         message_handler.call_ai = original_call_ai
 
 
+def context_gazebo_guest_count_in_option_question_is_saved(now: datetime) -> ContextResult:
+    suffix = "context_guest_options_saved"
+    transcript: list[tuple[str, str]] = []
+    _draft(suffix, now, step="guests_count", date="2026-07-30", phone="+79990002016")
+    state_before = _state(suffix)
+    form_before = dict(state_before.get("form_data") or {})
+    form_before["last_available_gazebo_variants"] = [
+        "Беседка №5",
+        "Беседка №2",
+        "Беседка №4",
+        "Беседка №6",
+        "Беседка №8",
+        "Беседка №3",
+        "Крытая беседка",
+        "Беседка №1",
+    ]
+    _set_state(suffix, now, status="waiting_user", current_step="guests_count", next_step="guests_count", form_data=form_before)
+    original_call_ai = message_handler.call_ai
+    message_handler.call_ai = lambda **_kwargs: AIResponse(
+        intent="object_selection_help",
+        action="answer_info",
+        current_step="guests_count",
+        changed_fields=[],
+        form_data_patch={},
+    )
+    try:
+        choice = _say(suffix, "нас будет 30 человек, какая беседка подойдет", now, transcript, 1)
+        discount = _say(suffix, "а скидки есть?", now, transcript, 2)
+        state = _state(suffix)
+        form = state.get("form_data") or {}
+        combined = _low(f"{choice}\n{discount}")
+        ok = (
+            form.get("guests_count") == 30
+            and form.get("date") == "2026-07-30"
+            and state.get("current_step") == "service_variant"
+            and "беседка №1" in combined
+            and "для 30 гостей" in combined
+            and "скидка 50%" in combined
+            and "сколько примерно гостей" not in combined
+            and "сколько вас будет" not in combined
+        )
+        return ContextResult("Гости внутри вопроса про беседку сохраняются и не спрашиваются повторно", ok, f"state={state}", transcript)
+    finally:
+        message_handler.call_ai = original_call_ai
+
+
 def context_guest_not_asked_complaint_repairs_state(now: datetime) -> ContextResult:
     suffix = "context_guest_complaint"
     transcript: list[tuple[str, str]] = []
@@ -678,6 +724,8 @@ def context_live_135_paid_gazebo_then_bathhouse_same_number(now: datetime) -> Co
     lowered_info = _low(info)
     ok = (
         "ожидает подтверждения" not in lowered_options
+        and "помимо бани" not in lowered_options
+        and ("кроме вашей беседки" in lowered_options or "кроме беседки" in lowered_options)
         and form.get("service_type") == "bathhouse"
         and form.get("date") == "2026-06-30"
         and state.get("current_step") == "time"
@@ -688,6 +736,62 @@ def context_live_135_paid_gazebo_then_bathhouse_same_number(now: datetime) -> Co
         and "по бане продолжим" in lowered_info
     )
     return ContextResult("Live 135: новая баня держит дату беседки и контекст", ok, f"state={state}", transcript)
+
+
+def context_bathhouse_large_group_blocks_before_format(now: datetime) -> ContextResult:
+    suffix = "context_bathhouse_large_group"
+    transcript: list[tuple[str, str]] = []
+    form = reg._base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-06-29",
+        time="18:00",
+        duration=6,
+        guests_count=None,
+        event_format=None,
+        upsell_items=[],
+        phone="+79990002009",
+    )
+    reg._create_reserved_conversation(suffix, now, form)
+    _set_state(suffix, now, status="waiting_user", current_step="guests_count", next_step="guests_count", form_data=form)
+    reply = _say(suffix, "40", now, transcript, 1)
+    state = _state(suffix)
+    updated = state.get("form_data") or {}
+    ok = (
+        "слишком большая компания" in _low(reply)
+        and "бесед" in _low(reply)
+        and not updated.get("guests_count")
+        and state.get("current_step") in {"guests_count", "service_type"}
+    )
+    return ContextResult("Баня на 40 гостей блокируется до шага формата", ok, f"state={state}", transcript)
+
+
+def context_confirmation_no_means_not_confirmed(now: datetime) -> ContextResult:
+    suffix = "context_confirmation_no"
+    transcript: list[tuple[str, str]] = []
+    form = reg._base_form(
+        service_type="gazebo",
+        service_variant="Беседка №1",
+        date="2026-06-29",
+        time="18:00",
+        duration=6,
+        guests_count=40,
+        event_format="спокойный отдых",
+        phone="+79990002010",
+        upsell_items=["не нужны"],
+    )
+    reg._create_reserved_conversation(suffix, now, form)
+    _set_state(suffix, now, status="awaiting_confirmation", current_step="awaiting_confirmation", next_step="confirmation", form_data=form)
+    reply = _say(suffix, "нет", now, transcript, 1)
+    state = _state(suffix)
+    updated = state.get("form_data") or {}
+    ok = (
+        "что нужно изменить" in _low(reply)
+        and "обнов" not in _low(reply)
+        and state.get("current_step") == "change_booking"
+        and updated.get("upsell_items") == ["не нужны"]
+    )
+    return ContextResult("Подтверждение: «нет» не меняет допы", ok, f"state={state}", transcript)
 
 
 def _print_result(result: ContextResult) -> None:
@@ -712,6 +816,7 @@ def main() -> None:
             context_ai_understands_guest_without_keyword(now),
             context_gazebo_number_does_not_become_guests(now),
             context_gazebo_choice_question_keeps_date_without_guests(now),
+            context_gazebo_guest_count_in_option_question_is_saved(now),
             context_guest_not_asked_complaint_repairs_state(now),
             context_info_question_keeps_selected_object(now),
             context_confirmation_summary_then_abort(now),
@@ -720,6 +825,8 @@ def main() -> None:
             context_weekday_price_question_mentions_discount(now),
             context_confirmation_time_change_and_typo_summary(now),
             context_live_135_paid_gazebo_then_bathhouse_same_number(now),
+            context_bathhouse_large_group_blocks_before_format(now),
+            context_confirmation_no_means_not_confirmed(now),
         ]
     finally:
         restore_common()

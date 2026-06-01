@@ -110,7 +110,7 @@ def _period_match_is_people_count(text: str, match: re.Match[str]) -> bool:
     before = text[max(0, start - 12):start]
     after = text[end:end + 24]
     around = f"{before} {match.group(0)} {after}"
-    people_markers = ("человек", "чел", "гостей", "гостя", "гость", "взросл", "дет")
+    people_markers = ("человек", "челов", "чел", "гостей", "гостя", "гость", "взросл", "дети", "детей", "ребен")
     if not any(marker in around for marker in people_markers):
         return False
     if re.search(r"\b(?:с|от)\s*\d{1,2}\s*(?:до|-)\s*\d{1,2}\s*(?:час|ч|утра|дня|вечера|ночи)\b", around):
@@ -123,7 +123,7 @@ def _single_time_match_is_people_count(text: str, match: re.Match[str]) -> bool:
     before = text[max(0, start - 10):start]
     after = text[end:end + 20]
     around = f"{before} {match.group(0)} {after}"
-    if not any(marker in around for marker in ("человек", "чел", "гостей", "гостя", "гость", "взросл", "дет")):
+    if not any(marker in around for marker in ("человек", "челов", "чел", "гостей", "гостя", "гость", "взросл", "дети", "детей", "ребен")):
         return False
     if match.group(3) in {"утра", "дня", "вечера", "вечер", "ночи"}:
         return False

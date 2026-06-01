@@ -110,6 +110,20 @@ def mark_notified(conn: PgConnection, *, waitlist_id: int, now: datetime) -> Non
         )
 
 
+def mark_closed(conn: PgConnection, *, waitlist_id: int, now: datetime) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE waitlist_requests
+            SET status = 'closed',
+                last_checked_at = %s,
+                updated_at = NOW()
+            WHERE id = %s
+            """,
+            (now, waitlist_id),
+        )
+
+
 def close_matching(
     conn: PgConnection,
     *,

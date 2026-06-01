@@ -1,5 +1,22 @@
 # Pre-launch Roadmap
 
+## 2026-06-01 before next Telegram smoke
+
+- Локальный `.env` временно переведен в тестовый режим `PREPAYMENT_MODE=fixed`, `PREPAYMENT_AMOUNT_RUB=1`, `PREPAYMENT_PERCENT=50`. Для production перед запуском переключить на `PREPAYMENT_MODE=percent`, оставить `PREPAYMENT_PERCENT=50`, проверить `.env` и перезапустить бот.
+- Локальный артефакт бани на 30 июня закрыт: `bookings.id=1` archived/cancelled, `resource_busy_intervals` для `source='bot_booking'`, `source_record_id='1'` удален, `payments.id=2` сохранен как paid history и помечен notified. Перед Telegram smoke всё равно проверить availability после fresh sync.
+- Перед ручными сценариями выполнить `scripts/sync_yclients_records.py --once`, затем `scripts/yclients_sync_status.py --strict`, `scripts/lint_best2info.py` и `scripts/validate_yclients_map.py`.
+- Не запускать `scripts/yookassa_smoke.py` без намерения создать реальную внешнюю YooKassa-ссылку. Для локального smoke достаточно fixed 1 ₽ и fake-payment/regression smoke.
+- Фоновые процессы сейчас не запущены, если нет active `python` process. Для живого теста запускать один процесс `main.py`; он поднимает Telegram polling, YCLIENTS sync, payment/status loop, message retention и локальный YooKassa webhook server.
+- После запуска проверить, что `scripts/yclients_sync_status.py --strict` остается fresh через 1-2 минуты, а `messages/conversation_summaries` ведут себя ожидаемо после 48h retention window.
+
+## 2026-05-31 pre-live fallback/proxy follow-up
+
+- Закрыто 2026-05-31: `bathhouse blocks large group` больше не доходит до `event_format` ни в normal path, ни в fallback/AI-unavailable path; общий capacity guard очищает `guests_count` для бани больше 15 гостей и возвращает клиента к ручному уточнению/выбору альтернативы.
+- Закрыто 2026-05-31: постоянная proxy-политика добавлена через `HTTP_TRUST_ENV=false`; OpenAI/OpenRouter, YCLIENTS, YooKassa и voice transcription не доверяют системному `socks4://127.0.0.1:10808` по умолчанию. One-shot YCLIENTS sync прошёл без `NO_PROXY`.
+- Закрыто 2026-05-31: локальный `.env` переведён на `PREPAYMENT_AMOUNT_RUB=2000`; smoke fake-payment тоже проверяет сумму `2000.00 ₽`.
+- Закрыто 2026-05-31: smoke больше не зависит от hard-coded `Беседка №2`, ищет любой свободный подходящий слот и дополнительно защищает баг `давай беседку номер 2` -> `guests_count=2`.
+- Остаётся операционная привычка перед Telegram smoke/live: сначала `scripts/yclients_sync_status.py --strict`; если stale по возрасту, выполнить `scripts/sync_yclients_records.py --once`, потому что long regression прогон может занять больше freshness-порога.
+
 ## 2026-05-28 after live payment/confirmation hardening
 
 - Перед следующим Telegram smoke помнить: бот сейчас выключен по просьбе. При запуске payment runner должен отправить финальное paid-подтверждение по payment `17`, потому что запись YCLIENTS уже создана, а `payment_notified_at` ещё `NULL`.

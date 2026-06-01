@@ -442,11 +442,13 @@ def stress_info_during_form_context(now: datetime) -> StressResult:
     joined = "\n".join([reply1, reply2]).lower().replace("ё", "е")
     ok = (
         form.get("service_type") == "bathhouse"
+        and not form.get("guests_count")
         and state.get("next_step") == "time"
         and "для 30 человек" in joined
         and "бан" in joined
         and "когда определитесь" in joined
         and "продолжим оформление" not in joined
+        and "30 гостей" not in reply2.lower().replace("ё", "е")
         and reply2.lower().replace("ё", "е").count("во сколько") == 0
     )
     return StressResult(

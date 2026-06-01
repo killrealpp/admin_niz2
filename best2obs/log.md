@@ -1,5 +1,120 @@
 # Project Log
 
+## 2026-06-01 - planned large-file decomposition roadmap
+
+- Без изменения production-кода создан [[roadmap/large-file-decomposition-plan]]: будущий план разгрузки `app/services/message_handler.py` и `scripts/local_regression_suite.py`, с опорой на текущую память и Graphify-карту.
+- План фиксирует порядок безопасных slices: baseline, commit/result boundary, fresh/stale/new-booking flow, info-flow, reference/unavailable flow, media glue, затем разделение regression suite на `scripts/regression/*`.
+- `best2obs/index.md` получил ссылку на новый roadmap-файл. Код бота и тесты не запускались/не менялись.
+
+## 2026-06-01 - live Telegram guest/options, upsell selection and post-booking context fixes
+
+- По live-чату 11:45-11:52 разобраны три сбоя: фраза `нас будет 30 человек, какая беседка подойдет` могла показать варианты и всё равно повторно спросить гостей; ответ `давайте первый набор` после прайса допов не распознавался как выбор мангального набора №1 и возвращал старый вопрос по допам/свободности; post-booking вопрос после забронированной беседки `что еще можно забронировать` отвечал `Помимо бани...`, потому что текст не учитывал текущую активную услугу.
+- Исправлено в диалоговом backend: добавлен shortcut `_gazebo_guest_options_shortcut`, который принимает guest-count внутри вопроса о подборе беседки, сохраняет `guests_count` и переводит на выбор подходящего варианта без второго вопроса; `upsell_items_patch` теперь понимает `первый/второй/малый набор`, `№1/№2`, цены 500/1000 как явный выбор мангального набора; `_available_services_reply` стал service-aware и для активной беседки пишет `Кроме вашей беседки...`.
+- Regression coverage: `dialog_context_suite.py` расширен до 17 сценариев живым кейсом `нас будет 30 человек, какая беседка подойдет`; `local_regression_suite.py --group upsell` покрывает `давайте первый набор`; context live-135 проверяет, что после оплаченной беседки ответ на `можно еще что нибудь забронировать?` не говорит `помимо бани`.
+- Проверки текущего продолжения: `.venv\Scripts\python.exe -m compileall app scripts` OK; `scripts/dialog_context_suite.py` 17/17 OK; `scripts/local_regression_suite.py --group upsell` OK; `scripts/local_regression_suite.py --group post_booking` OK; `scripts/dialog_edge_suite.py` 14/14 OK; `scripts/dialog_stress_suite.py` 13/13 OK; `scripts/lint_best2info.py` OK.
+
+## 2026-06-01 - best2info graph-aware retrieval, percent prepayment and bathhouse cleanup
+
+- Реализован пакет из плана стабильного тестового запуска: `best2info/index.md` переписан как карта клиентской базы знаний с явными источниками истины, алиасами для retrieval и правилом "если точного факта нет, бот не придумывает".
+- `app/services/knowledge_service.py` теперь читает `best2info/**/*.md` как маленький граф: парсит заголовки и `[[wikilinks]]`, всегда добавляет `runtime.md`, выбирает релевантные страницы по текущему scoring и расширяет выборку 1-hop исходящими/входящими ссылками. Keyword/token scoring остался fallback-слоем.
+- Добавлен `scripts/lint_best2info.py`: проверяет broken wikilinks, orphan pages, базовые цены и скидочные цены беседок против `config/services_map.yaml`, фиксированные пакеты бани/дома, цену теплой беседки и факты без точной цены, где ответ должен быть "уточним по факту". Прогон: `OK best2info lint: files=15, links_checked=15, price_checks=ok`.
+- Настройки предоплаты расширены: `PREPAYMENT_MODE=fixed|percent`, `PREPAYMENT_AMOUNT_RUB`, `PREPAYMENT_PERCENT=50`. Локальный тестовый режим закреплен как `PREPAYMENT_MODE=fixed`, `PREPAYMENT_AMOUNT_RUB=1`; production-цель перед реальным запуском - `PREPAYMENT_MODE=percent`, `PREPAYMENT_PERCENT=50`.
+- `payment_service` умеет считать percent-mode от цены основной услуги/пакета по `services_map`, для беседок учитывает скидку 50% ПН-ЧТ, допы в аванс не включает. Текстовые ответы о цене/предоплате используют тот же режим.
+- Выполнен безопасный cleanup тестовой бани `2026-06-30 12:00-16:00`: `bookings.id=1` переведен в `cancelled` с архивной пометкой в `yclients_create_error`, `resource_busy_intervals.source='bot_booking'/source_record_id='1'` удален, `payments.id=2` оставлен `paid` и получил `payment_notified_at`, чтобы не отправлять старое уведомление. В `system_logs` записано событие `manual_cleanup_test_bathhouse_2026_06_30`.
+- Во время regression-прогона найден и закрыт test-isolation баг: waitlist-тест подхватывал существующую live-строку `waitlist_requests.id=35` из общей БД. Строка восстановлена в `active` без `notified_at`, а тест теперь подменяет `waitlist_repo.list_active_due` и обрабатывает только созданные test waitlist ids.
+- Проверки по пакету: `python -m compileall app scripts` OK; `scripts/lint_best2info.py` OK; `scripts/validate_yclients_map.py` OK; `scripts/yookassa_webhook_hardening_smoke.py` OK; все группы `scripts/local_regression_suite.py` прошли в 3 блоках; `dialog_context_suite.py` 16/16, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13, `dialog_regression_smoke.py` OK после свежего YCLIENTS sync. На текущем продолжении дополнительно повторены `compileall` и `lint_best2info.py`.
+- Финальный status в продолжении: первый `yclients_sync_status.py --strict` был stale только по возрасту (`age_seconds=1120`, `last_error=None`), затем `sync_yclients_records.py --once` прошел `seen=122/upserted=122`; повторный strict fresh (`age_seconds=47`, `records_seen=122`, `last_error=None`).
+- Дополнительно после wiki-обновлений пройден узкий regression `scripts/local_regression_suite.py --group prices --group waitlist`: OK, включая ответы с предоплатой `1 ₽`, graph-aware retrieval smoke и waitlist relevance. Live `waitlist_requests.id=35` после прогона остался `active`, `notified_at=NULL`.
+
+## 2026-06-01 - pre-live диагностика фонов, тестовая предоплата и upsell-тексты
+
+- По запросу перечитаны `best2obs/index.md` и `best2obs/log.md`, затем проверены `best2info`, фоновые runner'ы, текущий `.env`, свежесть YCLIENTS-cache и последние live-сообщения/платежи.
+- На момент диагностики `best2info/` работал как клиентская markdown-wiki/граф Obsidian с token/keyword retrieval без runtime-обхода связей; позднее в этот же день retrieval обновлен до 1-hop graph-aware режима, см. верхнюю запись.
+- Фоновые процессы на момент проверки не запущены: `Get-Process python` вернул `NO_PYTHON_PROCESSES`. При запуске `main.py` должны стартовать `run_yclients_sync_loop`, `run_payment_status_loop`, `run_message_retention_loop` и локальный `start_yookassa_webhook_server`; `telegram_status.py` показал webhook пустой и `pending_update_count=0`.
+- YCLIENTS-cache свежий: `scripts/yclients_sync_status.py --strict` OK (`fresh=True`, `age_seconds=59`, `records_seen=122`, `last_error=None`). DB доступна: `messages=151`, `conversation_summaries=0`, `slot_holds=4`, `bookings=2`, `yclients_records=128`, `resource_busy_intervals=130`.
+- Найден источник расхождения "в YCLIENTS свободно, бот пишет занято" по бане на 30 июня: локальная paid-заявка `bookings.id=1` на `2026-06-30 12:00`, 4 часа, имеет `yclients_record_id=NULL` и `yclients_create_error` с HTTP 422 `Услуга недоступна в выбранное время`; при этом в `resource_busy_intervals` остался `bot_booking` interval `2026-06-30 12:00-16:00`, поэтому локальная availability может блокировать слот, которого нет в журнале YCLIENTS.
+- Локальный `.env` переведен в тестовый режим `PREPAYMENT_AMOUNT_RUB=1`; новый Python process подтвердил `get_settings().prepayment_amount_rub == 1`. Уже созданная ранее ссылка `payments.id=58` остается на `2000.00 RUB`, потому что сумма уже сохранена в YooKassa/БД.
+- Улучшены service-specific upsell-тексты в `booking_form_service._upsell_question()` и `dialog/form_patches.upsell_sales_messages()`: отдельные формулировки для бани, беседки, тёплой беседки и дома; логика выбора/отказа от допов не менялась.
+- Проверки после текстовых правок: `.venv\Scripts\python.exe -m compileall app scripts` OK; `scripts/local_regression_suite.py --group upsell` OK. Наблюдение прежнее: отдельный сценарий `generic ok after upsell info does not accept items` дал `dialog_timing_slow` на AI semantic, функционально зелёный.
+
+## 2026-06-01 - полный сценарный аудит текущих изменений
+
+- Перед проверкой прочитаны `best2obs/index.md`, `best2obs/log.md`, сценарные чеклисты и `testing/dialog-test-matrix.md`. Production-код в ходе этого аудита не менялся; существующее грязное дерево оставлено как текущие изменения проекта.
+- Проверки сценариев прошли зелёными: `.venv\Scripts\python.exe -m compileall app scripts` OK; `local_regression_suite.py` пройден тремя блоками (`fresh/dates/gazebo/services/time/prices/upsell`, `payments/post_booking/cancel/reschedule`, `media/waitlist/handoff/reminder`) OK; `dialog_context_suite.py` 16/16 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK.
+- Найден операционный нюанс: первый `dialog_regression_smoke.py` упал до диалога с `No free gazebo date found for smoke test`, потому что локальный YCLIENTS-cache был stale (`age_seconds=34651`, `max_age_seconds=600`, `last_error=None`). Выполнен `scripts/sync_yclients_records.py --once`: `seen=123`, `upserted=123`; повторный `yclients_sync_status.py --strict` OK (`fresh=True`, `records_seen=123`, `last_error=None`).
+- После sync `scripts/dialog_regression_smoke.py` прошёл OK: smoke нашёл свободную беседку, защитил `давай беседку номер 2` от записи `guests_count=2`, создал fake-payment на `2000.00 ₽` и оставил hold активным без booking до оплаты.
+- Дополнительные безопасные проверки: `scripts/validate_yclients_map.py` OK (`checked_configured_pairs=29`, `unmapped_live_services=none`), `scripts/test_db.py` OK, `scripts/yookassa_webhook_hardening_smoke.py` OK, `scripts/yclients_smoke.py` OK. `scripts/yookassa_smoke.py` не запускался, потому что он создаёт реальную внешнюю ссылку.
+- Наблюдение: в regression/context/edge/stress всё ещё встречаются `dialog_timing_slow` на AI/availability ветках, функционально сценарии зелёные. Это остаётся UX/performance-направлением, не текущей регрессией корректности.
+
+## 2026-05-31 - закрыт pre-live fallback/proxy/smoke пакет
+
+- Реализован общий capacity guard в `message_handler.py`: все normal/fallback/AI-unavailable пути теперь вызывают `_capacity_mismatch_reply()`, который проверяет сначала беседки, затем баню. Баня с `guests_count > 15` очищает `guests_count` и не переходит к `event_format`.
+- Уточнён parser формата события: `др` считается днём рождения только как отдельное слово; `день рождения`, `днюха`, `юбилей` сохранены. `просто посидеть с друзьями` остаётся `компания друзей`.
+- Добавлена явная proxy-политика `HTTP_TRUST_ENV=false`: настройка есть в `.env.example`, локальном `.env` и `Settings`; OpenAI/OpenRouter, YCLIENTS, YooKassa и voice transcription создают `DefaultHttpxClient`/`httpx.Client` с `trust_env=settings.http_trust_env`. One-shot YCLIENTS sync прошёл без `NO_PROXY` и без `socks4` error.
+- Локальный `.env` переведён с `PREPAYMENT_AMOUNT_RUB=1` на `2000`; smoke fake-payment тоже проверяет `2000.00 ₽`.
+- В ходе smoke найден и закрыт дополнительный state bug: на шаге `guests_count` фраза `давай беседку номер 2` сохраняла `guests_count=2`. Добавлен guard `_explicit_gazebo_variant_reference()` и smoke-check `gazebo number selection does not become guest count`.
+- Проверки после финальной правки: `.venv\Scripts\python.exe -m compileall app scripts` OK; все 4 listed chunks `scripts/local_regression_suite.py` OK; `scripts/dialog_context_suite.py` 16/16 OK; `scripts/dialog_edge_suite.py` 14/14 OK; `scripts/dialog_stress_suite.py` 13/13 OK; `scripts/sync_yclients_records.py --once` OK (`seen=129`, `upserted=129`); `scripts/yclients_sync_status.py --strict` OK (`fresh=True`, `records_seen=129`, `last_error=None`); `scripts/dialog_regression_smoke.py` OK.
+
+## 2026-05-31 - диагностика best2 без правок production-кода
+
+- Перед проверкой прочитаны `best2obs/index.md` и `best2obs/log.md`; production-код не менялся. Рабочее дерево уже было грязным: изменения в `app/services/*`, `scripts/local_regression_suite.py`, `scripts/dialog_context_suite.py`, `best2info/*` и `best2obs/*` оставлены как пользовательские/существующие.
+- `compileall app scripts` прошёл OK. Полный grouped-прогон `local_regression_suite.py` за один запуск упёрся в 10-минутный timeout, поэтому проверка была разбита на части.
+- Split `local_regression_suite.py --group dates --group services --group upsell --group waitlist --group payments --group post_booking` завершился `EXIT=1`: `bathhouse blocks large group` упал. Бот на `40` гостей в анкете бани перешёл к `event_format` и сохранил `guests_count=40`, вместо того чтобы заблокировать баню больше 15 гостей.
+- `dialog_context_suite.py` подтвердил проблему: 15/16, падает `Баня на 40 гостей блокируется до шага формата`. `dialog_edge_suite.py` прошёл 14/14, `dialog_stress_suite.py` прошёл 13/13.
+- Найден операционный фактор: системный Windows proxy отдаёт `http/https=socks4://127.0.0.1:10808`; `httpx 0.28.1` падает на таком proxy. Из-за этого OpenAI/OpenRouter и YCLIENTS-вызовы логируют `ValueError: Unknown scheme for proxy URL URL('socks4://127.0.0.1:10808')`, а диалог чаще уходит в fallback. Именно fallback-путь сейчас не проверяет bathhouse capacity так же, как normal path.
+- Первый `scripts/yclients_sync_status.py --strict` был красным: stale sync (`age_seconds=88145`) и `last_error` про `socks4`. Временная команда `$env:NO_PROXY='*'; scripts/sync_yclients_records.py --once` успешно обновила локальный журнал (`seen=129`, `upserted=129`), повторный strict-status OK (`fresh=True`, `records_seen=129`, `last_error=None`).
+- Подтвержден старый конфигурационный риск: `.env` всё ещё содержит `PREPAYMENT_AMOUNT_RUB=1`, тогда как `.env.example` держит `2000`; live-ссылки YooKassa останутся на 1 ₽ до изменения env и перезапуска.
+- Выводы занесены в [[bugs/current-known-issues]] и [[roadmap/pre-launch]]. Следующий безопасный fix scope: добавить bathhouse capacity guard в fallback/AI-unavailable path и/или availability trigger на `guests_count` для bathhouse; затем повторить `compileall`, профильные regression-группы и context-suite.
+
+## 2026-05-30 - закрыт live-пакет waitlist/context/confirmation
+
+- Реализован safe waitlist gate без новой таблицы: используется существующая `waitlist_requests`, но перед уведомлением теперь проверяются `active` status, будущая дата, отсутствие уже закрывающей брони/hold, отсутствие отказа в последних сообщениях и свежая доступность после sync. Неактуальные запросы закрываются как `closed`, отправленные остаются `notified`.
+- Закрыты новые live-регрессии диалога: баня больше 15 гостей блокируется и предлагает просторную беседку; `на 30 число/на 30-е/на 30` берёт месяц из свежего контекста текущей анкеты или `last_unavailable`; `нет` на финальном подтверждении больше не меняет допы, а переводит в flow изменения заявки; `ну окей` после info-вопроса на шаге допов не выбирает допы без явного выбора.
+- Добавлены regression/context проверки: `bathhouse blocks large group`, `contextual day number keeps discussed month`, `confirmation no is not upsell correction`, `generic ok after upsell info does not accept items`, `waitlist notifies only relevant requests`, а также 2 context-сценария в `dialog_context_suite.py`.
+- Проверки: `compileall app scripts` OK; `local_regression_suite.py --group dates`, `--group services`, `--group upsell`, `--group waitlist`, `--group post_booking`, `--group gazebo`, `--group payments` OK; `dialog_context_suite.py` 16/16 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK. Первый `yclients_sync_status.py --strict` был красным из-за stale sync и `SSL error: unexpected eof while reading`; после `sync_yclients_records.py --once` строгий статус OK (`records_seen=127`, `last_error=None`).
+
+## 2026-05-30 - закрыты live-30.05 price/common-info, upsell, book_times и media сбои
+
+- Разобран свежий live-диалог после чистой базы: `сколько будет стоить?` ошибочно попадало в ответ про детей из-за substring `дет` внутри `будет`; первый `не` на допах закрывал допы сразу; баня `30 июня 12:00-16:00` проходила локальный hold/payment, но YCLIENTS после оплаты возвращал 422; `30 челове` не фильтровало беседки по вместимости; summary двух броней отправлял фото бани без Беседки №1; `просто посидеть с друзьями` могло стать `день рождения`.
+- Исправлено без смены публичных API/БД: common-info children matcher стал словоформенным; добавлен semantic `classify_upsell_reply()` с двухкасательным отказом; для `bathhouse/house` фиксированные пакеты сверяют выбранный старт с YCLIENTS `book_times` до hold/payment; guests parser принимает обрезанное `челов*`; media selection берёт беседку из `service_variant/hold_yclients_service_id/yclients_service_id` и booking-list text.
+- По важному замечанию про “не хардкодить”: добавлен semantic price route. Если AI понял свободную фразу как `price_question`, backend считает цену по `services_map` даже без слов `цена/стоить/сколько`; deterministic слой остаётся только safety guard против ложных веток.
+- Добавлены/обновлены regression checks: `price question with budet is not children info`, `AI semantic price question without price keywords`, `bare ne first upsell gets soft push`, `fixed service rejects missing yclients book time`, `fixed service yclients unavailable does not claim free`, `truncated people word extracts guests`, `friends hangout event format not birthday`, расширен `gazebo media selection`.
+- Проверки: `.venv\Scripts\python.exe -m compileall app scripts` OK; `local_regression_suite.py --group prices --group upsell --group services --group gazebo --group media --group payments` OK; после semantic-price правки `local_regression_suite.py --group prices` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; `sync_yclients_records.py` one-shot и `yclients_sync_status.py --strict` OK (`records_seen=126`, `last_error=None`).
+- Бот не запускался. Live paid-but-journal-pending запись бани с YCLIENTS 422 не ремонтировалась без отдельной команды.
+
+## 2026-05-30 - подготовлена чистая база best2 перед live-тестами
+
+- Перед новым ручным тестированием удалены 2 явные тестовые записи, созданные из Telegram-бота в YCLIENTS: `1741815435` (Беседка, 29 мая 2026, 15:00, телефон `+79099667655`, имя `Ирина`) и `1741778379` (Беседка, 19 июня 2026, 12:00, телефон `+79968533502`, имя `Заменим На Ivan`). Удаление выполнено через `scripts/cleanup_yclients_test_records.py --apply`; результат `Deleted: 2, failed: 0`.
+- Локальная база best2 очищена через `scripts/clear_db.py`: `users`, `conversations`, `messages`, `conversation_summaries`, `slot_holds`, `bookings`, `payments`, `waitlist_requests`, `system_logs`, `webhook_events` теперь по `0`.
+- Таблицы журнала заново наполнены из YCLIENTS через `scripts/sync_yclients_records.py --once --days-back 1 --days-forward 60`: `seen=126`, `upserted=126`; `scripts/yclients_sync_status.py --strict` показал fresh sync, `last_error=None`.
+- Подготовка проекта проверена без запуска бота: `python -m compileall app scripts` OK; активных `python`-процессов перед очисткой не найдено.
+
+## 2026-05-29 - закрыт live-19:02 сбой последующей брони беседки после старого draft бани
+
+- По live-цепочке `а какие беседки есть` -> `хочу добвить отдельной бронью` найден повторяющийся класс ошибок последующих броней: старый draft бани с неподходящей длительностью мог перехватить новую фразу и вернуть ошибку про 12 часов бани вместо старта отдельной беседки.
+- Исправлено точечно: generic new-booking detector теперь понимает `отдельной/отдельную бронью`, `добавить/добвить отдельной`, а service-exists route больше не перехватывает сообщения с явной датой/периодом или same-date/same-time reference.
+- Вопрос `а какие беседки есть` получил deterministic ответ со списком типов беседок и сохраняет `last_discussed_service_type=gazebo`, не меняя текущий draft. Следующая фраза `хочу добвить отдельной бронью` стартует чистую беседку с сохранением только контакта.
+- Post-booking вопрос про комаров теперь отвечает deterministic текстом из базы до AI-классификатора: обработка раз в неделю, природная территория, лучше взять репеллент.
+- Формулировка по бане уточнена: это не произвольная почасовая услуга; в YCLIENTS заведены фиксированные пакеты 3, 4, 5, 6 или 7 часов.
+- Добавлены regression checks: `gazebo info then separate booking ignores old bath draft`, `mosquito question after booking bypasses AI`; обновлены существующие duration-тексты.
+- Проверки: `compileall app scripts` OK; `local_regression_suite.py --group services --group prices` OK; `local_regression_suite.py --group fresh --group post_booking --group payments --group time` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK.
+
+## 2026-05-29 - зафиксирован план безопасного уменьшения message_handler
+
+- После сценарной диагностики разобран размер `app/services/message_handler.py`: файл около 5.7k строк, главный `handle_incoming` около 2k строк маршрутизации и сохранения состояния.
+- Вывод: повторяющиеся live-нюансы возникают на границах flow, где старый draft/new booking/info/availability/hold пересекаются в одном координаторе. Уменьшать файл нужно не большим rewrite, а короткими behavior-preserving разрезами под зелёными suites.
+- Создан [[roadmap/message-handler-refactor]]: сначала единый helper сохранения `FlowResult`, затем stale/new-booking flow, info-flow, same-reference/unavailable UX и только после этого явный route table.
+- `best2` production-код не менялся; обновлены только `best2obs` roadmap/index/backend notes.
+
+## 2026-05-29 - сценарная диагностика best2 после фиксов live-14:29
+
+- Проведён повторный сценарный прогон best2 без запуска Telegram-бота: `compileall app scripts` OK; после one-shot `sync_yclients_records.py --once` strict YCLIENTS был fresh (`records_seen=125`, `last_error=None`).
+- `dialog_context_suite.py` прошёл 14/14: дата/гости, same-date/same-time, оплаченная беседка -> новая баня, active gazebo info inside bath draft, confirmation summary and two-gazebo queue держат контекст.
+- `dialog_edge_suite.py` прошёл 14/14: summary/off-topic внутри анкеты, phone+info, confirmation side questions, cancel-flow, reschedule-flow и post-booking off-topic не портят состояние.
+- `dialog_regression_smoke.py` прошёл OK; основные grouped regression-зоны прошли: `fresh/payments/post_booking/services/time/upsell` OK и `dates/gazebo/prices/media/waitlist/handoff/cancel/reschedule/reminder` OK.
+- Первый `dialog_stress_suite.py` прогон дал 12/13: live-like сценарий `баньку тем же днем что и беседка` -> `и часы как там же` попал в ветку недоступности бани, где основные `date/time/duration` очищаются в пользу `last_unavailable`. После полной cleanup regression-fixtures повторный stress прошёл 13/13. Вывод: same-reference логика умеет копировать контекст, но unavailable-slot branch остаётся UX-risk, потому что клиент может увидеть это как потерю контекста.
+- Замер по ощущениям live: функционально suites зелёные, но многие сложные ветки идут через AI/availability и дают `dialog_timing_slow` примерно 6-19 секунд. Это не ломает состояние, но объясняет ощущение, что бот иногда "троит"; следующий фокус — быстрее short-circuit frequent info/off-topic/summary paths и отдельно покрыть unavailable same-reference branch.
+
 ## 2026-05-29 - best3 full best2obs parity and safe tools milestone
 
 - In `../best3`, full documented `best2obs` scenario-id coverage is now enforced by `scripts/best2obs_scenario_runner.py --all`: `STD-001..009`, `CTX-001..022`, `EDGE-001..014`, `STR-001..013`, `REG-001..014`.

@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import datetime
+from decimal import Decimal
 from typing import Any
 
 from app.core.config import get_settings
@@ -147,8 +148,8 @@ def duration_price_rule_reply(text: str, form_data: dict[str, Any]) -> str | Non
         )
     if service_type == "bathhouse":
         return (
-            "По бане цена зависит от длительности и дня недели: чем больше часов, тем выше сумма.\n\n"
-            "Минимально можно смотреть 3 часа. Если напишете нужный период, я посчитаю подходящий вариант по карте услуг."
+            "Баня не считается как произвольная почасовая доплата.\n\n"
+            "В базе заведены фиксированные пакеты 3, 4, 5, 6 или 7 часов, а цена зависит от выбранного пакета и дня недели."
         )
     if service_type == "house":
         return (
@@ -169,7 +170,7 @@ def policy_or_common_info_reply(text: str) -> str | None:
             "В заявку их не добавляю."
         )
     lines: list[str] = []
-    if any(marker in normalized for marker in ("дет", "ребен", "ребён", "ребят", "малыш")):
+    if _has_child_reference(normalized):
         lines.append(
             "С детьми можно ✅ Только просим следить за ними у воды, возле мангала и на территории."
         )
@@ -190,6 +191,15 @@ def policy_or_common_info_reply(text: str) -> str | None:
     return None
 
 
+def _has_child_reference(normalized: str) -> bool:
+    return bool(
+        re.search(
+            r"\b(?:дети|детей|детям|детьми|детях|ребенок|ребенка|ребенком|ребенку|ребенке|ребят(?:а|ам|ами|ах)?|малыш\w*)\b",
+            normalized,
+        )
+    )
+
+
 def price_reply_if_known(
     text: str,
     form_data: dict[str, Any],
@@ -204,11 +214,7 @@ def price_reply_if_known(
     if duration_rule:
         return f"{duration_rule}\n\n{question}" if question and _should_append_question(form_data, "price") else duration_rule
     if any(marker in normalized for marker in ("предоплат", "аванс")):
-        amount = format_rub(get_settings().prepayment_amount_rub)
-        reply = (
-            f"Предоплата для закрепления брони — {amount} ₽.\n\n"
-            "После оплаты мы пришлём подтверждение, а остаток оплачивается на месте."
-        )
+        reply = _prepayment_reply()
         return f"{reply}\n\n{question}" if question and _should_append_question(form_data, "price") else reply
     addon_reply = addon_price_reply(text)
     if not addon_reply and is_addon_price_context(text, form_data):
@@ -231,7 +237,7 @@ def price_reply_if_known(
     duration = None if form_data.get("service_type") == "gazebo" else (form_data.get("duration") or variant.get("duration_minutes"))
     title_has_duration = "час" in str(title).lower()
     duration_text = f" на {format_duration(duration)}" if duration and not title_has_duration else ""
-    prepayment = format_rub(get_settings().prepayment_amount_rub)
+    effective_price = price
     price_text = f"По текущей карте услуг {title.lower()} {date_text}{duration_text} стоит {format_rub(price)} ₽."
     if form_data.get("service_type") == "gazebo" and form_data.get("date"):
         try:
@@ -240,13 +246,15 @@ def price_reply_if_known(
             weekday = None
         if weekday in {0, 1, 2, 3}:
             discount_price = int(int(price) * 0.5)
+            effective_price = discount_price
             price_text = (
                 f"На {date_text} действует будняя скидка 50% на беседки ✅\n\n"
                 f"{title}: базовая цена {format_rub(price)} ₽, со скидкой {format_rub(discount_price)} ₽."
             )
+    prepayment = _prepayment_summary(effective_price)
     return (
         f"{price_text}\n\n"
-        f"Предоплата для закрепления брони — {prepayment} ₽, остаток оплачивается на месте.\n\n"
+        f"{prepayment}, остаток оплачивается на месте.\n\n"
         f"{question or 'Если всё верно, можем продолжать оформление.'}"
     )
 
@@ -317,3 +325,29 @@ def _should_append_question(form_data: dict[str, Any], _context: str) -> bool:
             "phone",
         )
     )
+
+
+def _prepayment_reply() -> str:
+    settings = get_settings()
+    if str(settings.prepayment_mode or "fixed").lower() == "percent":
+        return (
+            f"Предоплата для закрепления брони — {settings.prepayment_percent}% от стоимости основной услуги или пакета.\n\n"
+            "Допы в аванс пока не включаем. После оплаты мы пришлём подтверждение, остаток оплачивается на месте."
+        )
+    amount = format_rub(settings.prepayment_amount_rub)
+    return (
+        f"Предоплата для закрепления брони — {amount} ₽.\n\n"
+        "После оплаты мы пришлём подтверждение, а остаток оплачивается на месте."
+    )
+
+
+def _prepayment_summary(base_price: Any) -> str:
+    settings = get_settings()
+    if str(settings.prepayment_mode or "fixed").lower() == "percent":
+        percent = Decimal(str(settings.prepayment_percent))
+        try:
+            amount = (Decimal(str(base_price)) * percent / Decimal("100")).quantize(Decimal("0.01"))
+        except Exception:
+            return f"Предоплата для закрепления брони — {settings.prepayment_percent}% от стоимости основной услуги"
+        return f"Предоплата для закрепления брони — {format_rub(amount)} ₽ ({settings.prepayment_percent}% от основной услуги)"
+    return f"Предоплата для закрепления брони — {format_rub(settings.prepayment_amount_rub)} ₽"

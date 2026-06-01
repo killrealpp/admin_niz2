@@ -1,5 +1,77 @@
 # Current Known Issues
 
+## 2026-06-01 live Telegram 11:45 guest/options, upsell and post-booking context
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками.
+- Симптомы: `нас будет 30 человек, какая беседка подойдет` могло завершиться повторным вопросом `Сколько примерно гостей?`, хотя число уже было в сообщении; после прайса допов `давайте первый набор` не сохраняло мангальный набор №1 и возвращало старый вопрос `Что подготовить для вас?`; после брони беседки вопрос `что еще можно забронировать?` отвечал `Помимо бани...`, будто текущей услугой была баня.
+- Причины: вопрос о подборе беседки с числом гостей попадал в object-selection/info route без фиксации `guests_count` как ответа на текущий шаг; upsell parser знал общие маркеры допов, но не ordinal-choice из только что показанного прайса; post-booking services reply был шаблонным и не учитывал `form_data.service_type`.
+- Исправлено: `_gazebo_guest_options_shortcut()` сохраняет гостей из вопроса о подходящей беседке и переводит на `service_variant`; `upsell_items_patch()` распознаёт `первый/второй/малый набор`, `№1/№2`, 500/1000 как выбор конкретного мангального набора; `_available_services_reply()` теперь пишет `Кроме вашей беседки...` для активной беседки, `Помимо бани...` только для активной бани.
+- Защищено: `Гости внутри вопроса про беседку сохраняются и не спрашиваются повторно`, `first mangal set selection from price list`, live-135 context `можно еще что нибудь забронировать?`.
+- Проверки: `compileall app scripts` OK; `dialog_context_suite.py` 17/17 OK; `local_regression_suite.py --group upsell` OK; `local_regression_suite.py --group post_booking` OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; `lint_best2info.py` OK.
+
+## 2026-06-01 local failed bathhouse booking blocked availability
+
+- Статус: закрыто ручным cleanup 2026-06-01 в тестовом режиме.
+- Симптом: по YCLIENTS-журналу баня на 30 июня могла выглядеть свободной, но бот считал слот занятым.
+- Причина: локальная paid-заявка `bookings.id=1` на `2026-06-30 12:00`, 4 часа, имела `yclients_record_id=NULL` и `yclients_create_error` с HTTP 422 `Услуга недоступна в выбранное время. Выберите другое время.` При этом в `resource_busy_intervals` оставался active interval `source=bot_booking`, `source_record_id=1`, `2026-06-30 12:00-16:00`.
+- Исправлено: `bookings.id=1` переведен в `cancelled` с архивной пометкой, busy interval `id=1251` удален, `payments.id=2` оставлен `paid` как история тестовой оплаты и помечен `payment_notified_at`, чтобы runner не отправил старое уведомление. В `system_logs` записано `manual_cleanup_test_bathhouse_2026_06_30`.
+- Проверено по БД: для `source='bot_booking'` и `source_record_id='1'` больше нет active busy intervals; payment history сохранена. После cleanup обязательная привычка перед живым smoke остается прежней: свежий `sync_yclients_records.py --once` и `yclients_sync_status.py --strict`.
+
+## 2026-06-01 waitlist regression touched a live row
+
+- Статус: закрыто в test isolation.
+- Симптом: grouped regression `media/waitlist/handoff/reminder` после cleanup увидел свободный слот и waitlist runner обработал существующую live-строку `waitlist_requests.id=35`, хотя тест должен был проверять только свои fixtures.
+- Причина: тест вызывал общий `waitlist_service.notify_waitlist_matches()` без ограничения списка active waitlist rows.
+- Исправлено: `waitlist_requests.id=35` восстановлен в `active` без `notified_at`; regression-тест теперь подменяет `waitlist_repo.list_active_due` и пропускает только waitlist ids, созданные внутри конкретного теста.
+- Проверено: повторный grouped regression прошел; текущая проверка БД показывает `waitlist_requests.id=35` в статусе `active`, `notified_at=NULL`.
+
+## 2026-05-31 pre-live fallback/proxy/smoke package
+
+- Статус: закрыто кодом и полным listed test plan 2026-05-31.
+- Симптом: regression `bathhouse blocks large group` снова красный в fallback/AI-unavailable path. Ответ на `40` гостей в активной анкете бани мог перейти к `event_format` и сохранить `guests_count=40`, вместо блокировки бани больше 15 гостей.
+- Причина: normal path уже имел bathhouse capacity guard, но fallback/exception paths в `message_handler.py` проверяли только `_gazebo_capacity_mismatch_reply()`. Системный Windows proxy `socks4://127.0.0.1:10808` дополнительно переводил OpenAI/OpenRouter и YCLIENTS вызовы в ошибки `httpx`, поэтому fallback path стал реально частым.
+- Исправлено: добавлен общий `_capacity_mismatch_reply()` для всех трёх мест обработки patch/fallback; он вызывает сначала gazebo guard, затем bathhouse guard. Для бани `guests_count > 15` очищается, а клиент получает явный ответ, что баню без ручного уточнения больше чем на 15 человек не оформляем.
+- Исправлено операционно: добавлен `HTTP_TRUST_ENV=false` в settings, `.env.example` и локальный `.env`; OpenAI/OpenRouter, YCLIENTS, YooKassa и voice transcription создают HTTP-клиенты с `trust_env=settings.http_trust_env`. One-shot sync YCLIENTS прошёл штатно без `NO_PROXY`, strict-status fresh, `last_error=None`.
+- Исправлено live-env: локальный `.env` теперь `PREPAYMENT_AMOUNT_RUB=2000`; smoke fake-payment проверяет `2000.00 ₽`.
+- Дополнительный найденный баг: на шаге `guests_count` фраза `давай беседку номер 2` могла записать `guests_count=2`. Добавлен guard явной ссылки на номер беседки и smoke-check `gazebo number selection does not become guest count`.
+- Защищено: `bathhouse blocks large group`, `Баня на 40 гостей блокируется до шага формата`, `friends hangout event format not birthday`, `gazebo number selection does not become guest count`, strict YCLIENTS и `dialog_regression_smoke.py`.
+
+## 2026-05-30 live-dialog 17:48: waitlist relevance, bath capacity and confirmation "no"
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-30.
+- Симптомы: баня принимала `40` гостей как нормальную анкету; `на 30 число` после июньского контекста могло прыгнуть на 30 мая; голое `нет` на финальном подтверждении трактовалось как правка допов; `ну окей` после info-вопроса на шаге допов мог принять допы без явного выбора; waitlist мог уведомить клиента даже если запрос уже не актуален.
+- Причины: capacity guard для бани не был отдельной backend-валидацией; day-only parser не использовал свежий месяц из текущего draft/last_unavailable; confirmation-flow сначала запускал correction patch, а уже потом отрицание подтверждения; upsell-state не различал нейтральный ack после info-вопроса и явный выбор допов; waitlist notification не имел relevance gate перед отправкой.
+- Исправлено: баня больше 15 гостей блокируется без ручного уточнения и предлагает просторную беседку; `30 число/на 30/на 30-е` берёт месяц из свежего контекста; `нет` на `awaiting_confirmation` переводит в change-flow и спрашивает, что изменить; `ну окей` после info-вопроса на допах оставляет шаг допов без автодобавления; waitlist перед уведомлением проверяет статус, дату, активные bookings/holds, отказ в последних сообщениях и свежую доступность.
+- Защищено: `bathhouse blocks large group`, `contextual day number keeps discussed month`, `confirmation no is not upsell correction`, `generic ok after upsell info does not accept items`, `waitlist notifies only relevant requests`, context-сценарии `Баня на 40 гостей блокируется до шага формата` и `Подтверждение: «нет» не меняет допы`.
+- Проверки: `compileall app scripts` OK; `local_regression_suite.py --group dates/gazebo/services/upsell/waitlist/payments/post_booking` OK по группам; `dialog_context_suite.py` 16/16 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; после one-shot sync `yclients_sync_status.py --strict` OK (`records_seen=127`, `last_error=None`).
+
+## 2026-05-30 live-dialog 16:38: price/common-info, upsell, YCLIENTS book_times, media
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-30.
+- Симптомы: `сколько будет стоить?` попало в ответ про детей из-за подстроки `дет` внутри `будет`; первый `не` на допах закрывал допы без второго мягкого захода; баня `30 июня 12:00-16:00` получила локальный hold/payment, но YCLIENTS после оплаты вернул `422 Услуга недоступна в выбранное время`; `нас если что 30 челове` не сразу фильтровало маленькие беседки; в сводке двух броней отправилась только баня, без фото Беседки №1; `просто посидеть с друзьями` могло стать `день рождения`.
+- Причины: common-info про детей использовал слишком широкий substring `дет`; upsell final-negative считал короткое `не` финальным на первом касании; локальная availability для фиксированных услуг не сверяла выбранный старт с live `book_times`; guests parser не принимал обрезанную словоформу `челове`; media selection для booking summary не всегда восстанавливал беседку по `service_variant/yclients_service_id` или тексту сводки.
+- Исправлено: children-info перешёл на словоформенный helper без подстрочного `дет`; добавлен `classify_upsell_reply()` и двухкасательный negative-flow; `bathhouse/house` с фиксированными пакетами проверяют YCLIENTS `book_times` до hold/payment и не говорят “свободно”, если API недоступен; guests parser принимает `челов*`; media берет беседку по `service_variant`, `hold_yclients_service_id`, `yclients_service_id` и текущей booking-summary строке; формат `с друзьями` сохраняется как `компания друзей`.
+- Важно по архитектуре: это не зашивка одной фразы. Для цены добавлен semantic route: если AI вернул `intent=price_question`, backend считает цену по `services_map` даже без слов `цена/стоить/сколько`; deterministic слой только защищает от ложного children-info.
+- Защищено: `price question with budet is not children info`, `AI semantic price question without price keywords`, `bare ne first upsell gets soft push`, `fixed service rejects missing yclients book time`, `fixed service yclients unavailable does not claim free`, `truncated people word extracts guests`, `gazebo media selection`, `friends hangout event format not birthday`.
+- Проверки: `.venv\Scripts\python.exe -m compileall app scripts` OK; `local_regression_suite.py --group prices --group upsell --group services --group gazebo --group media --group payments` OK; `dialog_context_suite.py` 14/14 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_stress_suite.py` 13/13 OK; после one-shot `sync_yclients_records.py` строгий `yclients_sync_status.py --strict` OK (`records_seen=126`, `last_error=None`).
+- Не ремонтировалось: live paid-but-journal-pending запись бани с 422 остаётся историческим артефактом без отдельной команды на ручной ремонт.
+
+## 2026-05-29 live-dialog 19:02: subsequent gazebo booking fell back to old bath draft
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками 2026-05-29.
+- Симптом: после старого draft бани клиент спросил `а какие беседки есть`, получил общий ответ про беседку, затем написал `хочу добвить отдельной бронью`, а бот ответил ошибкой про 12 часов бани. То есть новая отдельная беседка не стартовала, а старый draft бани снова попал в availability validation.
+- Причины: `отдельной бронью` и опечатка `добвить` не считались generic new-booking request; `last_discussed_service_type=gazebo` не использовался для такой фразы; service-exists route был слишком широким и мог перехватывать booking-сообщения со словом `можно`.
+- Исправлено: detector новой отдельной брони расширен на `отдельной/отдельную бронью`, `добавить/добвить отдельной`; вопрос о наличии/вариантах услуги теперь исключает сообщения с датой/периодом/same-reference и дополнительные booking requests; `а какие беседки есть` отвечает списком беседок и сохраняет обсуждаемую услугу без смены текущего draft.
+- Дополнительно: post-booking вопрос про комаров отвечает deterministic текстом до AI; текст по бане теперь говорит о фиксированных пакетах, а не о произвольной почасовой аренде.
+- Защищено: `gazebo info then separate booking ignores old bath draft`, `mosquito question after booking bypasses AI`; пройдены `services/prices`, `fresh/post_booking/payments/time`, context 14/14, edge 14/14, stress 13/13.
+
+## 2026-05-29 unavailable same-reference branch can look like context loss
+
+- Статус: под наблюдением после сценарной диагностики; production-код не менялся.
+- Наблюдение: первый `dialog_stress_suite.py` прогон упал на live-like цепочке `баньку тем же днем что и беседка хочу` -> `и часы как там же, без изменений`, когда скопированный слот бани оказался недоступен. Ответ был корректно про недоступность, но backend очистил основные `date/time/duration` в `form_data` и перенёс их в `last_unavailable`; для клиента это может выглядеть как потеря контекста.
+- Повторный stress после cleanup fixtures прошёл 13/13, потому что тот же слот стал свободным и контекст сохранился. Значит same-reference parser работает, но unavailable-slot branch требует отдельного regression-сценария: при недоступности скопированной даты/времени бот должен явно помнить исходные `date/time/duration`, объяснять, что не свободно именно это окно, и предлагать новую длительность/время без ощущения сброса заявки.
+- Следующий шаг: добавить red-first тест на unavailable same-date/same-time second service и решить, хранить ли поля в active draft вместе с `last_unavailable` или улучшить reply/current_step так, чтобы следующий ответ клиента продолжал ту же баню без повторного старта.
+
 ## 2026-05-29 YooKassa 1-ruble live payment configuration
 
 - Статус: найдено диагностикой, production-код не менялся.
@@ -16,7 +88,7 @@
 - Симптомы: старая анкета бани на 29 мая мешала новой явной заявке `я бы хотел баню на 30 июня...`; ответ `не` на допы не принимался как отказ и бот снова продавал допы; `ну вроде да` не считалось подтверждением; баня принимала произвольный интервал `09:00-21:00` на 12 часов, хотя в YCLIENTS она продаётся фиксированными блоками.
 - Причины: stale-form guard требовал отдельного ответа "новая/старая", даже когда в этом же сообщении уже были новая услуга/дата/время; upsell negative parser не считал короткое `не` финальным отказом; confirmation yes parser был слишком строгим; availability не валидировала `duration` против фиксированных `duration_minutes` вариантов до создания hold/payment.
 - Исправлено: явная подробная новая заявка поверх старой анкеты стартует чистый draft с сохранением только имени/телефона; `нет/не + новая заявка` в stale-choice обрабатывается тем же сообщением; `не/no/нет спасибо` закрывает допы как `не нужны`; `ну вроде да/вроде да` подтверждает заявку; услуги с фиксированными duration-variant блоками отклоняют неподдерживаемую длительность и возвращают клиента на шаг `duration`.
-- Защищено: `stale explicit new bath request skips choice`, `stale no plus new bath request processes same message`, `bare ne upsell refusal goes to name`, `soft yes confirms awaiting confirmation`, `bathhouse rejects non-fixed duration` в `scripts/local_regression_suite.py`; дополнительно пройдены context 14/14, edge 14/14 и stress 13/13 через split-run.
+- Защищено на тот момент: `stale explicit new bath request skips choice`, `stale no plus new bath request processes same message`, `bare ne upsell refusal goes to name`, `soft yes confirms awaiting confirmation`, `bathhouse rejects non-fixed duration` в `scripts/local_regression_suite.py`; дополнительно пройдены context 14/14, edge 14/14 и stress 13/13 через split-run. Политика `bare ne` 2026-05-30 изменена на двухкасательную и теперь покрыта `bare ne first upsell gets soft push`.
 - Не ремонтировалось: live `booking_id=1096` остался историческим артефактом paid-local без `yclients_record_id`; причина зафиксирована как недопустимый 12-часовой блок, который новый код больше не должен пропускать.
 
 ## 2026-05-29 live-dialog 13:07: explicit period, fake payment and next-request typo

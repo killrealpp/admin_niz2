@@ -90,7 +90,7 @@ class YClientsClient:
         last_error: httpx.HTTPError | None = None
         for attempt in range(1, attempts + 1):
             try:
-                with httpx.Client(timeout=30) as client:
+                with httpx.Client(timeout=30, trust_env=self.settings.http_trust_env) as client:
                     response = client.request(method, url, headers=self.headers, **kwargs)
                 break
             except (httpx.TimeoutException, httpx.NetworkError) as exc:

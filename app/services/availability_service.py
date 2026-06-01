@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from functools import lru_cache
+import re
 import time as time_module
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -11,12 +12,14 @@ from psycopg2.extensions import connection as PgConnection
 from app.core.config import get_settings
 from app.core.config import PROJECT_ROOT
 from app.db.repositories import slot_holds_repo, yclients_records_repo
+from app.integrations.yclients_client import YClientsClient, YClientsError
 
 SERVICES_MAP_PATH = PROJECT_ROOT / "config" / "services_map.yaml"
 AVAILABILITY_CACHE_TTL_SECONDS = 15
 DEFAULT_DAY_START = time(9, 0)
 DEFAULT_DAY_END = time(5, 0)
 DEFAULT_SLOT_STEP_MINUTES = 30
+BATHHOUSE_MAX_GUESTS = 15
 
 
 @dataclass
@@ -66,6 +69,11 @@ def check_availability(
 
     service_config = load_services_map().get(service_type) or {}
     title = service_config.get("title") or service_type
+    capacity_issue = _service_capacity_issue(service_type, form_data, title)
+    if capacity_issue:
+        result = AvailabilityResult(True, capacity_issue, [])
+        _availability_cache[cache_key] = (time_module.monotonic(), result)
+        return result
     duration_issue = _fixed_duration_issue(service_config, form_data, date_value, title)
     if duration_issue:
         result = AvailabilityResult(True, duration_issue, [])
@@ -79,6 +87,11 @@ def check_availability(
             f"Автоматическая проверка расписания для «{title}» пока не подключена.",
             [],
         )
+
+    online_result = _fixed_service_online_time_result(service_type, title, variants, form_data, date_value)
+    if online_result is not None:
+        _availability_cache[cache_key] = (time_module.monotonic(), online_result)
+        return online_result
 
     local_result = _check_local_availability(conn, service_type, title, variants, form_data, now)
     if local_result is not None:
@@ -274,6 +287,105 @@ def _check_local_availability(
     if slots:
         return AvailabilityResult(True, f"Нашёл свободные варианты для «{title}» по локальному календарю.", slots[:8])
     return AvailabilityResult(True, f"Свободных вариантов для «{title}» на эту дату не нашёл по локальному календарю.", [])
+
+
+def _fixed_service_online_time_result(
+    service_type: str,
+    title: str,
+    variants: list[dict[str, Any]],
+    form_data: dict[str, Any],
+    date_value: str,
+) -> AvailabilityResult | None:
+    if service_type not in {"bathhouse", "house"}:
+        return None
+    requested_time = _requested_time(form_data.get("time"))
+    requested_minutes = _duration_minutes(form_data.get("duration"))
+    if not requested_time or not requested_minutes:
+        return None
+    fixed_variants = [variant for variant in variants if variant.get("duration_minutes")]
+    if not fixed_variants:
+        return None
+    requested_time_text = requested_time.strftime("%H:%M")
+    available_starts: list[str] = []
+    checked_any = False
+    for variant in fixed_variants:
+        service_id = str(variant.get("yclients_service_id") or "").strip()
+        staff_id = str(variant.get("yclients_staff_id") or "").strip()
+        if not service_id or not staff_id:
+            continue
+        checked_any = True
+        starts = _load_yclients_book_times(
+            staff_id=staff_id,
+            service_id=service_id,
+            date_value=date_value,
+        )
+        if starts is None:
+            return AvailabilityResult(
+                False,
+                (
+                    f"Сейчас не могу надёжно проверить точное время для «{title}» в YCLIENTS. "
+                    "Лучше попробовать чуть позже или передать заявку администратору."
+                ),
+                [],
+            )
+        available_starts.extend(starts)
+    if not checked_any:
+        return None
+    available_starts = sorted(set(available_starts))
+    if requested_time_text in available_starts:
+        return None
+    if available_starts:
+        shown = _format_slots(available_starts[:12])
+        return AvailabilityResult(
+            True,
+            (
+                f"Для «{title}» выбранный старт {requested_time_text} сейчас недоступен в YCLIENTS. "
+                f"На эту дату доступны старты: {shown}. Напишите удобное время из списка."
+            ),
+            [],
+        )
+    return AvailabilityResult(
+        True,
+        f"Для «{title}» на выбранную дату свободных стартов в YCLIENTS не нашла.",
+        [],
+    )
+
+
+def _load_yclients_book_times(*, staff_id: str, service_id: str, date_value: str) -> list[str] | None:
+    try:
+        raw_times = YClientsClient().get_book_times(
+            staff_id=staff_id,
+            service_id=service_id,
+            date=date_value,
+        )
+    except (YClientsError, Exception):
+        return None
+    starts: list[str] = []
+    for item in raw_times:
+        time_text = _book_time_to_hhmm(item)
+        if time_text:
+            starts.append(time_text)
+    return sorted(set(starts))
+
+
+def _book_time_to_hhmm(item: Any) -> str | None:
+    if isinstance(item, str):
+        text = item
+    elif isinstance(item, dict):
+        text = str(
+            item.get("time")
+            or item.get("datetime")
+            or item.get("start")
+            or item.get("start_time")
+            or item.get("seance_time")
+            or ""
+        )
+    else:
+        return None
+    match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", text)
+    if not match:
+        return None
+    return f"{int(match.group(1)):02d}:{match.group(2)}"
 
 
 def _has_successful_sync(conn: PgConnection) -> bool:
@@ -487,10 +599,27 @@ def _fixed_duration_issue(
     if int(duration) in allowed:
         return None
     return (
-        f"Для «{title}» нельзя оформить {_format_duration_for_reply(duration)}: "
-        f"доступны фиксированные блоки {_format_allowed_durations(allowed)}. "
-        "Напишите нужную длительность из этих вариантов."
+        f"Для «{title}» нельзя оформить произвольный период на {_format_duration_for_reply(duration)}: "
+        f"по базе доступны только фиксированные пакеты {_format_allowed_durations(allowed)}. "
+        "Напишите нужный пакет из этих вариантов."
     )
+
+
+def _service_capacity_issue(service_type: str, form_data: dict[str, Any], title: str) -> str | None:
+    guests_count = form_data.get("guests_count")
+    if not guests_count:
+        return None
+    try:
+        guests = int(guests_count)
+    except (TypeError, ValueError):
+        return None
+    if service_type == "bathhouse" and guests > BATHHOUSE_MAX_GUESTS:
+        return (
+            f"Для «{title}» {guests} гостей — слишком большая компания: баню не оформляю больше чем на "
+            f"{BATHHOUSE_MAX_GUESTS} человек без ручного уточнения.\n\n"
+            "Для такой компании лучше подобрать просторную беседку, например Беседку №1, если она свободна на нужную дату."
+        )
+    return None
 
 
 def _format_allowed_durations(minutes_values: list[int]) -> str:

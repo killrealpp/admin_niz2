@@ -6,6 +6,7 @@ It stubs payment creation so no real YooKassa/YCLIENTS side effects happen.
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -91,12 +92,20 @@ def _ru_date(value: date) -> str:
     return f"{value.day} {months[value.month]}"
 
 
-def _find_free_gazebo_date(now: datetime) -> date:
+def _find_free_gazebo_slot(now: datetime) -> tuple[date, str]:
+    variants = (
+        "Беседка №1",
+        "Беседка №2",
+        "Беседка №3",
+        "Беседка №4",
+        "Беседка №5",
+        "Беседка №6",
+        "Беседка №8",
+    )
     base = initial_form_data()
     base.update(
         {
             "service_type": "gazebo",
-            "service_variant": "Беседка №2",
             "time": "12:00",
             "duration": 6,
             "guests_count": 8,
@@ -105,16 +114,24 @@ def _find_free_gazebo_date(now: datetime) -> date:
     with get_connection() as conn:
         for offset in range(1, 60):
             candidate = now.date() + timedelta(days=offset)
-            form_data = base | {"date": candidate.isoformat()}
-            result = check_availability(conn, form_data=form_data, now=now)
-            if result.ok and result.slots:
-                return candidate
+            for variant in variants:
+                form_data = base | {"date": candidate.isoformat(), "service_variant": variant}
+                result = check_availability(conn, form_data=form_data, now=now)
+                if result.ok and result.slots:
+                    return candidate, variant
     raise RuntimeError("No free gazebo date found for smoke test")
+
+
+def _variant_choice_text(variant: str) -> str:
+    match = re.search(r"№\s*(\d+)", variant)
+    if match:
+        return f"давай беседку номер {match.group(1)}"
+    return f"давай {variant.lower()}"
 
 
 def _fake_payment(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return {
-        "amount": "1.00",
+        "amount": "2000.00",
         "currency": "RUB",
         "payment_url": "https://example.test/pay",
         "provider_payment_id": "smoke_payment",
@@ -223,8 +240,9 @@ def main() -> None:
     _cleanup()
 
     try:
-        free_date = _find_free_gazebo_date(now)
+        free_date, gazebo_variant = _find_free_gazebo_slot(now)
         date_text = _ru_date(free_date)
+        variant_choice = _variant_choice_text(gazebo_variant)
 
         _send("gazebo_help", "нужна беседка", now)
         _send("gazebo_help", date_text, now)
@@ -232,7 +250,7 @@ def main() -> None:
         checks.append(_expect("gazebo advice question", reply, "Беседка", "Сколько"))
         reply = _send("gazebo_help", "8 человек", now)
         checks.append(_expect("guest count while choosing gazebo", reply, "8", "Беседка"))
-        reply = _send("gazebo_help", "давай беседку номер два", now)
+        reply = _send("gazebo_help", variant_choice, now)
         checks.append(_expect("gazebo variant selected", reply, "Во сколько"))
         _send("gazebo_help", "с 17 до 00", now)
         reply = _send("gazebo_help", "а парковка есть?", now)
@@ -240,14 +258,28 @@ def main() -> None:
 
         _send("parking_without_guests", "нужна беседка", now)
         _send("parking_without_guests", date_text, now)
-        _send("parking_without_guests", "беседка номер два", now)
+        reply = _send("parking_without_guests", variant_choice, now)
+        lowered_reply = reply.lower().replace("ё", "е")
+        variant_number = re.search(r"\d+", variant_choice)
+        bad_guest_phrase = f"для {variant_number.group(0)} гост" if variant_number else ""
+        checks.append(
+            Check(
+                name="gazebo number selection does not become guest count",
+                ok=(
+                    "сколько" in lowered_reply
+                    and ("гост" in lowered_reply or "человек" in lowered_reply)
+                    and (not bad_guest_phrase or bad_guest_phrase not in lowered_reply)
+                ),
+                details=reply,
+            )
+        )
         _send("parking_without_guests", "с 17 до 00", now)
         reply = _send("parking_without_guests", "а парковка есть?", now)
         checks.append(_expect("info question while waiting guests", reply, "парков", "Сколько", "гостей"))
 
         _send("info_confirm", "нужна беседка", now)
         _send("info_confirm", date_text, now)
-        _send("info_confirm", "беседка номер два", now)
+        _send("info_confirm", variant_choice, now)
         _send("info_confirm", "с 12 до 18", now)
         _send("info_confirm", "8", now)
         _send("info_confirm", "день рождения", now)

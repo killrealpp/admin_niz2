@@ -24,9 +24,21 @@ from app.services.yclients_record_service import (
 )
 
 
-def calculate_prepayment_amount(bookings_count: int) -> Decimal:
+def calculate_prepayment_amount(
+    bookings_count: int,
+    *,
+    base_prices: list[Decimal] | None = None,
+) -> Decimal:
     settings = get_settings()
-    amount = Decimal(settings.prepayment_amount_rub) * Decimal(max(bookings_count, 1))
+    mode = str(settings.prepayment_mode or "fixed").lower()
+    if mode == "percent":
+        prices = [price for price in (base_prices or []) if price is not None]
+        if not prices:
+            raise YooKassaError("Cannot calculate percent prepayment without base service prices")
+        percent = Decimal(str(settings.prepayment_percent)) / Decimal("100")
+        amount = sum(prices, Decimal("0")) * percent
+    else:
+        amount = Decimal(settings.prepayment_amount_rub) * Decimal(max(bookings_count, 1))
     return amount.quantize(Decimal("0.01"))
 
 
@@ -43,7 +55,10 @@ def create_payment_link_for_bookings(
     if settings.payment_provider.lower() != "yookassa":
         raise YooKassaError("PAYMENT_PROVIDER is not yookassa")
 
-    amount = calculate_prepayment_amount(len(booking_ids))
+    amount = calculate_prepayment_amount(
+        len(booking_ids),
+        base_prices=_base_prices_for_bookings(conn, booking_ids),
+    )
     description = f"Предоплата за бронь, {client_name}, {phone}"
     payment = payments_repo.create_pending(
         conn,
@@ -121,7 +136,10 @@ def create_payment_link_for_holds(
         raise YooKassaError("hold_ids are required for prepayment")
 
     normalized_hold_ids = [int(item) for item in hold_ids]
-    amount = calculate_prepayment_amount(len(normalized_hold_ids))
+    amount = calculate_prepayment_amount(
+        len(normalized_hold_ids),
+        base_prices=_base_prices_for_holds(conn, normalized_hold_ids),
+    )
     description = f"Предоплата за бронь, {client_name}, {phone}"
     existing_payment = payments_repo.find_active_for_hold_ids(
         conn,
@@ -305,6 +323,89 @@ def _variant_title_for_hold(hold: dict[str, Any]) -> str | None:
         if str(variant.get("yclients_service_id") or "").strip() == yclients_service_id:
             return str(variant.get("title") or "")
     return None
+
+
+def _base_prices_for_bookings(conn: PgConnection, booking_ids: list[int]) -> list[Decimal]:
+    if str(get_settings().prepayment_mode or "fixed").lower() != "percent":
+        return []
+    prices: list[Decimal] = []
+    for booking_id in booking_ids:
+        booking = bookings_repo.get_by_id(conn, booking_id=int(booking_id))
+        price = _base_price_for_item(booking or {})
+        if price is None:
+            raise YooKassaError(f"Cannot calculate percent prepayment for booking #{booking_id}: price is unknown")
+        prices.append(price)
+    return prices
+
+
+def _base_prices_for_holds(conn: PgConnection, hold_ids: list[int]) -> list[Decimal]:
+    if str(get_settings().prepayment_mode or "fixed").lower() != "percent":
+        return []
+    prices: list[Decimal] = []
+    for hold_id in hold_ids:
+        hold = slot_holds_repo.get_by_id(conn, hold_id=int(hold_id))
+        price = _base_price_for_item(hold or {})
+        if price is None:
+            raise YooKassaError(f"Cannot calculate percent prepayment for hold #{hold_id}: price is unknown")
+        prices.append(price)
+    return prices
+
+
+def _base_price_for_item(item: dict[str, Any]) -> Decimal | None:
+    service_type = str(item.get("service_type") or "").strip()
+    if not service_type:
+        return None
+    config = load_services_map().get(service_type) or {}
+    variant = _matching_price_variant(config, item)
+    raw_price = variant.get("price") if variant else config.get("price")
+    if raw_price in (None, ""):
+        return None
+    price = Decimal(str(raw_price))
+    if service_type == "gazebo" and _is_gazebo_discount_day(item):
+        return (price * Decimal("0.5")).quantize(Decimal("0.01"))
+    return price.quantize(Decimal("0.01"))
+
+
+def _matching_price_variant(config: dict[str, Any], item: dict[str, Any]) -> dict[str, Any] | None:
+    variants = list(config.get("variants") or [])
+    if not variants:
+        return config if config.get("price") is not None else None
+
+    service_id = str(
+        item.get("hold_yclients_service_id")
+        or item.get("yclients_service_id")
+        or ""
+    ).strip()
+    staff_id = str(
+        item.get("hold_yclients_staff_id")
+        or item.get("yclients_staff_id")
+        or ""
+    ).strip()
+    slot_date = item.get("booking_date") or item.get("slot_date")
+    duration = item.get("duration_minutes")
+    weekday = slot_date.weekday() if hasattr(slot_date, "weekday") else None
+
+    for variant in variants:
+        if service_id and str(variant.get("yclients_service_id") or "").strip() == service_id:
+            return variant
+
+    candidates: list[dict[str, Any]] = []
+    for variant in variants:
+        if staff_id and str(variant.get("yclients_staff_id") or "").strip() != staff_id:
+            continue
+        variant_duration = variant.get("duration_minutes")
+        if duration and variant_duration and int(duration) != int(variant_duration):
+            continue
+        weekdays = variant.get("weekdays")
+        if weekdays and weekday is not None and weekday not in weekdays:
+            continue
+        candidates.append(variant)
+    return candidates[0] if candidates else None
+
+
+def _is_gazebo_discount_day(item: dict[str, Any]) -> bool:
+    slot_date = item.get("booking_date") or item.get("slot_date")
+    return bool(hasattr(slot_date, "weekday") and slot_date.weekday() in {0, 1, 2, 3})
 
 
 def sync_payment_statuses(conn: PgConnection, *, limit: int = 50) -> dict[str, int]:

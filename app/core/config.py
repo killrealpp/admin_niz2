@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     openrouter_base_url: str = Field(
         "https://openrouter.ai/api/v1", alias="OPENROUTER_BASE_URL"
     )
+    http_trust_env: bool = Field(False, alias="HTTP_TRUST_ENV")
     openai_model: str = Field("anthropic/claude-sonnet-4", alias="OPENAI_MODEL")
     openai_temperature: float = Field(0.2, alias="OPENAI_TEMPERATURE")
     openai_max_tokens: int = Field(700, alias="OPENAI_MAX_TOKENS")
@@ -85,7 +86,9 @@ class Settings(BaseSettings):
     payment_secret_key: str = Field("", alias="PAYMENT_SECRET_KEY")
     payment_success_url: str = Field("", alias="PAYMENT_SUCCESS_URL")
     payment_fail_url: str = Field("", alias="PAYMENT_FAIL_URL")
+    prepayment_mode: str = Field("fixed", alias="PREPAYMENT_MODE")
     prepayment_amount_rub: int = Field(2000, alias="PREPAYMENT_AMOUNT_RUB")
+    prepayment_percent: int = Field(50, alias="PREPAYMENT_PERCENT")
     payment_status_sync_enabled: bool = Field(
         True, alias="PAYMENT_STATUS_SYNC_ENABLED"
     )
@@ -125,12 +128,16 @@ class Settings(BaseSettings):
             "db_pool_max": self.db_pool_max,
             "ai_provider": self.ai_provider,
             "openai_model": self.openai_model,
+            "http_trust_env": self.http_trust_env,
             "voice_transcription_enabled": self.voice_transcription_enabled,
             "telegram_configured": bool(self.telegram_bot_token),
             "openrouter_configured": bool(self.openrouter_api_key),
             "yclients_configured": bool(self.yclients_partner_token),
             "payment_provider": self.payment_provider,
             "payment_configured": bool(self.payment_shop_id and self.payment_secret_key),
+            "prepayment_mode": self.prepayment_mode,
+            "prepayment_amount_rub": self.prepayment_amount_rub,
+            "prepayment_percent": self.prepayment_percent,
             "yookassa_webhook_enabled": self.yookassa_webhook_enabled,
         }
 
