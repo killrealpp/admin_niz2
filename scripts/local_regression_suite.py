@@ -5842,7 +5842,7 @@ def _test_payment_delay_does_not_start_reschedule(now: datetime) -> Check:
             slot_date=date(2026, 7, 1),
             slot_time=time(18, 0),
             duration_minutes=180,
-            expires_at=actual_now + timedelta(minutes=10),
+            expires_at=actual_now + timedelta(minutes=30),
         )
     original_classifier = message_handler.classify_post_booking_message
 
@@ -5864,7 +5864,7 @@ def _test_payment_delay_does_not_start_reschedule(now: datetime) -> Check:
         lowered = reply.lower().replace("ё", "е")
         ok = (
             "перенос" not in lowered
-            and "резерв держится 10 минут" in lowered
+            and "резерв держится 30 минут" in lowered
             and state.get("current_step") == "reserved"
         )
         return Check("payment delay does not start reschedule", ok, f"{reply} | {state}")
@@ -7207,6 +7207,133 @@ def _test_bare_duration_answer() -> Check:
     return Check("bare duration answer", ok, str(patch))
 
 
+def _test_evening_time_choice_uses_early_option() -> Check:
+    patch = message_handler._time_period_patch("к 4 или 5 вечера")
+    ok = patch.get("time") == "16:00" and "duration" not in patch
+    return Check("evening time choice uses early option", ok, str(patch))
+
+
+def _test_until_midnight_uses_existing_start() -> Check:
+    patch = message_handler._form_detail_correction_patch(
+        "а мы не на 4 часа, можем до 12 ночи?",
+        _base_form(service_type="gazebo", time="16:00", duration=4),
+    )
+    ok = patch.get("duration") == 8 and "time" not in patch
+    return Check("until midnight uses existing start", ok, str(patch))
+
+
+def _test_bathhouse_ten_hour_price_formula() -> Check:
+    reply = message_handler._price_reply_if_known(
+        "баня на 10 часов сколько стоит",
+        _base_form(service_type="bathhouse", date="2026-06-16", duration=10),
+    ) or ""
+    ok = "19 200" in reply and "1 500" in reply
+    return Check("bathhouse ten hour price formula", ok, reply)
+
+
+def _test_coal_price_is_known() -> Check:
+    reply = message_handler._price_reply_if_known(
+        "уголь сколько стоит",
+        _base_form(service_type="gazebo", service_variant="Беседка №2"),
+    ) or ""
+    ok = "270" in reply and "уголь" in reply.lower()
+    return Check("coal price is known", ok, reply)
+
+
+def _test_payment_reply_uses_30_minute_ttl_and_refund_note() -> Check:
+    reply = message_handler._payment_reply_text({"payment_url": "https://example.test/pay", "amount": "1.00"})
+    lowered = reply.lower()
+    ok = "30 минут" in lowered and "7 дней" in lowered
+    return Check("payment reply uses 30 minute ttl and refund note", ok, reply)
+
+
+def _test_unpaid_reserved_date_correction_recreates_hold_and_link(now: datetime) -> Check:
+    suffix = "unpaid_reserved_date_correction"
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №2",
+        date="2026-06-12",
+        time="16:00",
+        duration=6,
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        old_hold = slot_holds_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            service_type="gazebo",
+            yclients_service_id="18201002",
+            yclients_staff_id="3665292",
+            slot_date=date(2026, 6, 12),
+            slot_time=time(16, 0),
+            duration_minutes=360,
+            expires_at=now + timedelta(minutes=30),
+        )
+        payment = payments_repo.create_pending(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            booking_ids=[],
+            provider="yookassa",
+            amount=Decimal("1.00"),
+            currency="RUB",
+            description="test",
+            raw_payload={"hold_ids": [int(old_hold["id"])]},
+        )
+        payments_repo.attach_provider_response(
+            conn,
+            payment_id=int(payment["id"]),
+            provider_payment_id="old-unpaid-correction",
+            payment_url="https://example.test/old",
+            status="pending",
+            raw_payload={"hold_ids": [int(old_hold["id"])]},
+        )
+
+    original_payment = message_handler.create_payment_link_for_holds
+    original_availability = message_handler.check_availability
+
+    def fake_payment(conn, *, conversation_id, user_id, hold_ids, **_kwargs):
+        return {
+            "id": 999999,
+            "conversation_id": conversation_id,
+            "user_id": user_id,
+            "payment_url": "https://example.test/new",
+            "amount": "1.00",
+            "raw_payload": {"hold_ids": hold_ids},
+            "status": "pending",
+        }
+
+    message_handler.create_payment_link_for_holds = fake_payment
+    message_handler.check_availability = lambda *_args, **_kwargs: AvailabilityResult(True, "ok", ["free"])
+    try:
+        reply = _send(suffix, "хочу на 16 число, потом оплачу", now)
+        state = _latest_state(suffix)
+        form_after = state.get("form_data") or {}
+        with get_connection() as conn:
+            old_after = slot_holds_repo.get_by_id(conn, int(old_hold["id"]))
+            active = slot_holds_repo.list_active_for_conversation(
+                conn,
+                conversation_id=created["conversation"]["id"],
+                now=now,
+            )
+            payments = payments_repo.list_for_conversation(conn, conversation_id=created["conversation"]["id"])
+        old_payment_after = next(item for item in payments if int(item["id"]) == int(payment["id"]))
+        ok = (
+            old_after
+            and old_after.get("status") == "cancelled"
+            and old_payment_after.get("status") == "superseded"
+            and len(active) == 1
+            and int(active[0]["id"]) != int(old_hold["id"])
+            and form_after.get("date") == "2026-06-16"
+            and "https://example.test/new" in reply
+        )
+        return Check("unpaid reserved date correction recreates hold and link", bool(ok), f"{reply} | {form_after} | {old_payment_after}")
+    finally:
+        message_handler.create_payment_link_for_holds = original_payment
+        message_handler.check_availability = original_availability
+
+
 def _test_confirmation_time_correction_rechecks(now: datetime) -> Check:
     suffix = "confirmation_time_correction"
     created = _create_reserved_conversation(
@@ -8331,6 +8458,8 @@ def main() -> None:
         run("payments", lambda: _test_resume_same_expired_hold_does_not_ask_date(now))
         run("payments", lambda: _test_concurrent_active_hold_conflict(now))
         run("payments", lambda: _test_payment_intent_retry_no_duplicate_link(now))
+        run("payments", _test_payment_reply_uses_30_minute_ttl_and_refund_note)
+        run("payments", lambda: _test_unpaid_reserved_date_correction_recreates_hold_and_link(now))
         run("post_booking", lambda: _test_confirmation_info_answer_without_extra_ai(now))
         run("post_booking", _test_message_retention_48h_summarizes_and_deletes)
         run("post_booking", lambda: _test_post_booking_info_fallback_when_ai_unavailable(now))
@@ -8485,7 +8614,11 @@ def main() -> None:
         run("prices", lambda: _test_gazebo_until_morning_info_keeps_time_step(now))
         run("prices", _test_mosquito_question_during_confirmation)
         run("prices", lambda: _test_mosquito_question_after_booking_bypasses_ai(now))
+        run("prices", _test_bathhouse_ten_hour_price_formula)
+        run("prices", _test_coal_price_is_known)
         run("time", _test_bare_duration_answer)
+        run("time", _test_evening_time_choice_uses_early_option)
+        run("time", _test_until_midnight_uses_existing_start)
         run("time", lambda: _test_confirmation_time_correction_rechecks(now))
         run("gazebo", lambda: _test_gazebo_selected_variant_capacity_uses_known_free_list(now))
         run("fresh", lambda: _test_stale_form_after_two_hours_asks_choice(now))

@@ -77,6 +77,8 @@ python scripts/dialog_stress_suite.py
 
 Следующий возможный срез после Phase 2. Не начинать в том же рабочем заходе; перед стартом снова выполнить lightweight baseline и убедиться, что DB-dependent regression остаётся зелёным.
 
+Статус 2026-06-02: реализовано кодом. `app/services/dialog/info_flow.py` владеет common/deterministic info helpers, active-booking reference info, info-during-form и reply/next-question guards; `message_handler.py` оставляет тонкие wrappers и callback-builders, side effects/persistence остаются в handler. Проверки зелёные: `compileall`, `lint_best2info.py`, `validate_yclients_map.py`, `test_db.py`, context 19/19, edge 15/15, stress 13/13, targeted local regression по prices/time/payments/post_booking/services/upsell. Подробности: [[log]].
+
 Вынести информационные ответы, которые не должны менять состояние анкеты:
 
 - common info;

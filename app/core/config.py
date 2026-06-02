@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     app_debug: bool = Field(True, alias="APP_DEBUG")
     app_timezone: str = Field("Europe/Moscow", alias="APP_TIMEZONE")
     session_ttl_hours: int = Field(72, alias="SESSION_TTL_HOURS")
-    hold_ttl_minutes: int = Field(10, alias="HOLD_TTL_MINUTES")
+    hold_ttl_minutes: int = Field(30, alias="HOLD_TTL_MINUTES")
     handoff_ttl_minutes: int = Field(60, alias="HANDOFF_TTL_MINUTES")
     message_summary_enabled: bool = Field(True, alias="MESSAGE_SUMMARY_ENABLED")
     message_summary_after_hours: int = Field(48, alias="MESSAGE_SUMMARY_AFTER_HOURS")

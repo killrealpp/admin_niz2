@@ -159,6 +159,18 @@ from app.services.dialog.handoff import (
     looks_like_handoff_needed as _looks_like_handoff_needed,
     start_user_handoff as _start_user_handoff,
 )
+from app.services.dialog.info_flow import (
+    ActiveBookingInfoCallbacks as _ActiveBookingInfoCallbacks,
+    InfoFlowCallbacks as _InfoFlowCallbacks,
+    InfoQuestionCallbacks as _InfoQuestionCallbacks,
+    active_booking_reference_info_reply as _active_booking_reference_info_reply_impl,
+    answer_info_during_form as _answer_info_during_form_impl,
+    append_current_service_question as _append_current_service_question_impl,
+    deterministic_info_reply as _deterministic_info_reply_impl,
+    looks_like_info_question as _looks_like_info_question_impl,
+    reply_already_asks as _reply_already_asks_impl,
+    should_append_next_question_after_info as _should_append_next_question_after_info_impl,
+)
 from app.services.dialog.price_info import (
     addon_price_reply as _addon_price_reply,
     discount_reply_if_known as _discount_reply_if_known_impl,
@@ -243,6 +255,7 @@ from app.services.dialog.time_parsing import (
     period_conflict as _period_conflict,
     single_time_patch as _single_time_patch,
     time_period_patch as _time_period_patch,
+    until_time_duration_patch as _until_time_duration_patch,
 )
 from app.services.knowledge_service import load_knowledge, retrieve_client_knowledge
 from app.services.payment_service import (
@@ -632,13 +645,17 @@ def _form_detail_correction_patch(text: str, form_data: dict[str, Any]) -> dict[
     period_patch = _time_period_patch(text)
     if period_patch:
         patch |= period_patch
-    elif any(marker in normalized for marker in ("время", "час", "с ", "до ", "приед", "заед")):
+    else:
+        until_patch = _until_time_duration_patch(text, form_data.get("time"))
+        if until_patch:
+            patch |= until_patch
+    if not period_patch and "time" not in patch and "duration" not in patch and any(marker in normalized for marker in ("время", "час", "с ", "до ", "приед", "заед")):
         time_patch = _single_time_patch(text, "time")
         if time_patch:
             patch |= time_patch
 
     duration_value = _duration_from_text(text)
-    if duration_value is not None and not period_patch:
+    if duration_value is not None and not period_patch and "duration" not in patch:
         patch["duration"] = duration_value
 
     if not _wants_additional_booking(text):
@@ -2000,6 +2017,7 @@ def _reserved_hold_callbacks() -> _ReservedHoldCallbacks:
         relative_date_patch=_relative_date_patch,
         check_availability=check_availability,
         reset_unavailable_slot=_reset_unavailable_slot,
+        create_hold=_create_hold,
         create_payment_link_for_holds=create_payment_link_for_holds,
         log_payment_link_exception=logger.exception,
     )
@@ -2177,6 +2195,47 @@ def _explicit_photo_reply(text: str, form_data: dict[str, Any]) -> str | None:
     )
 
 
+def _info_question_callbacks() -> _InfoQuestionCallbacks:
+    return _InfoQuestionCallbacks(
+        is_likely_form_answer=_is_likely_form_answer,
+        now_local=_now_local,
+        confirmation_yes=_confirmation_yes,
+        confirmation_no=_confirmation_no,
+    )
+
+
+def _info_flow_callbacks() -> _InfoFlowCallbacks:
+    return _InfoFlowCallbacks(
+        next_question=next_question,
+        reply_already_asks=_reply_already_asks,
+        explicit_photo_reply=_explicit_photo_reply,
+        discount_reply_if_known=_discount_reply_if_known,
+        price_reply_if_known=_price_reply_if_known,
+        looks_like_gazebo_budget_preference=_looks_like_gazebo_budget_preference,
+        gazebo_budget_selection_text=_gazebo_budget_selection_text,
+        current_gazebo_quality_reply=_current_gazebo_quality_reply,
+        capacity_info_reply=_capacity_info_reply,
+        policy_or_common_info_reply=_policy_or_common_info_reply,
+        should_append_next_question_after_info=_should_append_next_question_after_info,
+        capacity_guest_patch=_capacity_guest_patch,
+        clean_reply=_clean_reply,
+        ai_process_reply=_ai_process_reply,
+        asks_gazebo_options=_asks_gazebo_options,
+        gazebo_selection_text=_gazebo_selection_text,
+    )
+
+
+def _active_booking_info_callbacks() -> _ActiveBookingInfoCallbacks:
+    return _ActiveBookingInfoCallbacks(
+        means_same_date=_means_same_date,
+        means_same_time=_means_same_time,
+        referenced_service_type_for_same_time=_referenced_service_type_for_same_time,
+        active_user_bookings=_active_user_bookings,
+        booking_line_short=_booking_line_short,
+        booking_object_title=_booking_object_title,
+    )
+
+
 def _changes_booking_core_fields(patch: dict[str, Any]) -> bool:
     return bool(
         {
@@ -2196,90 +2255,12 @@ def _changes_booking_core_fields(patch: dict[str, Any]) -> bool:
 
 
 def _deterministic_info_reply(text: str, form_data: dict[str, Any], *, append_next_question: bool = True) -> str | None:
-    normalized = text.lower().replace("ё", "е")
-    next_key, question = next_question(form_data)
-    photo_reply = _explicit_photo_reply(text, form_data)
-    if photo_reply:
-        return photo_reply
-    discount_reply = _discount_reply_if_known(text, form_data)
-    if discount_reply:
-        return discount_reply
-    price_reply = _price_reply_if_known(text, form_data)
-    if price_reply:
-        return price_reply
-    if form_data.get("service_type") == "gazebo" and _looks_like_gazebo_budget_preference(text):
-        budget_reply = _gazebo_budget_selection_text(form_data)
-        if budget_reply:
-            return budget_reply
-    gazebo_quality_reply = _current_gazebo_quality_reply(text, form_data)
-    if gazebo_quality_reply:
-        return gazebo_quality_reply
-    capacity_reply = _capacity_info_reply(text, form_data)
-    if capacity_reply:
-        reply = capacity_reply
-        if (
-            form_data.get("service_type") == "gazebo"
-            and form_data.get("service_variant")
-            and not form_data.get("guests_count")
-            and not _capacity_guest_patch(text)
-        ):
-            return reply
-        if (
-            append_next_question
-            and question
-            and _should_append_next_question_after_info(form_data, next_key)
-            and not _reply_already_asks(reply, next_key, question)
-        ):
-            reply = f"{reply}\n\n{question}"
-        return reply
-    policy_reply = _policy_or_common_info_reply(text)
-    if policy_reply:
-        reply = policy_reply
-    elif form_data.get("service_type") == "gazebo" and any(
-        marker in normalized
-        for marker in (
-            "до скольки",
-            "после 23",
-            "после 11",
-            "после одиннадцати",
-            "до утра",
-            "сутки",
-            "на сутки",
-            "пользов",
-            "продлить",
-            "доплата за час",
-            "каждый час",
-        )
-    ):
-        reply = (
-            "Беседка обычно бронируется до 08:00 утра следующего дня ✅\n\n"
-            "То есть если приезжаете вечером, можно отдыхать до утра. "
-            "Отдельную доплату за каждый час я не закладываю: ориентируюсь на цену выбранной беседки за бронь до 08:00."
-        )
-    elif "парков" in normalized:
-        if "адрес" in normalized or "где" in normalized or "находит" in normalized:
-            reply = (
-                "Парковка есть рядом с зоной отдыха.\n\n"
-                "Локация Максима Горького: город Выкса, конец улицы Максима Горького. "
-                "В навигаторе можно указать: улица Максима Горького, примерно 101.\n\n"
-                "Если нужна Русалочка / Беленький песочек: район улицы Ризадеевская, примерно 101."
-            )
-        else:
-            reply = "Да, парковка есть."
-    elif "мангал" in normalized:
-        reply = "Да, мангал есть у беседок."
-    elif "туалет" in normalized:
-        reply = "Да, туалет на территории есть."
-    else:
-        return None
-    if (
-        append_next_question
-        and question
-        and _should_append_next_question_after_info(form_data, next_key)
-        and not _reply_already_asks(reply, next_key, question)
-    ):
-        reply = f"{reply}\n\n{question}"
-    return reply
+    return _deterministic_info_reply_impl(
+        text,
+        form_data,
+        callbacks=_info_flow_callbacks(),
+        append_next_question=append_next_question,
+    )
 
 
 def _current_gazebo_quality_reply(text: str, form_data: dict[str, Any]) -> str | None:
@@ -2318,49 +2299,22 @@ def _active_booking_reference_info_reply(
     text: str,
     now: datetime,
 ) -> str | None:
-    if _means_same_date(text) or _means_same_time(text):
-        return None
-    referenced_service = _referenced_service_type_for_same_time(text)
-    current_service = form_data.get("service_type")
-    if not referenced_service or referenced_service == current_service:
-        return None
-    bookings = [
-        booking
-        for booking in _active_user_bookings(conn, conversation, form_data, now)
-        if booking.get("service_type") == referenced_service
-    ]
-    if not bookings:
-        return None
-    booking = bookings[0]
-    line = _booking_line_short(booking)
-    title = _booking_object_title(booking)
-    normalized = text.lower().replace("ё", "е")
-    if referenced_service == "gazebo" and any(
-        marker in normalized
-        for marker in ("хорош", "норм", "подойдет", "подойдёт", "что за", "какая", "как она", "как бесед")
-    ):
-        if "№4" in title or " 4" in title.lower():
-            verdict = f"Да, {title} нормальный бюджетный вариант: мангал есть, но света и розеток нет."
-        elif "№2" in title or " 2" in title.lower():
-            verdict = f"Да, {title} хороший простой вариант с мангалом. Важно: без света и розеток."
-        else:
-            verdict = f"Да, {title} подходит для спокойного отдыха."
-        return f"По активной беседке у вас: {line}.\n\n{verdict}"
-    return f"По активной брони у вас: {line}."
+    return _active_booking_reference_info_reply_impl(
+        conn,
+        conversation,
+        form_data,
+        text,
+        now,
+        callbacks=_active_booking_info_callbacks(),
+    )
 
 
 def _append_current_service_question(reply: str, form_data: dict[str, Any]) -> tuple[str, str | None]:
-    next_key, question = next_question(form_data)
-    if not question or _reply_already_asks(reply, next_key, question):
-        return reply, next_key
-    service_cases = {
-        "bathhouse": "бане",
-        "gazebo": "беседке",
-        "warm_gazebo": "тёплой беседке",
-        "house": "дому",
-    }
-    title = service_cases.get(str(form_data.get("service_type") or ""), "этой заявке")
-    return f"{reply}\n\nПо {title} продолжим: {question}", next_key
+    return _append_current_service_question_impl(
+        reply,
+        form_data,
+        callbacks=_info_flow_callbacks(),
+    )
 
 
 def _capacity_info_reply(text: str, form_data: dict[str, Any]) -> str | None:
@@ -2481,6 +2435,7 @@ def _capacity_info_reply(text: str, form_data: dict[str, Any]) -> str | None:
 
 
 def _should_append_next_question_after_info(form_data: dict[str, Any], next_key: str | None) -> bool:
+    return _should_append_next_question_after_info_impl(form_data, next_key)
     if not next_key:
         return False
     if next_key == "service_type":
@@ -3810,6 +3765,7 @@ def _is_likely_form_answer(
 
 
 def _reply_already_asks(reply: str, next_key: str | None, question: str | None) -> bool:
+    return _reply_already_asks_impl(reply, next_key, question)
     if not question:
         return True
     lowered = reply.lower().replace("ё", "е")
@@ -3863,6 +3819,12 @@ def _looks_like_info_question(
     expected_key: str | None = None,
     now: datetime | None = None,
 ) -> bool:
+    return _looks_like_info_question_impl(
+        text,
+        expected_key=expected_key,
+        now=now,
+        callbacks=_info_question_callbacks(),
+    )
     if _is_likely_form_answer(text, expected_key, now or _now_local()):
         return False
     normalized = text.lower().replace("ё", "е").strip()
@@ -3954,6 +3916,13 @@ def _answer_info_during_form(
     history: list[dict[str, Any]],
     ai_result: Any,
 ) -> tuple[str, str | None]:
+    return _answer_info_during_form_impl(
+        text=text,
+        form_data=form_data,
+        history=history,
+        ai_result=ai_result,
+        callbacks=_info_flow_callbacks(),
+    )
     next_key, question = next_question(form_data)
     ai_reply = _clean_reply((getattr(ai_result, "reply_to_user", "") or "").strip())
     photo_reply = _explicit_photo_reply(text, form_data)

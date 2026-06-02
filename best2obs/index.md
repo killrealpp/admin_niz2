@@ -1,5 +1,11 @@
 # best2 Project Memory
 
+## 2026-06-02 info-flow Phase 3 and reserve/payment fixes
+
+- Завершён Phase 3 [[roadmap/large-file-decomposition-plan]]: info routing/helpers вынесены в `app/services/dialog/info_flow.py`, `message_handler.py` оставляет wrappers/callbacks и ownership side effects. Параллельно закрыт пакет live-правок по знаниям/ценам, времени, 30-минутному резерву и unpaid-hold correction. Детали: [[log]], [[architecture/backend]], [[bugs/current-known-issues]].
+- Новые правила: баня после 7 часов считается как 7ч пакет + `1 500 ₽/час`; уголь `3 кг — 270 ₽`; `4 или 5 вечера` => `16:00`; `до 12 ночи` при старте `16:00` => `duration=8`; старые pending links получают `superseded` и не финализируют старый слот автоматически.
+- Проверки зелёные: compile/lint/map/test_db, context 19/19, edge 15/15, stress 13/13, targeted local regression groups prices/time/payments/post_booking/services/upsell; combined services+prices+upsell+post_booking был остановлен по timeout, группы прошли отдельно.
+
 ## 2026-06-02 large-file decomposition Phase 2
 
 - Реализован второй срез [[roadmap/large-file-decomposition-plan]]: fresh/stale/new-booking routing вынесен в `app/services/dialog/new_booking_flow.py`, а `message_handler.py` оставлен владельцем side effects и persistence. `NewBookingFlowResult` возвращает `reply/status/intent/current_step/next_step/form_data`; context-only stale reset продолжает routing без ответа.

@@ -14,13 +14,15 @@ from app.db.repositories import bookings_repo, conversations_repo, messages_repo
 from app.db.repositories import users_repo
 from app.services.admin_telegram_service import notify_admin_about_new_bookings, notify_admin_text
 from app.services.availability_service import load_services_map
-from app.services.dialog.booking_texts import booking_line_short
+from app.services.dialog.booking_texts import booking_line_short, payment_reply_text
 from app.services.media_service import media_for_bookings
-from app.services.payment_service import sync_payment_statuses
+from app.services.payment_service import create_payment_link_for_holds, sync_payment_statuses
 from app.services.yclients_record_service import create_missing_yclients_records
 
 logger = logging.getLogger(__name__)
 MEDIA_SEND_TIMEOUT_SECONDS = 45
+PAYMENT_LINK_RESEND_INTERVAL_MINUTES = 10
+PAYMENT_LINK_RESEND_MAX_NEW_LINKS = 2
 
 
 async def run_payment_status_loop(bot: Bot | None = None) -> None:
@@ -50,6 +52,7 @@ async def run_payment_status_loop(bot: Bot | None = None) -> None:
                 await notify_admin_about_refund_requests(bot)
                 await notify_admin_about_handoffs(bot)
                 await notify_admin_about_new_bookings(bot)
+                await resend_active_hold_payment_links_once(bot)
                 await notify_paid_payments_once(bot)
                 await notify_expired_holds_once(bot)
                 await notify_booking_reminders_once(bot)
@@ -69,6 +72,113 @@ def _sync_once() -> dict[str, int]:
             "yclients_created": yclients_result["created"],
             "yclients_failed": yclients_result["failed"],
         }
+
+
+async def resend_active_hold_payment_links_once(bot: Bot) -> None:
+    settings = get_settings()
+    now = datetime.now(ZoneInfo(settings.app_timezone))
+    if settings.payment_provider.lower() != "yookassa":
+        return
+    with get_connection() as conn:
+        candidates = payments_repo.list_sync_candidates(conn, provider="yookassa", limit=100)
+
+    for payment in candidates:
+        with get_connection() as conn:
+            decision = _payment_resend_decision(conn, payment, now)
+            if not decision:
+                continue
+            hold_ids, resend_index, user, conversation = decision
+            try:
+                new_payment = create_payment_link_for_holds(
+                    conn,
+                    conversation_id=int(payment["conversation_id"]),
+                    user_id=int(payment["user_id"]),
+                    hold_ids=hold_ids,
+                    client_name=str((conversation.get("form_data") or {}).get("client_name") or user.get("name") or "Клиент"),
+                    phone=str((conversation.get("form_data") or {}).get("phone") or user.get("phone") or ""),
+                    force_new=True,
+                    raw_payload_extra={
+                        "resend_of_payment_id": int(payment["id"]),
+                        "resend_index": resend_index,
+                        "state": "payment_link_auto_resent",
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to auto-resend payment link payment_id=%s", payment.get("id"))
+                continue
+            old_payload = _payment_payload(payment) | {
+                "state": "superseded_by_auto_resend",
+                "superseded_by_payment_id": int(new_payment["id"]),
+            }
+            payments_repo.mark_superseded(conn, payment_id=int(payment["id"]), raw_payload=old_payload)
+            conn.commit()
+
+        chat_id = str(user.get("external_id") or "")
+        if not chat_id:
+            continue
+        text = (
+            "Обновила ссылку на предоплату, резерв ещё активен ✅\n\n"
+            f"{payment_reply_text(new_payment)}"
+        )
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+        except Exception:
+            logger.exception("Failed to send auto-resent payment link payment_id=%s chat_id=%s", new_payment.get("id"), chat_id)
+            continue
+        with get_connection() as conn:
+            messages_repo.create(
+                conn,
+                conversation_id=int(payment["conversation_id"]),
+                sender="assistant",
+                text=text,
+                raw_payload={
+                    "event": "payment_link_auto_resent",
+                    "old_payment_id": int(payment["id"]),
+                    "payment_id": int(new_payment["id"]),
+                    "resend_index": resend_index,
+                },
+            )
+
+
+def _payment_resend_decision(conn, payment: dict, now: datetime):
+    created_at = payment.get("created_at")
+    if not isinstance(created_at, datetime):
+        return None
+    if created_at.tzinfo is None and now.tzinfo is not None:
+        created_at = created_at.replace(tzinfo=now.tzinfo)
+    if now - created_at < timedelta(minutes=PAYMENT_LINK_RESEND_INTERVAL_MINUTES):
+        return None
+    hold_ids = _hold_ids_from_payment(payment)
+    if not hold_ids:
+        return None
+    holds = [slot_holds_repo.get_by_id(conn, hold_id) for hold_id in hold_ids]
+    if any(not hold for hold in holds):
+        return None
+    if any(str(hold.get("status") or "") != "active" or (hold.get("expires_at") and hold["expires_at"] <= now) for hold in holds if hold):
+        return None
+
+    same_hold_payments = [
+        item
+        for item in payments_repo.list_for_conversation(conn, conversation_id=int(payment["conversation_id"]))
+        if item.get("provider") == "yookassa"
+        and sorted(_hold_ids_from_payment(item)) == sorted(hold_ids)
+        and item.get("payment_url")
+    ]
+    if same_hold_payments and int(same_hold_payments[0]["id"]) != int(payment["id"]):
+        return None
+    if len(same_hold_payments) >= PAYMENT_LINK_RESEND_MAX_NEW_LINKS + 1:
+        return None
+
+    user = users_repo.get_by_id(conn, int(payment["user_id"]))
+    conversation = conversations_repo.get_by_id(conn, int(payment["conversation_id"]))
+    if not user or not conversation:
+        return None
+    return hold_ids, len(same_hold_payments), user, conversation
+
+
+def _payment_payload(payment: dict) -> dict:
+    raw = payment.get("raw_payload") or {}
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 async def notify_paid_payments_once(bot: Bot) -> None:
@@ -228,6 +338,7 @@ def _booking_reminder_title(booking: dict) -> str:
 
 
 def _expired_hold_notification_text(hold: dict) -> str:
+    settings = get_settings()
     service_type = hold.get("service_type")
     config = load_services_map().get(service_type) or {}
     title = config.get("title") or service_type or "бронь"
@@ -241,7 +352,7 @@ def _expired_hold_notification_text(hold: dict) -> str:
     duration = _format_duration_short(hold.get("duration_minutes"))
     return (
         f"Резерв на {title}, {date_text}, с {time_text} на {duration} истёк: "
-        "предоплата не поступила в течение 10 минут.\n\n"
+        f"предоплата не поступила в течение {settings.hold_ttl_minutes} минут.\n\n"
         "Слот снова доступен. Если всё ещё актуально, напишите — проверю свободность заново ✅"
     )
 

@@ -60,9 +60,9 @@
     "semantic_hash": "81051bcc2cf1bedf378224b0a93e2877"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\core\\config.py": {
-    "mtime": 1780300316.160303,
-    "ast_hash": "b5c81795099945919c483fd91f952fd7",
-    "semantic_hash": "b5c81795099945919c483fd91f952fd7"
+    "mtime": 1780415152.0020957,
+    "ast_hash": "3e1852c9f67abf29d68ea0d39e067670",
+    "semantic_hash": "3e1852c9f67abf29d68ea0d39e067670"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\core\\constants.py": {
     "mtime": 1779367843.5810926,
@@ -115,9 +115,9 @@
     "semantic_hash": "5a23ba0bcf40c59b747975e8c17d47c2"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\payments_repo.py": {
-    "mtime": 1779897482.3357413,
-    "ast_hash": "94ce1561fb23b2cd65edf51784ecba92",
-    "semantic_hash": "94ce1561fb23b2cd65edf51784ecba92"
+    "mtime": 1780415198.51053,
+    "ast_hash": "145b07d0bda1c1329ab0f425338ef70e",
+    "semantic_hash": "145b07d0bda1c1329ab0f425338ef70e"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\db\\repositories\\slot_holds_repo.py": {
     "mtime": 1779898296.2641578,
@@ -215,9 +215,9 @@
     "semantic_hash": "20461e9981cf72d33b28f8a819fd126f"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\booking_texts.py": {
-    "mtime": 1779978632.1929915,
-    "ast_hash": "3c6c11c346d88fcb8e4d97552582eeb7",
-    "semantic_hash": "3c6c11c346d88fcb8e4d97552582eeb7"
+    "mtime": 1780415152.0104873,
+    "ast_hash": "f5900c77295269b6b9da76cc4bf317e6",
+    "semantic_hash": "f5900c77295269b6b9da76cc4bf317e6"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\cancel_flow.py": {
     "mtime": 1780324716.7735727,
@@ -225,9 +225,9 @@
     "semantic_hash": "bf18bf1ba011ca79cfe32a039706f059"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\confirmation_flow.py": {
-    "mtime": 1780153829.9915338,
-    "ast_hash": "4be1efdbc1846714d1389a01a688019c",
-    "semantic_hash": "4be1efdbc1846714d1389a01a688019c"
+    "mtime": 1780415349.4751549,
+    "ast_hash": "cf9bfce779a6bbdc56fc7dd8930c58b5",
+    "semantic_hash": "cf9bfce779a6bbdc56fc7dd8930c58b5"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\date_parsing.py": {
     "mtime": 1779798125.052395,
@@ -285,9 +285,9 @@
     "semantic_hash": "2d2c633a24e9f4e5ac09111dfb947887"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\price_info.py": {
-    "mtime": 1780380654.5126438,
-    "ast_hash": "f03ddd84c2b77616617c78b37ab74214",
-    "semantic_hash": "f03ddd84c2b77616617c78b37ab74214"
+    "mtime": 1780414944.1077414,
+    "ast_hash": "f46660fd5631684c80f74eb5fc5644b9",
+    "semantic_hash": "f46660fd5631684c80f74eb5fc5644b9"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\reschedule_flow.py": {
     "mtime": 1779990556.3716395,
@@ -315,9 +315,9 @@
     "semantic_hash": "e8602133002ed67528670e39ea11cdb1"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\time_parsing.py": {
-    "mtime": 1780150411.3607666,
-    "ast_hash": "0eb96e8df9ecaee11f85cd1ca8c95689",
-    "semantic_hash": "0eb96e8df9ecaee11f85cd1ca8c95689"
+    "mtime": 1780415759.5029664,
+    "ast_hash": "8125a83a3c312e133b8ebd376a53d119",
+    "semantic_hash": "8125a83a3c312e133b8ebd376a53d119"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\knowledge_service.py": {
     "mtime": 1780300555.745663,
@@ -330,9 +330,9 @@
     "semantic_hash": "780dec2a4d7bcb875cd4ee3f72f9539f"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_handler.py": {
-    "mtime": 1780389466.950917,
-    "ast_hash": "7eeff97b8e3a4b840d7fb2b5124fd90b",
-    "semantic_hash": "7eeff97b8e3a4b840d7fb2b5124fd90b"
+    "mtime": 1780415967.5946593,
+    "ast_hash": "22a904be9048231c6136a20f1ebbfc34",
+    "semantic_hash": "22a904be9048231c6136a20f1ebbfc34"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_retention_runner.py": {
     "mtime": 1779435384.5563242,
@@ -340,14 +340,14 @@
     "semantic_hash": "2781ecf8a8952f148dd702b060222f59"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\payment_service.py": {
-    "mtime": 1780300350.5492942,
-    "ast_hash": "94ca55aea6f48c1950e5b2db2704527d",
-    "semantic_hash": "94ca55aea6f48c1950e5b2db2704527d"
+    "mtime": 1780415370.6405332,
+    "ast_hash": "cb9d19e94765ff58d2a2c0d0234f7a99",
+    "semantic_hash": "cb9d19e94765ff58d2a2c0d0234f7a99"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\payment_status_runner.py": {
-    "mtime": 1780324732.3700686,
-    "ast_hash": "482eb0e6ecc9e6806a282bac09f5b56c",
-    "semantic_hash": "482eb0e6ecc9e6806a282bac09f5b56c"
+    "mtime": 1780415248.2363605,
+    "ast_hash": "2e9190e0da461995b2a3b5fb3bf07694",
+    "semantic_hash": "2e9190e0da461995b2a3b5fb3bf07694"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\user_service.py": {
     "mtime": 1779283837.9417365,
@@ -480,9 +480,9 @@
     "semantic_hash": "259886a80a86e7f204b85e562b69cc8f"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\local_regression_suite.py": {
-    "mtime": 1780381679.0794883,
-    "ast_hash": "712c3ee5e860bbdabcad44ff2337c2ef",
-    "semantic_hash": "712c3ee5e860bbdabcad44ff2337c2ef"
+    "mtime": 1780415771.0212955,
+    "ast_hash": "e280bee6bfaa0302becfc34656689b71",
+    "semantic_hash": "e280bee6bfaa0302becfc34656689b71"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\register_yookassa_webhook.py": {
     "mtime": 1779430959.770257,
@@ -538,5 +538,10 @@
     "mtime": 1779900377.16286,
     "ast_hash": "73a09e122404971a9098614d366ad373",
     "semantic_hash": "73a09e122404971a9098614d366ad373"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\info_flow.py": {
+    "mtime": 1780401221.2723403,
+    "ast_hash": "ffa48a832c89e08376761560c0d4185c",
+    "semantic_hash": "ffa48a832c89e08376761560c0d4185c"
   }
 }

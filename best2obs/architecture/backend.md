@@ -1,5 +1,14 @@
 # Backend
 
+## 2026-06-02 info-flow, payment TTL and unpaid-hold correction
+
+- `app/services/dialog/info_flow.py` is the Phase 3 extraction from `message_handler.py`. It owns deterministic/common info detection and replies, active-booking reference info, info-during-form composition, `reply_already_asks()` and "append next question after info" decisions. `message_handler.py` keeps wrappers and callback builders so existing call sites remain stable.
+- Reserve TTL is now settings-driven and defaults to 30 minutes. Client-facing payment/reserve texts read `settings.hold_ttl_minutes`; payment confirmation copy also states that the advance payment is refundable when cancellation happens no later than 7 days before the booking date.
+- Unpaid reserved hold corrections are separate from paid reschedule. When the client changes date/time/duration while there is exactly one active unpaid hold, the handler cancels the old hold, supersedes old pending payments, rechecks availability, creates a new hold and sends a new payment link.
+- `payments.status='superseded'` is a local safety state for obsolete pending links. A late paid status/webhook for a superseded link can be recorded for manual review/admin notification, but it does not automatically finalize a booking for the old slot.
+- `payment_status_runner` can auto-resend payment links for active holds: at roughly 10 and 20 minutes after the last pending link, while the hold is still alive. It creates a fresh payment intent, sends the client the new link, and only then marks the previous pending payment superseded.
+- Time parsing now keeps PM context for phrases like `4 или 5 вечера`, rejects guest-count ranges as time, and supports "until midnight" corrections (`до 12 ночи`) relative to an existing start time.
+
 ## 2026-06-02 message_handler fresh/stale/new-booking flow
 
 - `app/services/dialog/new_booking_flow.py` owns the behavior-preserving decision layer for old unfinished drafts, stale-form choice, explicit new booking in the same message, fresh starts over active/reserved/payment context, and AI-assisted fresh-start reset.

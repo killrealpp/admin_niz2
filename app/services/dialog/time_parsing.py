@@ -27,6 +27,9 @@ def normalize_duration_value(value: Any) -> int | float | None:
 
 def time_period_patch(text: str) -> dict[str, Any]:
     original_text = text.lower().replace("ё", "е").replace(",", ".")
+    choice = _time_choice_patch(original_text)
+    if choice:
+        return choice
     normalized = original_text
     normalized = normalized.replace("утра", "").replace("дня", "").replace("вечера", "").replace("вечер", "")
     normalized = re.sub(r"\s*(?:час(?:а|ов)?|ч|чиса|чисов)\b", "", normalized)
@@ -38,6 +41,8 @@ def time_period_patch(text: str) -> dict[str, Any]:
     if not match:
         return {}
     if _period_match_is_people_count(original_text, match):
+        return {}
+    if _period_match_starts_with_duration_answer(original_text, match):
         return {}
     start_hour = int(match.group(1))
     start_minute = int(match.group(2) or 0)
@@ -69,6 +74,29 @@ def time_period_patch(text: str) -> dict[str, Any]:
     }
 
 
+def _time_choice_patch(normalized: str) -> dict[str, Any]:
+    match = re.search(
+        r"(?:с|к|в|на)?\s*(\d{1,2})(?:[:.]\s*(\d{2}))?\s*(?:или|-|–)\s*(\d{1,2})(?:[:.]\s*(\d{2}))?\s*(утра|дня|вечера|вечер|ночи)?\b",
+        normalized,
+    )
+    if not match:
+        return {}
+    if _period_match_is_people_count(normalized, match):
+        return {}
+    hour = int(match.group(1))
+    minute = int(match.group(2) or 0)
+    meridiem = match.group(5) or ""
+    if hour > 23 or minute > 59:
+        return {}
+    if hour < 12 and meridiem in {"вечера", "вечер"}:
+        hour += 12
+    elif 1 <= hour < 12 and meridiem == "дня":
+        hour += 12
+    elif hour == 12 and meridiem == "ночи":
+        hour = 0
+    return {"time": f"{hour:02d}:{minute:02d}"}
+
+
 def has_explicit_time_period(text: str) -> bool:
     return bool(time_period_patch(text))
 
@@ -82,6 +110,9 @@ def single_time_patch(text: str, expected_key: str | None = None) -> dict[str, A
         return {}
     if re.search(r"\d{1,2}\s*(?:мая|июня|июля|августа|сентября|октября|ноября|декабря|января|февраля|марта|апреля)", normalized):
         return {}
+    choice = _time_choice_patch(normalized)
+    if choice:
+        return choice
     match = re.search(
         r"(?:примерно\s*)?(?:с|к|в|на|после)?\s*(\d{1,2})(?:[:.]\s*(\d{2}))?"
         r"(?:\s*(?:час(?:а|ов)?|ч|чиса|чисов))?\s*(утра|дня|вечера|вечер|ночи)?\b",
@@ -103,6 +134,52 @@ def single_time_patch(text: str, expected_key: str | None = None) -> dict[str, A
     elif hour < 12 and meridiem == "ночи" and hour == 12:
         hour = 0
     return {"time": f"{hour:02d}:{minute:02d}"}
+
+
+def until_time_duration_patch(text: str, start_time: Any) -> dict[str, Any]:
+    if not start_time:
+        return {}
+    normalized = text.lower().replace("ё", "е").replace(",", ".")
+    match = re.search(r"\bдо\s*(\d{1,2})(?:[:.]\s*(\d{2}))?\s*(утра|дня|вечера|вечер|ночи)?\b", normalized)
+    if not match:
+        return {}
+    try:
+        start = time.fromisoformat(str(start_time)[:5])
+    except ValueError:
+        return {}
+    end_hour = int(match.group(1))
+    end_minute = int(match.group(2) or 0)
+    meridiem = match.group(3) or ""
+    if end_hour > 23 or end_minute > 59:
+        return {}
+    if end_hour < 12 and meridiem in {"вечера", "вечер"}:
+        end_hour += 12
+    elif 1 <= end_hour < 12 and meridiem == "дня":
+        end_hour += 12
+    elif 8 <= end_hour < 12 and meridiem == "ночи":
+        end_hour += 12
+    elif end_hour == 12 and meridiem == "ночи":
+        end_hour = 0
+    elif end_hour <= start.hour and not meridiem:
+        end_hour += 12
+    if end_hour > 23:
+        return {}
+    start_total = start.hour * 60 + start.minute
+    end_total = end_hour * 60 + end_minute
+    if end_total <= start_total:
+        end_total += 24 * 60
+    duration_hours = round((end_total - start_total) / 60, 2)
+    duration_value: int | float = int(duration_hours) if duration_hours.is_integer() else duration_hours
+    if duration_value <= 0 or duration_value > 24:
+        return {}
+    return {"duration": duration_value}
+
+
+def _period_match_starts_with_duration_answer(text: str, match: re.Match[str]) -> bool:
+    start_index = match.start(1)
+    before = text[max(0, start_index - 8):start_index]
+    after = text[start_index:start_index + 14]
+    return bool(re.search(r"\bРЅР°\s*$", before) and re.search(r"\d{1,2}\s*(?:С‡Р°СЃ|С‡)\b", after))
 
 
 def _period_match_is_people_count(text: str, match: re.Match[str]) -> bool:

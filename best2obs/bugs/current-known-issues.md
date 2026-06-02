@@ -1,5 +1,12 @@
 # Current Known Issues
 
+## 2026-06-02 live knowledge/time/reserve/payment package
+
+- Status: closed by the 2026-06-02 completion pass.
+- Symptoms: price/knowledge answers did not consistently state bathhouse pricing after 7 hours or the exact coal price; `4 или 5 вечера` could be read as `04:00-05:00`; `до 12 ночи` during correction could overwrite the start time instead of changing duration; unpaid reserved date/time edits could leave the old hold/payment link active; reserve/payment copy still mentioned 10 minutes while the desired policy was 30 minutes with link refreshes at 10/20 minutes.
+- Fix: bathhouse extra-hour pricing and coal price were updated in deterministic price helper and knowledge files; time parsers gained PM-choice and until-midnight guards; unpaid hold correction now cancels the old hold, supersedes old pending payments, creates a fresh hold/payment; TTL text is settings-driven at 30 minutes; payment runner can resend fresh links and superseded late payments no longer auto-finalize old bookings.
+- Covered by: `payment reply uses 30 minute ttl and refund note`, `unpaid reserved date correction recreates hold and link`, `bathhouse ten hour price formula`, `coal price is known`, `people range is not parsed as time`, `evening time choice uses early option`, `until midnight uses existing start`, plus context/edge/stress suites.
+
 ## 2026-06-02 Phase 2 stale reset lost current-message service (fixed)
 
 - Status: closed by Phase 2 refactor follow-up.

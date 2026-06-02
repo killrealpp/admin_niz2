@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from app.ai.errors import AIProviderUnavailable
+from app.core.config import get_settings
 from app.db.repositories import bookings_repo, payments_repo, slot_holds_repo
 from app.services.availability_service import load_services_map
 from app.services.booking_form_service import next_question
@@ -226,12 +227,13 @@ def hold_object_title(hold: dict[str, Any]) -> str:
 
 
 def expired_hold_inline_reply(holds: list[dict[str, Any]]) -> str:
+    hold_ttl_minutes = get_settings().hold_ttl_minutes
     if not holds:
         return (
-            "Резерв истёк: предоплата не поступила в течение 10 минут.\n\n"
+            f"Резерв истёк: предоплата не поступила в течение {hold_ttl_minutes} минут.\n\n"
             "Слот снова доступен. Если всё ещё актуально, напишите — проверю свободность заново ✅"
         )
-    lines = ["Резерв истёк: предоплата не поступила в течение 10 минут."]
+    lines = [f"Резерв истёк: предоплата не поступила в течение {hold_ttl_minutes} минут."]
     for hold in holds[:3]:
         date_text = format_date_ru(hold.get("slot_date"))
         time_text = str(hold.get("slot_time") or "")[:5]
@@ -314,6 +316,7 @@ class ReservedHoldCallbacks:
     relative_date_patch: Callable[[str, datetime], dict[str, Any]]
     check_availability: Callable[..., Any]
     reset_unavailable_slot: Callable[[dict[str, Any]], dict[str, Any]]
+    create_hold: Callable[[Any, dict[str, Any], dict[str, Any], dict[str, Any], datetime], dict[str, Any]]
     create_payment_link_for_holds: Callable[..., Any]
     log_payment_link_exception: Callable[[str, Any], None]
 
@@ -476,8 +479,9 @@ def handle_reserved_hold_command(
 
     if wants_payment_delay_or_hold_extension(text):
         status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
+        hold_ttl_minutes = get_settings().hold_ttl_minutes
         return (
-            "Понимаю. Резерв держится 10 минут, поэтому надолго удержать слот без предоплаты не получится.\n\n"
+            f"Понимаю. Резерв держится {hold_ttl_minutes} минут, поэтому надолго удержать слот без предоплаты не получится.\n\n"
             "Если успеете оплатить по ссылке — бронь закрепится автоматически. "
             "Если резерв истечёт, напишите «давайте» или «оформим эту же» — я заново проверю тот же слот.",
             status,
@@ -510,7 +514,68 @@ def handle_reserved_hold_command(
     if not correction_patch and history and callbacks.last_assistant_asked_name_correction(history) and callbacks.looks_like_name(text):
         correction_patch = {"client_name": text.strip().title()}
     if correction_patch:
+        old_hold_ids = [int(hold["id"]) for hold in active_holds]
+        old_payment = pending_payment_for_holds(conn, conversation["id"], old_hold_ids)
         form_data = callbacks.merge_form_data(form_data, correction_patch)
+        should_recreate_unpaid_hold = (
+            len(active_holds) == 1
+            and conversation.get("status") != "payment_paid"
+            and bool({"service_type", "service_variant", "date", "time", "duration"} & set(correction_patch))
+        )
+        if should_recreate_unpaid_hold:
+            availability = callbacks.check_availability(conn, form_data=form_data, now=now)
+            if not availability.ok or not availability.slots:
+                updated = callbacks.reset_unavailable_slot(form_data)
+                return (
+                    availability.message or "На новое время свободных вариантов не нашла. Напишите другую дату или время.",
+                    "waiting_user",
+                    "awaiting_new_slot",
+                    next_question(updated)[0],
+                    updated,
+                )
+            slot_holds_repo.cancel_ids(conn, hold_ids=old_hold_ids, now=now)
+            try:
+                new_hold = callbacks.create_hold(
+                    conn,
+                    conversation,
+                    {"id": conversation["user_id"]},
+                    form_data,
+                    now,
+                )
+                payment = callbacks.create_payment_link_for_holds(
+                    conn,
+                    conversation_id=conversation["id"],
+                    user_id=conversation["user_id"],
+                    hold_ids=[int(new_hold["id"])],
+                    client_name=str(form_data.get("client_name") or "Клиент"),
+                    phone=str(form_data.get("phone") or ""),
+                    force_new=True,
+                    raw_payload_extra={
+                        "replaces_payment_id": int(old_payment["id"]) if old_payment else None,
+                        "state": "payment_link_recreated_after_hold_correction",
+                    },
+                )
+            except Exception:
+                callbacks.log_payment_link_exception("Payment link recreation failed conversation_id=%s", conversation["id"])
+                payment = None
+            if old_payment:
+                raw_payload = old_payment.get("raw_payload") or {}
+                if not isinstance(raw_payload, dict):
+                    raw_payload = {}
+                payments_repo.mark_superseded(
+                    conn,
+                    payment_id=int(old_payment["id"]),
+                    raw_payload=raw_payload | {
+                        "state": "superseded_by_hold_correction",
+                        "superseded_by_payment_id": int(payment["id"]) if payment else None,
+                    },
+                )
+            reply = (
+                f"{callbacks.correction_ack_text(correction_patch)}\n\n"
+                "Старый резерв отменила и поставила новый на обновлённые данные.\n\n"
+                f"{payment_reply_text(payment)}"
+            )
+            return reply, "reserved", "reserved", "payment_status", form_data
         reply = (
             f"{callbacks.correction_ack_text(correction_patch)}\n\n"
             "Резерв оставила активным. Можно оплатить по ссылке, которую отправляла выше.\n\n"

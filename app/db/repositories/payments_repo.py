@@ -130,6 +130,29 @@ def mark_failed(
         return dict(cur.fetchone())
 
 
+def mark_superseded(
+    conn: PgConnection,
+    *,
+    payment_id: int,
+    raw_payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE payments
+            SET status = 'superseded',
+                raw_payload = %s,
+                updated_at = NOW()
+            WHERE id = %s
+              AND status IN ('pending', 'waiting_for_capture')
+            RETURNING *
+            """,
+            (Json(raw_payload), payment_id),
+        )
+        row = cur.fetchone()
+        return dict(row) if row else None
+
+
 def list_for_conversation(
     conn: PgConnection,
     *,

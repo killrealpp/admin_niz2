@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.core.config import get_settings
 from app.services.availability_service import load_services_map
 from app.services.dialog.formatting import format_date_ru, format_time_duration_range, hours_from_minutes
 
@@ -117,11 +118,13 @@ def payment_reply_text(payment: dict[str, Any] | None) -> str:
             "Ссылку на предоплату сейчас автоматически создать не получилось. "
             "Ваш номер сохранён, с вами свяжутся в ближайшее время и отправят ссылку вручную."
         )
+    hold_ttl_minutes = get_settings().hold_ttl_minutes
     return (
         f"Для закрепления заявки нужна предоплата {payment.get('amount')} ₽.\n"
         f"Оплатить можно по ссылке:\n{payment['payment_url']}\n\n"
-        "Резерв держится 10 минут. После оплаты дождитесь подтверждения: "
-        "мы пришлём сообщение, когда платёж пройдёт ✅"
+        f"Резерв держится {hold_ttl_minutes} минут. После оплаты дождитесь подтверждения: "
+        "мы пришлём сообщение, когда платёж пройдёт ✅\n\n"
+        "Предоплата возвращается при отмене не позднее чем за 7 дней до даты брони."
     )
 
 

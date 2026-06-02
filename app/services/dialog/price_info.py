@@ -68,8 +68,10 @@ def addon_price_reply(text: str) -> str | None:
         lines.append("Мангальный набор №1 — 500 ₽: решётка, кочерга, опахало.")
         lines.append("Мангальный набор №2 — 1 000 ₽: шампуры, кочерга, опахало.")
         lines.append("Малый мангальный набор — 400 ₽: маленькие шампуры, кочерга, опахало.")
-        if "уголь" in normalized or "розжиг" in normalized:
-            lines.append("Отдельной точной цены угля или розжига в базе нет, поэтому отдельно цену не придумываю.")
+        if "уголь" in normalized:
+            lines.append("Уголь 3 кг — 270 ₽.")
+        if "розжиг" in normalized:
+            lines.append("По розжигу отдельной точной цены в базе нет, поэтому сумму уточним по факту.")
     if asks_all_addons or any(marker in normalized for marker in ("лед", "вода", "посуд", "чай", "напит")):
         lines.append("По воде, льду, посуде и напиткам точной отдельной цены в базе нет — могу отметить в заявке, а сумму уточним по факту.")
     if not lines:
@@ -162,6 +164,69 @@ def duration_price_rule_reply(text: str, form_data: dict[str, Any]) -> str | Non
     )
 
 
+def bathhouse_extended_price_reply(text: str, form_data: dict[str, Any]) -> str | None:
+    if form_data.get("service_type") != "bathhouse":
+        return None
+    normalized = text.lower().replace("ё", "е")
+    if not looks_like_price_question_text(text):
+        return None
+    requested_hours = None
+    match = re.search(r"\b(\d{1,2})\s*(?:час|ч)\b", normalized)
+    if match:
+        requested_hours = int(match.group(1))
+    elif form_data.get("duration"):
+        try:
+            requested_hours = int(float(form_data["duration"]))
+        except (TypeError, ValueError):
+            requested_hours = None
+    if not requested_hours or requested_hours <= 7:
+        return None
+
+    services = load_services_map()
+    variants = (services.get("bathhouse") or {}).get("variants") or []
+    weekday = None
+    date_value = form_data.get("date")
+    if date_value:
+        try:
+            weekday = datetime.fromisoformat(str(date_value)).weekday()
+        except ValueError:
+            weekday = None
+
+    seven_hour_variants = [
+        variant
+        for variant in variants
+        if int(variant.get("duration_minutes") or 0) == 420
+    ]
+    if weekday is not None:
+        matching = [
+            variant
+            for variant in seven_hour_variants
+            if weekday in (variant.get("weekdays") or [])
+        ]
+        if matching:
+            base_price = int(matching[0]["price"])
+            extra_hours = requested_hours - 7
+            total = base_price + extra_hours * 1500
+            date_text = format_date_ru(date_value)
+            return (
+                f"Баня на {requested_hours} часов на {date_text}: считаю как 7-часовой пакет "
+                f"{format_rub(base_price)} ₽ + {extra_hours} × 1 500 ₽ = {format_rub(total)} ₽."
+            )
+
+    weekday_base = next((int(item["price"]) for item in seven_hour_variants if 0 in (item.get("weekdays") or [])), None)
+    weekend_base = next((int(item["price"]) for item in seven_hour_variants if 4 in (item.get("weekdays") or [])), None)
+    extra_hours = requested_hours - 7
+    if weekday_base and weekend_base:
+        weekday_total = weekday_base + extra_hours * 1500
+        weekend_total = weekend_base + extra_hours * 1500
+        return (
+            f"Баня на {requested_hours} часов считается как цена 7-часового пакета + "
+            f"{extra_hours} × 1 500 ₽.\n\n"
+            f"Ориентир: {format_rub(weekday_total)} ₽ в будни / {format_rub(weekend_total)} ₽ в пятницу-воскресенье."
+        )
+    return None
+
+
 def policy_or_common_info_reply(text: str) -> str | None:
     normalized = text.lower().replace("ё", "е")
     if looks_like_forbidden_broom_request(text):
@@ -222,6 +287,9 @@ def price_reply_if_known(
     if addon_reply:
         followup = addon_price_followup(form_data) if is_addon_price_context(text, form_data) else question
         return f"{addon_reply}\n\n{followup}" if followup else addon_reply
+    bathhouse_extended = bathhouse_extended_price_reply(text, form_data)
+    if bathhouse_extended:
+        return f"{bathhouse_extended}\n\n{question}" if question and _should_append_question(form_data, "price") else bathhouse_extended
     if not form_data.get("service_type"):
         return None
     if form_data.get("service_type") == "gazebo" and not form_data.get("service_variant"):

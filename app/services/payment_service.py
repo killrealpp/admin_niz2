@@ -128,6 +128,8 @@ def create_payment_link_for_holds(
     hold_ids: list[int],
     client_name: str,
     phone: str,
+    force_new: bool = False,
+    raw_payload_extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     settings = get_settings()
     if settings.payment_provider.lower() != "yookassa":
@@ -147,10 +149,17 @@ def create_payment_link_for_holds(
         provider="yookassa",
         hold_ids=normalized_hold_ids,
     )
-    if existing_payment and existing_payment.get("payment_url"):
+    if not force_new and existing_payment and existing_payment.get("payment_url"):
         return existing_payment
 
-    payment = existing_payment or payments_repo.create_pending(
+    raw_payload = {
+        "hold_ids": normalized_hold_ids,
+        "state": "payment_intent_created",
+    }
+    if raw_payload_extra:
+        raw_payload.update(raw_payload_extra)
+
+    payment = (None if force_new else existing_payment) or payments_repo.create_pending(
         conn,
         conversation_id=conversation_id,
         user_id=user_id,
@@ -159,10 +168,7 @@ def create_payment_link_for_holds(
         amount=amount,
         currency="RUB",
         description=description,
-        raw_payload={
-            "hold_ids": normalized_hold_ids,
-            "state": "payment_intent_created",
-        },
+        raw_payload=raw_payload,
     )
     conn.commit()
     try:
@@ -195,6 +201,8 @@ def create_payment_link_for_holds(
     status = response.get("status") or "pending"
     payload = dict(response)
     payload["hold_ids"] = normalized_hold_ids
+    if raw_payload_extra:
+        payload.update(raw_payload_extra)
     saved_payment = payments_repo.attach_provider_response(
         conn,
         payment_id=payment["id"],
@@ -444,7 +452,10 @@ def sync_payment_statuses(conn: PgConnection, *, limit: int = 50) -> dict[str, i
         booking_ids = _booking_ids(payment)
         if normalized_status == "paid":
             result["paid"] += 1
-            booking_ids = finalize_bookings_for_paid_payment(conn, payment)
+            if _is_superseded_payment(payment):
+                booking_ids = []
+            else:
+                booking_ids = finalize_bookings_for_paid_payment(conn, payment)
             if booking_ids:
                 bookings_repo.update_payment_status_by_ids(
                     conn,
@@ -516,7 +527,10 @@ def process_yookassa_notification(
 
     booking_ids: list[int] = []
     if normalized_status == "paid":
-        booking_ids = finalize_bookings_for_paid_payment(conn, updated_payment)
+        if _is_superseded_payment(payment):
+            booking_ids = []
+        else:
+            booking_ids = finalize_bookings_for_paid_payment(conn, updated_payment)
         if booking_ids:
             bookings_repo.update_payment_status_by_ids(
                 conn,
@@ -560,6 +574,20 @@ def _cancel_payment_holds(conn: PgConnection, payment: dict[str, Any]) -> int:
     settings = get_settings()
     now = _parse_yookassa_datetime(canceled_at) or datetime.now(ZoneInfo(settings.app_timezone))
     return slot_holds_repo.cancel_ids(conn, hold_ids=hold_ids, now=now)
+
+
+def _is_superseded_payment(payment: dict[str, Any]) -> bool:
+    if str(payment.get("status") or "") == "superseded":
+        return True
+    raw = payment.get("raw_payload") or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = {}
+    if not isinstance(raw, dict):
+        return False
+    return str(raw.get("state") or "").startswith("superseded")
 
 
 def _hold_ids(payment: dict[str, Any]) -> list[int]:
