@@ -3823,6 +3823,47 @@ def _test_mixed_addon_price_and_selection_saves_items(now: datetime) -> Check:
     return Check("mixed addon price and selection saves items", ok, f"{reply} | {next_reply} | {state}")
 
 
+def _test_late_kalik_price_adds_addon_to_confirmation(now: datetime) -> Check:
+    suffix = "late_kalik_price_confirmation"
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №4",
+        date="2026-06-30",
+        time="18:00",
+        duration=6,
+        guests_count=10,
+        event_format="компания друзей",
+        client_name="Иван",
+        phone="+79000000001",
+        upsell_items=["не нужны"],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="awaiting_confirmation",
+            current_step="awaiting_confirmation",
+            next_step="confirmation",
+            form_data=form,
+        )
+
+    reply = _send(suffix, "а я бы хотел добавить калик в допы, цена изменится?", now)
+    state = _latest_state(suffix)
+    updated = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "кальян — 1 500" in lowered
+        and "добавила в допы" in lowered
+        and "допы: кальян" in lowered
+        and "допы: не нужны" not in lowered
+        and updated.get("upsell_items") == ["кальян"]
+        and state.get("current_step") == "awaiting_confirmation"
+    )
+    return Check("late kalik price adds addon to confirmation", ok, f"{reply} | {state}")
+
+
 def _test_free_dates_lookup_after_no_availability(now: datetime) -> Check:
     suffix = "free_dates_lookup"
     created = _create_reserved_conversation(
@@ -4149,6 +4190,90 @@ def _test_generic_ok_after_upsell_info_does_not_accept_items(now: datetime) -> C
         and "базовый мангальный набор" not in str(form_data.get("upsell_items"))
     )
     return Check("generic ok after upsell info does not accept items", ok, f"info={info} | reply={reply} | {state}")
+
+
+def _test_upsell_parking_info_returns_to_empty_addons(now: datetime) -> Check:
+    suffix = "upsell_parking_empty"
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №8",
+        date="2026-06-30",
+        time="18:00",
+        duration=6,
+        guests_count=12,
+        event_format="компания друзей",
+        client_name="Иван",
+        phone=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+            form_data=form,
+        )
+
+    reply = _send(suffix, "а че с парковкой как дела", now)
+    state = _latest_state(suffix)
+    updated = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "парковка есть" in lowered
+        and "что подготовить для вас" in lowered
+        and "телефон" not in lowered
+        and not updated.get("upsell_items")
+        and state.get("current_step") == "upsell_items"
+    )
+    return Check("upsell parking info returns to empty addons", ok, f"{reply} | {state}")
+
+
+def _test_upsell_parking_info_keeps_selected_addon(now: datetime) -> Check:
+    suffix = "upsell_parking_keeps_kalik"
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №8",
+        date="2026-06-30",
+        time="18:00",
+        duration=6,
+        guests_count=12,
+        event_format="компания друзей",
+        client_name="Иван",
+        phone=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="upsell_items",
+            next_step="upsell_items",
+            form_data=form,
+        )
+
+    first_reply = _send(suffix, "калик один", now)
+    parking_reply = _send(suffix, "а че с парковкой как дела", now + timedelta(seconds=5))
+    no_reply = _send(suffix, "нет", now + timedelta(seconds=10))
+    state = _latest_state(suffix)
+    updated = state.get("form_data") or {}
+    parking_lowered = parking_reply.lower().replace("ё", "е")
+    ok = (
+        updated.get("upsell_items") == ["кальян"]
+        and "если хотите добавить что-то еще" in parking_lowered
+        and "телефон" not in parking_lowered
+        and "парковка есть" in parking_lowered
+        and "кальян" in first_reply.lower().replace("ё", "е")
+        and "телефон" in no_reply.lower().replace("ё", "е")
+        and state.get("current_step") == "phone"
+    )
+    return Check("upsell parking info keeps selected addon", ok, f"{first_reply} | {parking_reply} | {no_reply} | {state}")
 
 
 def _test_location_question_does_not_handoff() -> Check:
@@ -4552,6 +4677,26 @@ def _test_available_services_uses_active_booking_not_stale_form(now: datetime) -
         and "ожидает подтверждения" not in lowered
     )
     return Check("available services uses active booking not stale form", ok, f"{summary} | {reply}")
+
+
+def _test_start_available_services_lists_all_primary_options(now: datetime) -> Check:
+    suffix = "start_available_services_all"
+    _send(suffix, "ну давай забронируем", now)
+    reply = _send(suffix, "че можно?", now + timedelta(seconds=5))
+    state = _latest_state(suffix)
+    form = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "обычные/летние беседки" in lowered
+        and "крытую беседку" in lowered
+        and "теплую беседку" in lowered
+        and "баню с бассейном" in lowered
+        and "гостевой дом" in lowered
+        and state.get("current_step") == "service_type"
+        and state.get("next_step") == "service_type"
+        and not form.get("service_type")
+    )
+    return Check("start available services lists all primary options", ok, f"{reply} | {state}")
 
 
 def _test_reschedule_selects_service_after_list(now: datetime) -> Check:
@@ -8195,6 +8340,7 @@ def main() -> None:
         run("services", lambda: _test_gazebo_bathhouse_alias_starts_with_gazebo(now))
         run("services", lambda: _test_bathhouse_gazebo_order_starts_with_bathhouse(now))
         run("services", lambda: _test_bathhouse_blocks_large_group(now))
+        run("services", lambda: _test_start_available_services_lists_all_primary_options(now))
         run("dates", lambda: _test_deterministic_date_beats_stale_ai(now))
         run("dates", lambda: _test_contextual_day_number_keeps_discussed_month(now))
         run("gazebo", _test_gazebo_recommendations_use_only_available)
@@ -8271,7 +8417,10 @@ def main() -> None:
         run("time", _test_duration_24_formats_as_hours)
         run("upsell", lambda: _test_positive_upsell_asks_for_more_then_continues(now))
         run("upsell", lambda: _test_mixed_addon_price_and_selection_saves_items(now))
+        run("upsell", lambda: _test_late_kalik_price_adds_addon_to_confirmation(now))
         run("upsell", lambda: _test_generic_ok_after_upsell_info_does_not_accept_items(now))
+        run("upsell", lambda: _test_upsell_parking_info_returns_to_empty_addons(now))
+        run("upsell", lambda: _test_upsell_parking_info_keeps_selected_addon(now))
         run("gazebo", lambda: _test_gazebo_quality_question_during_confirmation(now))
         run("payments", lambda: _test_paid_finalize_busy_interval_uses_hold_variant(now))
         run("waitlist", lambda: _test_free_dates_lookup_after_no_availability(now))

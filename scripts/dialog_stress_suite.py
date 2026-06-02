@@ -203,8 +203,8 @@ def stress_addon_price_then_choice(now: datetime) -> StressResult:
         and "формат отдыха" not in price.lower().replace("ё", "е")
         and (state.get("form_data") or {}).get("upsell_items")
         and "базовый" in str((state.get("form_data") or {}).get("upsell_items")).lower()
-        and state.get("current_step") == "phone"
-        and "телефон" in chosen.lower().replace("ё", "е")
+        and state.get("current_step") == "upsell_items"
+        and "если больше ничего не нужно" in chosen.lower().replace("ё", "е")
     )
     return StressResult(
         "Цена допов не сбивает шаг и выбор сохраняется",
@@ -248,9 +248,9 @@ def stress_mixed_addon_price_and_choice(now: datetime) -> StressResult:
     state = _state(suffix)
     items = (state.get("form_data") or {}).get("upsell_items") or []
     ok = (
-        _contains_all(reply, "точной отдельной цены", "добавим", "телефон")
+        _contains_all(reply, "точной отдельной цены", "добавим", "если больше ничего не нужно")
         and {"вода", "лед"} <= set(items)
-        and state.get("current_step") == "phone"
+        and state.get("current_step") == "upsell_items"
     )
     return StressResult(
         "В одном сообщении цена допов и выбор воды/льда",

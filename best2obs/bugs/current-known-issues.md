@@ -1,5 +1,33 @@
 # Current Known Issues
 
+## 2026-06-02 Phase 2 stale reset lost current-message service (fixed)
+
+- Status: closed by Phase 2 refactor follow-up.
+- Symptom: during the new `new_booking_flow.py` extraction, the scenario `нет` + new bathhouse request in one stale-choice message could clear the old draft but lose the service from the current message, then answer with the generic services list instead of continuing the bathhouse form.
+- Cause: the context-only stale reset path used `new_booking_form_data(previous)` and persisted/continued with an empty service. In the monolithic handler, later routing could still recover from the raw message; after extraction, the deterministic services-list branch intercepted first.
+- Fix: context-only stale reset now uses the existing fresh form builder for the current text, preserving service/contact while still clearing stale slot fields. Covered by `local_regression_suite.py --group fresh`, especially `stale no plus new bath request processes same message`.
+
+## 2026-06-02 PostgreSQL timeout verification blocker status
+
+- Status: not reproduced during Phase 2 verification. `scripts/test_db.py`, context/edge/stress suites and grouped `fresh/services/post_booking/payments` regression were green on 2026-06-02 after the Phase 2 slice.
+- Keep the previous timeout note below for history: if PostgreSQL timeouts return, treat them as an external verification blocker and do not start the next refactor phase until a DB-dependent regression baseline is green again.
+
+## 2026-06-02 PostgreSQL timeout blocks Phase 1 regression verification
+
+- Статус: открыто как verification blocker, production-код не менялся для этого пункта.
+- Симптом: после Phase 1 refactor `scripts/dialog_context_suite.py` и `scripts/test_db.py` не доходят до сценариев/DB smoke. Pool init делает 3 попытки, затем direct connections делают 3 попытки и завершаются `psycopg2.OperationalError: connection to server at "luecahalemas.beget.app" (95.214.62.243), port 5432 failed: timeout expired`.
+- Диагностика: `Test-NetConnection -ComputerName 95.214.62.243 -Port 5432` показывает `TcpTestSucceeded=True` через интерфейс `happ-tun`, но PostgreSQL handshake из приложения не завершается до timeout.
+- Влияние: `.venv\Scripts\python.exe -m compileall app scripts`, `scripts/lint_best2info.py` и `scripts/validate_yclients_map.py` проходят; полный regression/context/edge/stress и `local_regression_suite.py --group payments --group post_booking --group fresh` нужно повторить после восстановления DB-соединения.
+
+## 2026-06-02 live services/upsell/late hookah price and post-booking weather
+
+- Статус: закрыто кодом и regression/context/edge проверками.
+- Симптомы: стартовый вопрос `че можно?` после начала бронирования мог не перечислять все основные варианты; info-вопрос на `upsell_items` вроде `а че с парковкой` мог перескочить к телефону; `хочу добавить калик в допы, цена изменится?` на позднем шаге мог дать цену/текст без canonical `upsell_items=["кальян"]`; post-booking вопрос про погоду иногда получал AI-текст про предоплату при `payment_paid`.
+- Причины: общий services-list detector был заточен под `что еще`, info-на-допах использовал `next_question(info_form_data)` вместо активного `current_step/next_step`, late addon+price не имел общего deterministic обработчика вне шага допов, а weather post-booking отдавался AI-классификатору.
+- Исправлено: расширен `_asks_available_services()` и общий `_available_services_reply()`; добавлены `_upsell_info_followup_reply()` и `_late_addon_price_update()`; `addon_price_reply()` понимает разговорные алиасы кальяна; weather post-booking получает короткий deterministic ответ без изменения брони.
+- Защищено: `start available services lists all primary options`, `upsell parking info returns to empty addons`, `upsell parking info keeps selected addon`, `late kalik price adds addon to confirmation`, edge `телефон + инфо-вопрос`, edge `Post-booking: вопрос на другую тему не меняет бронь`.
+- Проверки: `compileall app scripts`, `local_regression_suite.py --group services`, `--group upsell`, `--group upsell --group prices --group post_booking`, `dialog_context_suite.py` 19/19, `dialog_edge_suite.py` 15/15. Голосовой smoke через OpenRouter также успешен.
+
 ## 2026-06-01 live Telegram 19:09 post-booking/photo/confirmation regressions
 
 - Статус: закрыто кодом и regression/context/edge/stress проверками.

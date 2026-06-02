@@ -171,6 +171,13 @@ from app.services.dialog.media_flow import (
     ExplicitPhotoCallbacks as _ExplicitPhotoCallbacks,
     explicit_photo_reply as _explicit_photo_reply_impl,
 )
+from app.services.dialog.new_booking_flow import (
+    NewBookingFlowCallbacks as _NewBookingFlowCallbacks,
+    handle_ai_fresh_start as _handle_ai_fresh_start_impl,
+    handle_fresh_start_after_confirmation as _handle_fresh_start_after_confirmation_impl,
+    handle_fresh_start_before_post_booking as _handle_fresh_start_before_post_booking_impl,
+    handle_stale_new_booking_flow as _handle_stale_new_booking_flow_impl,
+)
 from app.services.dialog.performance import trace_message_handler, trace_span
 from app.services.dialog.post_booking_flow import (
     classify_post_booking_safely as _classify_post_booking_safely,
@@ -253,6 +260,7 @@ from app.services.yclients_record_service import (
 )
 
 logger = logging.getLogger(__name__)
+_INTENT_UNSET = object()
 
 
 def call_ai(*args: Any, **kwargs: Any) -> Any:
@@ -356,6 +364,44 @@ def _persist_user_profile(conn, *, user_id: int, form_data: dict[str, Any]) -> N
     phone = form_data.get("phone")
     if phone and _valid_phone(phone):
         users_repo.update_phone(conn, user_id, str(phone))
+
+
+def _commit_assistant_response(
+    conn,
+    conversation: dict[str, Any],
+    now: datetime,
+    reply: str,
+    *,
+    status: str,
+    current_step: str | None,
+    next_step: str | None,
+    form_data: dict[str, Any],
+    intent: Any = _INTENT_UNSET,
+    before_update: Any = None,
+) -> str:
+    messages_repo.create(
+        conn,
+        conversation_id=conversation["id"],
+        sender=SENDER_ASSISTANT,
+        text=reply,
+    )
+    update_kwargs = {
+        "status": status,
+        "current_step": current_step,
+        "next_step": next_step,
+        "form_data": form_data,
+    }
+    if intent is not _INTENT_UNSET:
+        update_kwargs["intent"] = intent
+    if before_update is not None:
+        before_update()
+    conversations_repo.update_after_message(
+        conn,
+        conversation["id"],
+        now,
+        **update_kwargs,
+    )
+    return reply
 
 
 def _clean_reply(text: str) -> str:
@@ -1070,6 +1116,54 @@ def _upsell_followup_reply(items: list[str], price_reply: str | None = None) -> 
     )
 
 
+def _upsell_info_followup_reply(items: Any) -> str:
+    selected = [str(item).strip() for item in list(items or []) if str(item).strip() and str(item).strip() != "не нужны"]
+    if selected:
+        return "Если хотите добавить что-то ещё, напишите. Если больше ничего не нужно, напишите «нет»."
+    return "Что подготовить для вас? Если ничего не нужно, напишите «нет»."
+
+
+def _late_addon_price_update(
+    form_data: dict[str, Any],
+    text: str,
+) -> tuple[str, str, str | None, str | None, dict[str, Any]] | None:
+    if not form_data.get("service_type") or not _looks_like_price_question_text(text):
+        return None
+    upsell_patch = _upsell_items_patch(text)
+    selected_items = upsell_patch.get("upsell_items") or []
+    if not selected_items or selected_items == ["не нужны"]:
+        return None
+    price_reply = _addon_price_reply(" ".join(selected_items)) or _addon_price_reply(text)
+    if not price_reply:
+        return None
+    merged_items = _merge_selected_upsells(form_data.get("upsell_items") or [], selected_items)
+    updated_form_data = merge_form_data(
+        form_data,
+        {
+            **upsell_patch,
+            "upsell_items": merged_items,
+        },
+    )
+    selected_text = ", ".join(selected_items)
+    prefix = f"{price_reply}\n\n{selected_text.capitalize()} добавила в допы ✅"
+    next_key, question = next_question(updated_form_data)
+    if next_key is None:
+        return (
+            f"{prefix}\n\n{_confirmation_reply_text(updated_form_data)}",
+            "awaiting_confirmation",
+            "awaiting_confirmation",
+            "confirmation",
+            updated_form_data,
+        )
+    return (
+        f"{prefix}\n\n{question or _fallback_question_for_step(next_key, updated_form_data) or ''}".strip(),
+        "waiting_user",
+        next_key,
+        next_key,
+        updated_form_data,
+    )
+
+
 def _pending_additional_booking_reply(conversation: dict[str, Any], text: str, now: datetime) -> tuple[str, str, str | None, dict[str, Any]] | None:
     form_data = conversation.get("form_data") or {}
     pending = form_data.get("pending_additional_bookings") or []
@@ -1374,6 +1468,8 @@ def _current_request_summary(
 
 def _asks_available_services(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
+    if "перенос" in normalized or "перенести" in normalized:
+        return False
     return (
         "что" in normalized
         and any(marker in normalized for marker in ("еще", "ещё", "помимо", "кроме", "другое", "другие"))
@@ -1382,7 +1478,14 @@ def _asks_available_services(text: str) -> bool:
         marker in normalized
         for marker in (
             "какие услуги",
+            "какие варианты",
             "что можно забронировать",
+            "что забронировать",
+            "что можно",
+            "че можно",
+            "чё можно",
+            "че у вас можно",
+            "чё у вас можно",
             "что у вас есть",
             "какие есть варианты",
         )
@@ -1455,6 +1558,11 @@ def _asks_how_to_book_last_discussed_service(text: str, form_data: dict[str, Any
     )
 
 
+def _looks_like_weather_question(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    return any(marker in normalized for marker in ("погод", "дожд", "ливень", "гроза", "ветер", "холод", "жара"))
+
+
 def _available_services_reply(form_data: dict[str, Any] | None = None) -> str:
     service_type = (form_data or {}).get("service_type")
     if service_type == "gazebo":
@@ -1477,9 +1585,9 @@ def _available_services_reply(form_data: dict[str, Any] | None = None) -> str:
             "Если хотите добавить вторую бронь, напишите услугу и дату."
         )
     return (
-        "Можно забронировать беседки, баню, дом, тёплую беседку и формат "
-        "«беседка + баня» двумя отдельными бронями.\n\n"
-        "Если хотите добавить бронь, напишите услугу и дату, например: «хочу беседку на 30 июня»."
+        "Можно забронировать: обычные/летние беседки, крытую беседку, тёплую беседку, "
+        "баню с бассейном и гостевой дом.\n\n"
+        "Какой вариант хотите посмотреть или забронировать?"
     )
 
 
@@ -1927,6 +2035,28 @@ def _awaiting_confirmation_callbacks() -> _AwaitingConfirmationCallbacks:
     )
 
 
+def _new_booking_flow_callbacks() -> _NewBookingFlowCallbacks:
+    return _NewBookingFlowCallbacks(
+        new_booking_form_data=_new_booking_form_data,
+        wants_new_form_after_stale=_wants_new_form_after_stale,
+        service_type_patch=_service_type_patch,
+        asks_for_free_slots=_asks_for_free_slots,
+        stale_message_starts_new_context=_stale_message_starts_new_context,
+        wants_continue_stale_form=_wants_continue_stale_form,
+        continue_stale_form_reply=_continue_stale_form_reply,
+        should_offer_stale_form_choice=_should_offer_stale_form_choice,
+        stale_message_has_new_booking_details=_stale_message_has_new_booking_details,
+        stale_form_choice_reply=_stale_form_choice_reply,
+        explicit_new_booking_with_details=_explicit_new_booking_with_details,
+        fresh_booking_form_data_for_text=_fresh_booking_form_data_for_text,
+        should_start_fresh_booking=_should_start_fresh_booking,
+        fresh_start_immediate_reply=_fresh_start_immediate_reply,
+        ai_should_start_fresh_booking=_ai_should_start_fresh_booking,
+        fresh_booking_patch_from_ai=_fresh_booking_patch_from_ai,
+        next_question_key=lambda form_data: next_question(form_data)[0],
+    )
+
+
 def _staff_id_for_service_id(service_type: str | None, service_id: str | None) -> str:
     service_id = str(service_id or "").strip()
     if not service_type or not service_id:
@@ -2065,7 +2195,7 @@ def _changes_booking_core_fields(patch: dict[str, Any]) -> bool:
     )
 
 
-def _deterministic_info_reply(text: str, form_data: dict[str, Any]) -> str | None:
+def _deterministic_info_reply(text: str, form_data: dict[str, Any], *, append_next_question: bool = True) -> str | None:
     normalized = text.lower().replace("ё", "е")
     next_key, question = next_question(form_data)
     photo_reply = _explicit_photo_reply(text, form_data)
@@ -2095,7 +2225,8 @@ def _deterministic_info_reply(text: str, form_data: dict[str, Any]) -> str | Non
         ):
             return reply
         if (
-            question
+            append_next_question
+            and question
             and _should_append_next_question_after_info(form_data, next_key)
             and not _reply_already_asks(reply, next_key, question)
         ):
@@ -2142,7 +2273,8 @@ def _deterministic_info_reply(text: str, form_data: dict[str, Any]) -> str | Non
     else:
         return None
     if (
-        question
+        append_next_question
+        and question
         and _should_append_next_question_after_info(form_data, next_key)
         and not _reply_already_asks(reply, next_key, question)
     ):
@@ -2562,6 +2694,15 @@ def _handle_post_booking_message(
     common_info_reply = _policy_or_common_info_reply(text)
     if common_info_reply and _looks_like_info_question(text, now=now):
         return common_info_reply, status, "reserved", "payment_status", form_data
+
+    if _looks_like_weather_question(text):
+        return (
+            "По погоде точно не подскажу. Лучше проверить прогноз в погодном приложении ближе к дате отдыха.",
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
 
     try:
         classified = _classify_post_booking(
@@ -4557,6 +4698,28 @@ def handle_incoming(message: IncomingMessage) -> str:
             raw_payload=message.raw_payload,
         )
         history = messages_repo.list_recent(conn, conversation["id"], limit=20)
+
+        def commit_reply(
+            reply: str,
+            *,
+            status: str,
+            current_step: str | None,
+            next_step: str | None,
+            form_data: dict[str, Any],
+            intent: Any = _INTENT_UNSET,
+        ) -> str:
+            return _commit_assistant_response(
+                conn,
+                conversation,
+                now,
+                reply,
+                status=status,
+                intent=intent,
+                current_step=current_step,
+                next_step=next_step,
+                form_data=form_data,
+            )
+
         semantic_ai_result: Any | None = None
         semantic_ai_error: AIProviderUnavailable | None = None
         if _should_run_semantic_preflight(conversation, conv_created=conv_created):
@@ -4582,172 +4745,62 @@ def handle_incoming(message: IncomingMessage) -> str:
         reminder_response = _handle_booking_reminder_response(conn, conversation, user, message.text, now)
         if reminder_response is not None:
             reply, status, current_step, next_key, form_data = reminder_response
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status=status,
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         current_form_data = conversation.get("form_data") or {}
-        if current_form_data.get("stale_form_flow"):
-            if _wants_new_form_after_stale(message.text) and not _service_type_patch(message.text) and not _asks_for_free_slots(message.text):
-                form_data = _new_booking_form_data(current_form_data)
-                reply = "Хорошо, начнём новую анкету ✅\n\nЧто хотите забронировать?"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
+        stale_result = _handle_stale_new_booking_flow_impl(
+            conversation=conversation,
+            text=message.text,
+            now=now,
+            conv_created=conv_created,
+            current_form_data=current_form_data,
+            callbacks=_new_booking_flow_callbacks(),
+        )
+        if stale_result is not None:
+            if stale_result.reply is not None:
+                return commit_reply(
+                    stale_result.reply,
+                    status=stale_result.status,
+                    intent=stale_result.intent if stale_result.intent else _INTENT_UNSET,
+                    current_step=stale_result.current_step,
+                    next_step=stale_result.next_step,
+                    form_data=stale_result.form_data,
                 )
+            conversation = {
+                **conversation,
+                "form_data": stale_result.form_data,
+                "status": stale_result.status,
+                "current_step": stale_result.current_step,
+                "next_step": stale_result.next_step,
+            }
+            if stale_result.persist_context:
                 conversations_repo.update_after_message(
                     conn,
                     conversation["id"],
                     now,
-                    status="waiting_user",
-                    current_step="service_type",
-                    next_step="service_type",
-                    form_data=form_data,
+                    status=stale_result.status,
+                    current_step=stale_result.current_step,
+                    next_step=stale_result.next_step,
+                    form_data=stale_result.form_data,
                 )
-                return reply
-            if _stale_message_starts_new_context(message.text):
-                form_data = _new_booking_form_data(current_form_data)
-                conversation = {
-                    **conversation,
-                    "form_data": form_data,
-                    "status": "waiting_user",
-                    "current_step": None,
-                    "next_step": None,
-                }
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
-                    status="waiting_user",
-                    current_step=None,
-                    next_step=None,
-                    form_data=form_data,
-                )
-                current_form_data = form_data
-            if current_form_data.get("stale_form_flow") and _wants_continue_stale_form(message.text):
-                reply, next_key = _continue_stale_form_reply(current_form_data)
-                form_data = dict(current_form_data)
-                form_data.pop("stale_form_flow", None)
-                status = "awaiting_confirmation" if next_key == "confirmation" else "waiting_user"
-                current_step = "awaiting_confirmation" if next_key == "confirmation" else next_key
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
-                    status=status,
-                    current_step=current_step,
-                    next_step=next_key,
-                    form_data=form_data,
-                )
-                return reply
-            if current_form_data.get("stale_form_flow"):
-                reply = "Уточните, пожалуйста: продолжаем старую заявку или начинаем новую?"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
-                    status="waiting_user",
-                    current_step="stale_form_choice",
-                    next_step="stale_form_choice",
-                    form_data=current_form_data,
-                )
-                return reply
-
-        if (
-            not conv_created
-            and _should_offer_stale_form_choice(conversation, now)
-        ):
-            if _stale_message_has_new_booking_details(message.text) and _stale_message_starts_new_context(message.text):
-                form_data = _new_booking_form_data(current_form_data)
-                conversation = {
-                    **conversation,
-                    "form_data": form_data,
-                    "status": "waiting_user",
-                    "current_step": None,
-                    "next_step": None,
-                }
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
-                    status="waiting_user",
-                    current_step=None,
-                    next_step=None,
-                    form_data=form_data,
-                )
-                current_form_data = form_data
-            elif not (_wants_new_form_after_stale(message.text) and _asks_for_free_slots(message.text)):
-                form_data = {
-                    **current_form_data,
-                    "stale_form_flow": {
-                        "started_at": now.isoformat(),
-                        "previous_step": conversation.get("current_step"),
-                    },
-                }
-                reply = _stale_form_choice_reply(current_form_data)
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
-                    status="waiting_user",
-                    current_step="stale_form_choice",
-                    next_step="stale_form_choice",
-                    form_data=form_data,
-                )
-                return reply
+            current_form_data = stale_result.form_data
 
         explicit_photo_reply = _explicit_photo_reply(message.text, conversation.get("form_data") or {})
         if explicit_photo_reply:
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=explicit_photo_reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                explicit_photo_reply,
                 status=conversation.get("status") or "waiting_user",
                 intent=conversation.get("intent") or "company_info",
                 current_step=conversation.get("current_step"),
                 next_step=conversation.get("next_step"),
                 form_data=conversation.get("form_data") or {},
             )
-            return explicit_photo_reply
 
         if _should_route_existing_booking_command(message.text) and _has_user_bookings(
             conn,
@@ -4761,62 +4814,35 @@ def handle_incoming(message: IncomingMessage) -> str:
             routed = _handle_post_booking_message(conn, routed_conversation, message.text, history, now)
             if routed is not None:
                 reply, status, current_step, next_key, form_data = routed
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
 
         if _handoff_active(user, now) and _is_waitlist_decline(message.text):
             waitlist_repo.close_for_user(conn, user_id=int(user["id"]))
             users_repo.clear_handoff(conn, user_id=int(user["id"]))
             reply = "Поняла, запрос на уведомление сняла ✅\n\nЕсли снова понадобится проверить свободные даты, просто напишите услугу и дату."
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="payment_paid" if conversation.get("status") == "payment_paid" else "waiting_user",
                 current_step="reserved" if conversation.get("status") == "payment_paid" else conversation.get("current_step"),
                 next_step="payment_status" if conversation.get("status") == "payment_paid" else conversation.get("next_step"),
                 form_data=conversation.get("form_data") or {},
             )
-            return reply
 
         if _handoff_active(user, now):
             reply = _handoff_reply()
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="handoff",
                 current_step="handoff",
                 next_step="handoff",
                 form_data=conversation.get("form_data") or {},
             )
-            return reply
 
         if _looks_like_handoff_needed(message.text):
             _start_user_handoff(
@@ -4827,22 +4853,13 @@ def handle_incoming(message: IncomingMessage) -> str:
                 now=now,
             )
             reply = _handoff_reply()
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="handoff",
                 current_step="handoff",
                 next_step="handoff",
                 form_data=conversation.get("form_data") or {},
             )
-            return reply
 
         form_data_snapshot = conversation.get("form_data") or {}
         current_expected_key = next_question(form_data_snapshot)[0]
@@ -4882,43 +4899,25 @@ def handle_incoming(message: IncomingMessage) -> str:
                     )
                 except AIProviderUnavailable:
                     reply = required
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent=conversation.get("intent") or "booking_request",
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             if _confirmation_no(message.text):
                 form_data = dict(form_data_snapshot)
                 form_data.pop("pending_date_confirmation", None)
                 reply = "Хорошо, напишите нужную дату."
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     current_step="date",
                     next_step="date",
                     form_data=form_data,
                 )
-                return reply
         weekday_confirmation = (
             _bare_weekday_confirmation(message.text, now)
             if current_expected_key == "date"
@@ -4933,43 +4932,25 @@ def handle_incoming(message: IncomingMessage) -> str:
                     "date": date_value.isoformat(),
                     "source_text": message.text,
                 }
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=weekday_confirmation,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                weekday_confirmation,
                 status="waiting_user",
                 current_step="date",
                 next_step="date",
                 form_data=form_data,
             )
-            return weekday_confirmation
 
         if conversation.get("current_step") == "awaiting_confirmation" and _asks_booking_summary(message.text):
             form_data = conversation.get("form_data") or {}
             reply = _draft_summary_reply(form_data) or _confirmation_reply_text(form_data)
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="awaiting_confirmation",
                 intent="draft_summary",
                 current_step="awaiting_confirmation",
                 next_step="confirmation",
                 form_data=form_data,
             )
-            return reply
 
         if (
             conversation.get("current_step") == "awaiting_confirmation"
@@ -4977,43 +4958,25 @@ def handle_incoming(message: IncomingMessage) -> str:
             and not _looks_like_info_question(message.text, now=now)
         ):
             reply, form_data = _abort_current_draft(conversation.get("form_data") or {})
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="booking_cancelled",
                 current_step="service_type",
                 next_step="service_type",
                 form_data=form_data,
             )
-            return reply
 
         hold_command = _handle_reserved_hold_command(conn, conversation, message.text, now, history)
         if hold_command is not None:
             reply, status, current_step, next_key, form_data = hold_command
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status=status,
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         current_flow_form = conversation.get("form_data") or {}
         has_change_flow = any(
@@ -5023,44 +4986,26 @@ def handle_incoming(message: IncomingMessage) -> str:
         parallel_reply = _parallel_booking_question_reply(conversation, message.text)
         if parallel_reply is not None and not has_change_flow:
             reply, current_step, next_key, form_data = parallel_reply
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="multi_booking_sequence",
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         pending_reply = _pending_additional_booking_reply(conversation, message.text, now)
         if pending_reply is not None and not has_change_flow:
             reply, current_step, next_key, form_data = pending_reply
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="multi_booking_sequence",
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         multi_patch = _multi_gazebo_booking_patch(message.text, now)
         if multi_patch and not has_change_flow and conversation.get("current_step") not in {"reserved", "payment_status", "awaiting_confirmation"}:
@@ -5069,84 +5014,60 @@ def handle_incoming(message: IncomingMessage) -> str:
             reply = _multi_gazebo_booking_reply(message.text, form_data)
             current_step = "time" if form_data.get("date") else "date"
             next_key = current_step
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="multi_booking_sequence",
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
-            )
-            return reply
+        )
 
         started_new_booking = False
-        if (
+        explicit_new_booking_before_post = (
             not has_change_flow
             and _explicit_new_booking_with_details(message.text)
             and any(
                 current_flow_form.get(key)
                 for key in ("service_type", "date", "time", "duration", "guests_count", "event_format", "upsell_items")
             )
-        ):
-            fresh_form_data = _fresh_booking_form_data_for_text(current_flow_form, message.text)
-            conversation = {
-                **conversation,
-                "form_data": fresh_form_data,
-                "current_step": None,
-                "next_step": None,
-                "status": "waiting_user",
-            }
-            started_new_booking = True
-        if (
-            not started_new_booking
-            and
-            not has_change_flow
-            and (
+        )
+        can_start_fresh_from_current_state = False
+        if not has_change_flow and not explicit_new_booking_before_post:
+            can_start_fresh_from_current_state = (
                 (
                     conversation.get("current_step") != "awaiting_confirmation"
                     and conversation.get("status") != "awaiting_confirmation"
                 )
                 or _has_user_bookings(conn, conversation, current_flow_form, now)
             )
-            and _should_start_fresh_booking(conversation, message.text)
-        ):
-            fresh_form_data = _fresh_booking_form_data_for_text(current_flow_form, message.text)
+        fresh_result = _handle_fresh_start_before_post_booking_impl(
+            conversation=conversation,
+            text=message.text,
+            now=now,
+            current_flow_form=current_flow_form,
+            has_change_flow=has_change_flow,
+            can_start_from_current_state=can_start_fresh_from_current_state,
+            callbacks=_new_booking_flow_callbacks(),
+        )
+        if fresh_result is not None:
             conversation = {
                 **conversation,
-                "form_data": fresh_form_data,
-                "current_step": None,
-                "next_step": None,
-                "status": "waiting_user",
+                "form_data": fresh_result.form_data,
+                "current_step": fresh_result.current_step,
+                "next_step": fresh_result.next_step,
+                "status": fresh_result.status,
             }
-            started_new_booking = True
-            immediate = _fresh_start_immediate_reply(fresh_form_data, message.text, now)
-            if immediate:
-                reply, current_step, next_key = immediate
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
+            started_new_booking = fresh_result.started_new_booking
+            if fresh_result.reply is not None:
+                return commit_reply(
+                    fresh_result.reply,
+                    status=fresh_result.status,
+                    intent=fresh_result.intent if fresh_result.intent else _INTENT_UNSET,
+                    current_step=fresh_result.current_step,
+                    next_step=fresh_result.next_step,
+                    form_data=fresh_result.form_data,
                 )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
-                    status="waiting_user",
-                    intent="booking_request",
-                    current_step=current_step,
-                    next_step=next_key,
-                    form_data=fresh_form_data,
-                )
-                return reply
 
         post_booking_checked = False
         if (
@@ -5164,23 +5085,14 @@ def handle_incoming(message: IncomingMessage) -> str:
             )
             if post_booking is not None:
                 reply, status, current_step, next_key, form_data = post_booking
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent="post_booking",
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
 
         if (
             not started_new_booking
@@ -5197,86 +5109,63 @@ def handle_incoming(message: IncomingMessage) -> str:
             )
             if post_booking is not None:
                 reply, status, current_step, next_key, form_data = post_booking
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent="post_booking",
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
 
         if _wants_abort_current_draft(message.text) and _current_draft_can_be_aborted(conversation):
             reply, form_data = _abort_current_draft(conversation.get("form_data") or {})
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="booking_cancelled",
                 current_step="service_type",
                 next_step="service_type",
                 form_data=form_data,
             )
-            return reply
 
         if _wants_pause_current_draft(message.text) and _current_draft_can_be_aborted(conversation):
             form_data = conversation.get("form_data") or {}
             next_key = next_question(form_data)[0] or conversation.get("next_step") or conversation.get("current_step")
             reply = _pause_current_draft_reply(form_data)
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="booking_paused",
                 current_step=next_key,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         if conversation.get("intent") == "booking_paused" and _is_post_pause_ack(message.text):
             form_data = conversation.get("form_data") or {}
             reply = "Отлично, буду ждать. Когда будете готовы — просто напишите, продолжим с этого места ✅"
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="booking_paused",
                 current_step=conversation.get("current_step"),
                 next_step=conversation.get("next_step"),
                 form_data=form_data,
             )
-            return reply
+
+        if conversation.get("current_step") == "awaiting_confirmation":
+            late_addon_price = _late_addon_price_update(conversation.get("form_data") or {}, message.text)
+            if late_addon_price is not None:
+                reply, status, current_step, next_key, form_data = late_addon_price
+                return commit_reply(
+                    reply,
+                    status=status,
+                    intent="booking_request",
+                    current_step=current_step,
+                    next_step=next_key,
+                    form_data=form_data,
+                )
 
         if conversation.get("current_step") == "awaiting_confirmation":
             result = _handle_awaiting_confirmation_impl(
@@ -5288,61 +5177,39 @@ def handle_incoming(message: IncomingMessage) -> str:
                 now,
                 _awaiting_confirmation_callbacks(),
             )
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=result.reply,
+            return commit_reply(
+                result.reply,
+                status=result.status,
+                intent=result.intent if result.intent else _INTENT_UNSET,
+                current_step=result.current_step,
+                next_step=result.next_step,
+                form_data=result.form_data,
             )
-            update_kwargs = {
-                "status": result.status,
-                "current_step": result.current_step,
-                "next_step": result.next_step,
-                "form_data": result.form_data,
-            }
-            if result.intent:
-                update_kwargs["intent"] = result.intent
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
-                **update_kwargs,
-            )
-            return result.reply
 
-        if (
-            not any((conversation.get("form_data") or {}).get(key) for key in ("cancel_flow", "reschedule_flow", "swap_reschedule_flow"))
-            and _should_start_fresh_booking(conversation, message.text)
-        ):
-            fresh_form_data = _fresh_booking_form_data_for_text(conversation.get("form_data") or {}, message.text)
+        fresh_after_confirmation = _handle_fresh_start_after_confirmation_impl(
+            conversation=conversation,
+            text=message.text,
+            now=now,
+            callbacks=_new_booking_flow_callbacks(),
+        )
+        if fresh_after_confirmation is not None:
             conversation = {
                 **conversation,
-                "form_data": fresh_form_data,
-                "current_step": None,
-                "next_step": None,
-                "status": "waiting_user",
+                "form_data": fresh_after_confirmation.form_data,
+                "current_step": fresh_after_confirmation.current_step,
+                "next_step": fresh_after_confirmation.next_step,
+                "status": fresh_after_confirmation.status,
             }
-            started_new_booking = True
-            immediate = _fresh_start_immediate_reply(fresh_form_data, message.text, now)
-            if immediate:
-                reply, current_step, next_key = immediate
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
+            started_new_booking = fresh_after_confirmation.started_new_booking
+            if fresh_after_confirmation.reply is not None:
+                return commit_reply(
+                    fresh_after_confirmation.reply,
+                    status=fresh_after_confirmation.status,
+                    intent=fresh_after_confirmation.intent if fresh_after_confirmation.intent else _INTENT_UNSET,
+                    current_step=fresh_after_confirmation.current_step,
+                    next_step=fresh_after_confirmation.next_step,
+                    form_data=fresh_after_confirmation.form_data,
                 )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
-                    status="waiting_user",
-                    intent="booking_request",
-                    current_step=current_step,
-                    next_step=next_key,
-                    form_data=fresh_form_data,
-                )
-                return reply
 
         if _starts_gazebo_browsing_after_booking(conversation, message.text):
             reply, status, current_step, next_key, form_data = _handle_gazebo_browsing_start(
@@ -5353,43 +5220,25 @@ def handle_incoming(message: IncomingMessage) -> str:
                 history=history,
                 now=now,
             )
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status=status,
                 intent="gazebo_options",
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         hold_command = _handle_reserved_hold_command(conn, conversation, message.text, now, history)
         if hold_command is not None:
             reply, status, current_step, next_key, form_data = hold_command
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status=status,
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         if (
             _asks_for_free_slots(message.text)
@@ -5403,22 +5252,13 @@ def handle_incoming(message: IncomingMessage) -> str:
             form_data = conversation.get("form_data") or {}
             reply = _next_free_dates_reply(conn, conversation, form_data, now)
             if reply:
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     current_step="awaiting_new_date",
                     next_step="date",
                     form_data=form_data,
                 )
-                return reply
 
         direct_free_dates = _direct_free_dates_lookup(
             conn,
@@ -5429,68 +5269,41 @@ def handle_incoming(message: IncomingMessage) -> str:
         )
         if direct_free_dates is not None:
             reply, status, current_step, next_key, form_data = direct_free_dates
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status=status,
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
 
         current_form_data = conversation.get("form_data") or {}
         if _asks_booking_summary(message.text) and not _has_user_bookings(conn, conversation, current_form_data, now):
             draft_reply = _draft_summary_reply(current_form_data)
             if draft_reply:
                 next_key, _ = next_question(current_form_data)
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=draft_reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    draft_reply,
                     status="waiting_user",
                     intent="draft_summary",
                     current_step=next_key or conversation.get("current_step"),
                     next_step=next_key,
                     form_data=current_form_data,
                 )
-                return draft_reply
         if current_form_data.get("last_unavailable") and _looks_like_event_context_for_alternatives(message.text):
             alternative = _alternative_services_for_unavailable_date(conn, current_form_data, now)
             if alternative:
                 reply, next_key = alternative
                 form_data = dict(current_form_data)
                 form_data["preferences"] = _join_preferences(form_data.get("preferences"), message.text.strip())
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent="alternative_services",
                     current_step="service_type",
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
         expected_key_before = next_question(current_form_data)[0]
         active_step_hint = conversation.get("next_step") or conversation.get("current_step")
         if active_step_hint in {"guests_count", "upsell_items"}:
@@ -5502,6 +5315,54 @@ def handle_incoming(message: IncomingMessage) -> str:
             and _last_assistant_asked_upsell(history)
         ):
             expected_key_before = "upsell_items"
+        if not current_form_data.get("service_type") and _asks_available_services(message.text):
+            reply = _available_services_reply(current_form_data)
+            return commit_reply(
+                reply,
+                status="waiting_user",
+                intent="available_services",
+                current_step="service_type",
+                next_step="service_type",
+                form_data=current_form_data,
+            )
+        if expected_key_before != "upsell_items":
+            late_addon_price = _late_addon_price_update(current_form_data, message.text)
+            if late_addon_price is not None:
+                reply, status, current_step, next_key, form_data = late_addon_price
+                return commit_reply(
+                    reply,
+                    status=status,
+                    intent="booking_request",
+                    current_step=current_step,
+                    next_step=next_key,
+                    form_data=form_data,
+                )
+        if (
+            expected_key_before == "upsell_items"
+            and _looks_like_info_question(message.text, expected_key="upsell_items", now=now)
+            and not any(current_form_data.get(key) for key in ("cancel_flow", "reschedule_flow", "swap_reschedule_flow"))
+        ):
+            deterministic_info = _deterministic_info_reply(
+                message.text,
+                current_form_data,
+                append_next_question=False,
+            )
+            if deterministic_info:
+                form_data = merge_form_data(current_form_data, _phone_patch(message.text))
+                followup = _upsell_info_followup_reply(current_upsells)
+                info_lowered = deterministic_info.lower().replace("ё", "е")
+                if "что подготовить" in info_lowered or "если хотите добавить что-то еще" in info_lowered:
+                    reply = deterministic_info
+                else:
+                    reply = f"{deterministic_info}\n\n{followup}"
+                return commit_reply(
+                    reply,
+                    status="waiting_user",
+                    intent="company_info",
+                    current_step="upsell_items",
+                    next_step="upsell_items",
+                    form_data=form_data,
+                )
         if (
             current_form_data.get("service_type") == "gazebo"
             and not current_form_data.get("service_variant")
@@ -5518,43 +5379,25 @@ def handle_incoming(message: IncomingMessage) -> str:
             }
             next_key = "service_variant" if form_data.get("date") and form_data.get("last_available_gazebo_variants") else "date"
             current_step = next_key
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="object_selection_help",
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
         gazebo_guest_options = _gazebo_guest_options_shortcut(current_form_data, message.text)
         if gazebo_guest_options:
             reply, form_data, current_step, next_key = gazebo_guest_options
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="object_selection_help",
                 current_step=current_step,
                 next_step=next_key,
                 form_data=form_data,
             )
-            return reply
         if expected_key_before == "upsell_items" and _is_upsell_negative(message.text):
             offer_count = int(current_form_data.get("upsell_offer_count") or 0)
             upsell_reply_kind = _classify_upsell_reply(message.text, history, current_form_data)
@@ -5566,22 +5409,13 @@ def handle_incoming(message: IncomingMessage) -> str:
                     "upsell_offer_count": offer_count + 1,
                 }
                 reply = _upsell_push_reply(form_data)
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     current_step="upsell_items",
                     next_step="upsell_items",
                     form_data=form_data,
                 )
-                return reply
             accepted_items = current_upsells if current_upsells and current_upsells != ["не нужны"] else ["не нужны"]
             form_data = merge_form_data(
                 current_form_data,
@@ -5605,22 +5439,13 @@ def handle_incoming(message: IncomingMessage) -> str:
                 status = "waiting_user"
                 current_step = next_key
                 next_step = next_key
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status=status,
                 current_step=current_step,
                 next_step=next_step,
                 form_data=form_data,
             )
-            return reply
         if expected_key_before == "upsell_items":
             upsell_patch = _upsell_items_patch(message.text)
             if not upsell_patch and (not current_upsells or current_upsells == ["не нужны"]):
@@ -5641,22 +5466,13 @@ def handle_incoming(message: IncomingMessage) -> str:
                 status = "waiting_user"
                 current_step = "upsell_items"
                 next_step = "upsell_items"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     current_step=current_step,
                     next_step=next_step,
                     form_data=form_data,
                 )
-                return reply
         early_patch = _deterministic_patch(message.text, now) | _current_step_patch(
             message.text,
             expected_key_before,
@@ -5692,23 +5508,14 @@ def handle_incoming(message: IncomingMessage) -> str:
         if expected_key_before == "time" and _references_existing_guest_count(message.text, current_form_data):
             question = next_question(current_form_data)[1] or "Во сколько хотите приехать?"
             reply = f"Да, {current_form_data['guests_count']} гостей записала ✅\n\n{question}"
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="booking_request",
                 current_step="time",
                 next_step="time",
                 form_data=current_form_data,
             )
-            return reply
         if (
             expected_key_before == "time"
             and _looks_like_vague_time_answer(message.text)
@@ -5716,23 +5523,14 @@ def handle_incoming(message: IncomingMessage) -> str:
             and not _should_route_existing_booking_command(message.text)
         ):
             reply = next_question(current_form_data)[1] or "Во сколько хотите приехать?"
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="booking_request",
                 current_step="time",
                 next_step="time",
                 form_data=current_form_data,
             )
-            return reply
         if (
             current_form_data.get("service_type") == "gazebo"
             and _complains_guest_count_not_asked(message.text)
@@ -5747,23 +5545,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                 "Вы правы, количество гостей ещё не уточнили. "
                 "Чтобы подобрать беседку по вместимости, сколько вас будет человек?"
             )
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="booking_request",
                 current_step="guests_count",
                 next_step="guests_count",
                 form_data=form_data,
             )
-            return reply
         if (
             not current_form_data.get("service_type")
             and _looks_like_info_question(message.text, now=now)
@@ -5771,23 +5560,14 @@ def handle_incoming(message: IncomingMessage) -> str:
         ):
             deterministic_info = _deterministic_info_reply(message.text, current_form_data)
             if deterministic_info:
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=deterministic_info,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    deterministic_info,
                     status="waiting_user",
                     intent="company_info",
                     current_step="service_type",
                     next_step="service_type",
                     form_data=current_form_data,
                 )
-                return deterministic_info
         if (
             current_form_data.get("service_type")
             and _asks_specific_service_exists(message.text)
@@ -5799,23 +5579,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                 updated_form_data["last_discussed_service_type"] = service_type
             next_key = next_question(current_form_data)[0]
             reply = _specific_service_exists_reply(message.text)
-            messages_repo.create(
-                conn,
-                conversation_id=conversation["id"],
-                sender=SENDER_ASSISTANT,
-                text=reply,
-            )
-            conversations_repo.update_after_message(
-                conn,
-                conversation["id"],
-                now,
+            return commit_reply(
+                reply,
                 status="waiting_user",
                 intent="company_info",
                 current_step=next_key or conversation.get("current_step") or "service_type",
                 next_step=next_key,
                 form_data=updated_form_data,
             )
-            return reply
         if (
             current_form_data.get("service_type")
             and _looks_like_info_question(message.text, expected_key=expected_key_before, now=now)
@@ -5830,23 +5601,14 @@ def handle_incoming(message: IncomingMessage) -> str:
             )
             if active_reference_info:
                 reply, next_key = _append_current_service_question(active_reference_info, current_form_data)
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent="company_info",
                     current_step=next_key or conversation.get("current_step") or "service_type",
                     next_step=next_key,
                     form_data=current_form_data,
                 )
-                return reply
         if (
             current_form_data.get("service_type")
             and _looks_like_info_question(message.text, expected_key=expected_key_before, now=now)
@@ -5870,23 +5632,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                     deterministic_info = f"{info_patch['service_variant']} отметила ✅\n\n{deterministic_info}"
                 next_key = next_question(info_form_data)[0]
                 current_step = next_key or conversation.get("current_step") or "service_type"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=deterministic_info,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    deterministic_info,
                     status="waiting_user",
                     intent="company_info",
                     current_step=current_step,
                     next_step=next_key,
                     form_data=info_form_data,
                 )
-                return deterministic_info
 
         deterministic_patch = early_patch
         try:
@@ -5917,23 +5670,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                     required_meaning=required,
                 )
                 next_key = "duration"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent=ai_result.intent,
                     current_step="clarify_period",
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
 
             patch = _ai_first_patch(
                 ai_result=ai_result,
@@ -5948,27 +5692,27 @@ def handle_incoming(message: IncomingMessage) -> str:
                 message.text,
             )
             started_new_booking_from_ai = False
-            if (
-                not started_new_booking
-                and _ai_should_start_fresh_booking(conversation, ai_result, patch, message.text)
-            ):
-                fresh_form_data = _fresh_booking_form_data_for_text(conversation.get("form_data") or {}, message.text)
+            ai_fresh_result = _handle_ai_fresh_start_impl(
+                conversation=conversation,
+                ai_result=ai_result,
+                patch=patch,
+                text=message.text,
+                now=now,
+                started_new_booking=started_new_booking,
+                callbacks=_new_booking_flow_callbacks(),
+            )
+            if ai_fresh_result is not None:
                 conversation = {
                     **conversation,
-                    "form_data": fresh_form_data,
-                    "current_step": None,
-                    "next_step": None,
-                    "status": "waiting_user",
+                    "form_data": ai_fresh_result.form_data,
+                    "current_step": ai_fresh_result.current_step,
+                    "next_step": ai_fresh_result.next_step,
+                    "status": ai_fresh_result.status,
                 }
-                expected_key_before = next_question(conversation.get("form_data") or {})[0]
-                started_new_booking = True
-                started_new_booking_from_ai = True
-                patch = _fresh_booking_patch_from_ai(
-                    ai_result=ai_result,
-                    patch=patch,
-                    text=message.text,
-                    now=now,
-                )
+                expected_key_before = ai_fresh_result.expected_key_before
+                started_new_booking = ai_fresh_result.started_new_booking
+                started_new_booking_from_ai = ai_fresh_result.started_new_booking_from_ai
+                patch = ai_fresh_result.patch or patch
             if started_new_booking and not started_new_booking_from_ai:
                 patch = _filter_new_booking_patch_to_current_message(patch, message.text, now)
             active_expected_step_before = conversation.get("next_step") or conversation.get("current_step") or expected_key_before
@@ -6088,23 +5832,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                     history=history,
                     required_meaning=required,
                 )
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent=ai_result.intent,
                     current_step="service_type",
                     next_step="service_type",
                     form_data=form_data,
                 )
-                return reply
             if form_data.get("service_type") != "gazebo":
                 form_data["service_variant"] = None
                 form_data.pop("last_available_gazebo_variants", None)
@@ -6122,23 +5857,14 @@ def handle_incoming(message: IncomingMessage) -> str:
             capacity_mismatch = _capacity_mismatch_reply(conn, conversation, form_data, now)
             if capacity_mismatch:
                 reply, current_step, next_key, form_data = capacity_mismatch
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent=ai_result.intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             if (
                 "service_type" in changed_fields
                 and form_data.get("service_type") == "gazebo"
@@ -6167,44 +5893,26 @@ def handle_incoming(message: IncomingMessage) -> str:
                     required_meaning=required,
                 )
                 next_key = "date"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent=ai_result.intent,
                     current_step="date",
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             if "phone" in changed_fields and form_data.get("phone") and not _valid_phone(form_data.get("phone")):
                 form_data["phone"] = None
                 reply = "Телефон получился некорректным. Пришлите, пожалуйста, полный номер телефона для бронирования в формате +7XXXXXXXXXX."
                 next_key = "phone"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status="waiting_user",
                     intent=ai_result.intent,
                     current_step="phone",
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             if (
                 form_data.get("service_type") == "gazebo"
                 and form_data.get("date")
@@ -6225,23 +5933,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                     current_step = "service_variant"
                 status = "waiting_user"
                 intent = ai_result.intent
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent=intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             if (
                 form_data.get("service_type") == "gazebo"
                 and form_data.get("service_variant")
@@ -6264,23 +5963,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                 status = "waiting_user"
                 intent = ai_result.intent
                 current_step = "time"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent=intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             if (
                 form_data.get("service_type") == "gazebo"
                 and not form_data.get("service_variant")
@@ -6298,23 +5988,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                 status = "waiting_user"
                 intent = ai_result.intent
                 current_step = "service_variant"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent=intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             expected_key_now = next_question(form_data)[0]
             effective_action = (
                 "check_availability"
@@ -6375,23 +6056,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                     status = "awaiting_confirmation"
                     current_step = "awaiting_confirmation"
                     next_key = "confirmation"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent=intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             last_unavailable = (conversation.get("form_data") or {}).get("last_unavailable") or {}
             if (
                 conversation.get("current_step") == "awaiting_new_date"
@@ -6411,23 +6083,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                 status = "waiting_user"
                 intent = ai_result.intent
                 current_step = "awaiting_new_date"
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent=intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             if _should_check_availability(
                 effective_action,
                 list(changed_fields),
@@ -6515,23 +6178,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                 reply, current_step, next_key, form_data = capacity_mismatch
                 status = "waiting_user"
                 intent = conversation.get("intent")
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent=intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             _log_ai_provider_unavailable(
                 conn,
                 conversation_id=conversation["id"],
@@ -6593,23 +6247,14 @@ def handle_incoming(message: IncomingMessage) -> str:
                 reply, current_step, next_key, form_data = capacity_mismatch
                 status = "waiting_user"
                 intent = conversation.get("intent")
-                messages_repo.create(
-                    conn,
-                    conversation_id=conversation["id"],
-                    sender=SENDER_ASSISTANT,
-                    text=reply,
-                )
-                conversations_repo.update_after_message(
-                    conn,
-                    conversation["id"],
-                    now,
+                return commit_reply(
+                    reply,
                     status=status,
                     intent=intent,
                     current_step=current_step,
                     next_step=next_key,
                     form_data=form_data,
                 )
-                return reply
             changed_fields = set(deterministic_patch.keys())
             if _should_check_availability("ask_next_question", list(changed_fields), form_data):
                 availability_result = _execute_availability_check(
@@ -6650,23 +6295,17 @@ def handle_incoming(message: IncomingMessage) -> str:
         )
         if next_key and current_step in {None, "service_type"} and form_data.get("service_type"):
             current_step = next_key
-        messages_repo.create(
+        _commit_assistant_response(
             conn,
-            conversation_id=conversation["id"],
-            sender=SENDER_ASSISTANT,
-            text=reply,
-        )
-        _persist_user_profile(conn, user_id=user["id"], form_data=form_data)
-
-        conversations_repo.update_after_message(
-            conn,
-            conversation["id"],
+            conversation,
             now,
+            reply,
             status=status,
             intent=intent,
             current_step=current_step,
             next_step=next_key,
             form_data=form_data,
+            before_update=lambda: _persist_user_profile(conn, user_id=user["id"], form_data=form_data),
         )
 
     logger.info(

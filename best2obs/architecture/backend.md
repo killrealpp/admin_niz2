@@ -1,5 +1,20 @@
 # Backend
 
+## 2026-06-02 message_handler fresh/stale/new-booking flow
+
+- `app/services/dialog/new_booking_flow.py` owns the behavior-preserving decision layer for old unfinished drafts, stale-form choice, explicit new booking in the same message, fresh starts over active/reserved/payment context, and AI-assisted fresh-start reset.
+- The module exposes `NewBookingFlowCallbacks` and `NewBookingFlowResult`. Results always carry `reply`, `status`, `intent`, `current_step`, `next_step`, `form_data`; when `reply is None`, `message_handler.handle_incoming()` applies the returned conversation context and continues routing.
+- Side effects stay in `message_handler.py`: assistant message writes, `conversations_repo.update_after_message()`, DB commits, payment/YCLIENTS operations and callback execution are not moved into the flow module.
+- Stale reset that starts a new context uses the current-message fresh form builder, so `нет` plus a new bathhouse/gazebo request keeps the service and lets downstream routing parse date/time/duration from the same user message.
+- `scripts/dialog_stress_suite.py` expectations for positive upsell selection now match the established upsell flow: selected addons are saved, the bot remains on `upsell_items`, and the form advances only after the client says no more addons.
+
+## 2026-06-02 message_handler commit/result boundary
+
+- `message_handler.handle_incoming()` now has a single assistant-response persistence boundary. `_commit_assistant_response()` writes the assistant message, optionally runs a `before_update` callback, then calls `conversations_repo.update_after_message()` with status/intent/current step/next step/form data.
+- Inside `handle_incoming`, the local `commit_reply()` closure binds the current `conn`, `conversation` and `now`, so early routing branches return through one short helper call instead of repeating repository writes.
+- The refactor is behavior-preserving: routing order is unchanged, user-message insertion stays direct, seed/stale context-only updates stay direct, and the final AI/fallback path keeps `_persist_user_profile()` between assistant message creation and conversation update.
+- This is Phase 1 of [[roadmap/large-file-decomposition-plan]]. It prepares later extraction of fresh/stale, info, reference and media flows without introducing a new external API.
+
 ## 2026-06-01 live 19:09 post-booking, media and confirmation guards
 
 - Post-booking service-list replies now resolve the current service from `active_user_bookings()` first. This protects conversations where `form_data.service_type` is stale, for example still says `bathhouse` after the actual paid booking is a gazebo. The user-facing answer becomes `Кроме вашей беседки...`; `form_data` is only a fallback when no active booking identifies a single service.

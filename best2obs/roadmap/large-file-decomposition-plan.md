@@ -41,6 +41,8 @@ python scripts/dialog_stress_suite.py
 
 Первый безопасный разрез - убрать повторяющееся сохранение результата.
 
+Статус 2026-06-02: реализовано кодом. В `message_handler.py` добавлен `_commit_assistant_response()` и локальный `commit_reply()`; повторяющиеся assistant-message commits заменены на helper. Синтаксис и легкие проверки зелёные, Graphify обновлен. DB-зависимый Phase 1 regression нужно повторить после восстановления PostgreSQL-соединения: текущий запуск `dialog_context_suite.py` и `test_db.py` упирается в timeout к `95.214.62.243:5432`.
+
 Сделать:
 
 - ввести единый `FlowResult` или внутренний helper сохранения ответа;
@@ -57,6 +59,8 @@ python scripts/dialog_stress_suite.py
 
 ## Phase 2 - `message_handler.py`: Fresh/Stale/New Booking Flow
 
+Статус 2026-06-02: реализовано кодом. Логика вынесена в `app/services/dialog/new_booking_flow.py`; handler сохранил ownership над side effects и persistence. Проверки Phase 2 зелёные: `test_db.py`, `dialog_context_suite.py` 19/19, `dialog_edge_suite.py` 15/15, `dialog_stress_suite.py` 13/13, `local_regression_suite.py --group fresh --group services --group post_booking --group payments`, плюс lightweight baseline и Graphify update.
+
 Вынести в отдельный модуль логику:
 
 - old draft после паузы;
@@ -70,6 +74,8 @@ python scripts/dialog_stress_suite.py
 Риск: наследование старых даты, гостей, услуги, допов. Поэтому рядом гонять `fresh`, `services`, `post_booking`, `payments`.
 
 ## Phase 3 - `message_handler.py`: Info Flow
+
+Следующий возможный срез после Phase 2. Не начинать в том же рабочем заходе; перед стартом снова выполнить lightweight baseline и убедиться, что DB-dependent regression остаётся зелёным.
 
 Вынести информационные ответы, которые не должны менять состояние анкеты:
 

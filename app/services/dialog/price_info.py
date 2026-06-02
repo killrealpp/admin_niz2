@@ -62,7 +62,7 @@ def addon_price_reply(text: str) -> str | None:
         re.search(r"\b(?:доп|допы|допов|допами|доп\.|допуслуг\w*|дополнительн\w*)\b", normalized)
     ) and looks_like_price_question_text(text)
     lines: list[str] = []
-    if asks_all_addons or "кальян" in normalized:
+    if asks_all_addons or any(marker in normalized for marker in ("кальян", "кальяна", "кальянчик", "калик", "калян", "калиан")):
         lines.append("Кальян — 1 500 ₽: одна заправка и 5 углей. Дополнительная заправка с углём — 600 ₽.")
     if asks_all_addons or any(marker in normalized for marker in ("решет", "решот", "шампур", "мангал", "уголь", "розжиг")):
         lines.append("Мангальный набор №1 — 500 ₽: решётка, кочерга, опахало.")

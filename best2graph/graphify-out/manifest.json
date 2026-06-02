@@ -269,6 +269,11 @@
     "ast_hash": "eff9d68ae8439f75410b4d597ae789fc",
     "semantic_hash": "eff9d68ae8439f75410b4d597ae789fc"
   },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\new_booking_flow.py": {
+    "mtime": 1780390709.0602727,
+    "ast_hash": "0f41d4cc75f76fea9069b55f0089f938",
+    "semantic_hash": "0f41d4cc75f76fea9069b55f0089f938"
+  },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\performance.py": {
     "mtime": 1779810951.919892,
     "ast_hash": "d312e4a2550ce96f65636c0accc8dcbd",
@@ -280,9 +285,9 @@
     "semantic_hash": "2d2c633a24e9f4e5ac09111dfb947887"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\price_info.py": {
-    "mtime": 1780300509.6968112,
-    "ast_hash": "4557d3976bea61f445ae8e11fa98538a",
-    "semantic_hash": "4557d3976bea61f445ae8e11fa98538a"
+    "mtime": 1780380654.5126438,
+    "ast_hash": "f03ddd84c2b77616617c78b37ab74214",
+    "semantic_hash": "f03ddd84c2b77616617c78b37ab74214"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\reschedule_flow.py": {
     "mtime": 1779990556.3716395,
@@ -325,9 +330,9 @@
     "semantic_hash": "780dec2a4d7bcb875cd4ee3f72f9539f"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_handler.py": {
-    "mtime": 1780377978.3206842,
-    "ast_hash": "7305330ddbbfd6b1275a98523c633f0a",
-    "semantic_hash": "7305330ddbbfd6b1275a98523c633f0a"
+    "mtime": 1780389466.950917,
+    "ast_hash": "7eeff97b8e3a4b840d7fb2b5124fd90b",
+    "semantic_hash": "7eeff97b8e3a4b840d7fb2b5124fd90b"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_retention_runner.py": {
     "mtime": 1779435384.5563242,
@@ -450,9 +455,9 @@
     "semantic_hash": "494f43a3faf93c3993f95d865beb11b3"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\dialog_stress_suite.py": {
-    "mtime": 1780286378.0000138,
-    "ast_hash": "11cf5f023ee69c87642bc6785cec5e29",
-    "semantic_hash": "11cf5f023ee69c87642bc6785cec5e29"
+    "mtime": 1780390223.5079353,
+    "ast_hash": "f27db4163df6c3696586e32995d11c8e",
+    "semantic_hash": "f27db4163df6c3696586e32995d11c8e"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\init_db.py": {
     "mtime": 1779283837.9407341,
@@ -469,10 +474,15 @@
     "ast_hash": "23205b579617d4f2b76184de52f327e5",
     "semantic_hash": "23205b579617d4f2b76184de52f327e5"
   },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\live_db_hygiene_audit.py": {
+    "mtime": 1780326120.4126344,
+    "ast_hash": "259886a80a86e7f204b85e562b69cc8f",
+    "semantic_hash": "259886a80a86e7f204b85e562b69cc8f"
+  },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\local_regression_suite.py": {
-    "mtime": 1780378098.0861552,
-    "ast_hash": "6400227095dc37323cc06bd9a9f10ab5",
-    "semantic_hash": "6400227095dc37323cc06bd9a9f10ab5"
+    "mtime": 1780381679.0794883,
+    "ast_hash": "712c3ee5e860bbdabcad44ff2337c2ef",
+    "semantic_hash": "712c3ee5e860bbdabcad44ff2337c2ef"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\register_yookassa_webhook.py": {
     "mtime": 1779430959.770257,
@@ -528,10 +538,5 @@
     "mtime": 1779900377.16286,
     "ast_hash": "73a09e122404971a9098614d366ad373",
     "semantic_hash": "73a09e122404971a9098614d366ad373"
-  },
-  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\live_db_hygiene_audit.py": {
-    "mtime": 1780326120.4126344,
-    "ast_hash": "259886a80a86e7f204b85e562b69cc8f",
-    "semantic_hash": "259886a80a86e7f204b85e562b69cc8f"
   }
 }

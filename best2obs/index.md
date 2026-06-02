@@ -1,5 +1,20 @@
 # best2 Project Memory
 
+## 2026-06-02 large-file decomposition Phase 2
+
+- Реализован второй срез [[roadmap/large-file-decomposition-plan]]: fresh/stale/new-booking routing вынесен в `app/services/dialog/new_booking_flow.py`, а `message_handler.py` оставлен владельцем side effects и persistence. `NewBookingFlowResult` возвращает `reply/status/intent/current_step/next_step/form_data`; context-only stale reset продолжает routing без ответа.
+- DB-dependent baseline на этот раз зеленый: `test_db.py`, context 19/19, edge 15/15, stress 13/13, grouped `local_regression_suite.py --group fresh --group services --group post_booking --group payments` OK. Graphify обновлен полным ресканом (`1759 nodes`, `7271 edges`, query находит `new_booking_flow.py`). Детали: [[log]], [[architecture/backend]], [[bugs/current-known-issues]].
+
+## 2026-06-02 large-file decomposition Phase 1
+
+- Реализован первый срез [[roadmap/large-file-decomposition-plan]]: `message_handler.py` получил единый helper `_commit_assistant_response()`/`commit_reply()` для записи assistant message и `conversations_repo.update_after_message`, без изменения порядка routing.
+- Проверки: `compileall app scripts`, `lint_best2info.py`, `validate_yclients_map.py` OK; Graphify обновлен полным пересканом (`1745 nodes`, `7207 edges`, query находит `message_handler.py`). Полный DB-зависимый Phase 1 regression заблокирован PostgreSQL timeout к `95.214.62.243:5432`; см. [[bugs/current-known-issues]] и [[log]].
+
+## 2026-06-02 live services/upsell/late hookah price fixes
+
+- Закрыт пакет live-сбоев: стартовое `че можно?` перечисляет все основные варианты и остается на `service_type`; parking/info-вопросы на `upsell_items` отвечают и возвращают к допам без прыжка к телефону; late `добавить калик в допы, цена изменится?` сохраняет `кальян`, отвечает ценой 1 500 ₽ и показывает confirmation с `Допы: кальян`.
+- Дополнительно post-booking weather question теперь deterministic и не пишет про предоплату при `payment_paid`; voice transcription проверена реальным OpenRouter smoke на WAV и fake Telegram voice path. Детали: [[log]], [[bugs/current-known-issues]].
+
 ## 2026-06-01 live 19:09 post-booking/photo/confirmation fixes
 
 - Закрыт пакет live-сбоев 19:09-19:16: post-booking `что еще можно забронить?` после оплаченной беседки теперь смотрит активные брони из БД, общий запрос `а беседки покажете?` реально приводит к отправке фото беседок, а `я перехотел, давай нет` на финальном подтверждении закрывает черновик без создания брони.
