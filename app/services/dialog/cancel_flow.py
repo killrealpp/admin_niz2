@@ -22,6 +22,7 @@ class CancelFlowCallbacks:
     handoff_reply: Callable[[], str]
     confirmation_yes: Callable[[str], bool]
     confirmation_no: Callable[[str], bool]
+    record_refund_required: Callable[..., Any] | None = None
 
 
 def wants_cancel_booking(text: str) -> bool:
@@ -216,6 +217,7 @@ def handle_cancel_booking_flow(
                 return callbacks.handoff_reply(), "handoff", "handoff", "handoff", form_data
         for item in selected:
             callbacks.cancel_booking_by_id(conn, int(item["id"]), now)
+            _record_refund_if_needed(conn, item, now, callbacks)
         cleared = {**form_data, "cancel_flow": None}
         return cancel_many_done_reply(selected, now), "payment_paid", "reserved", "payment_status", cleared
 
@@ -232,6 +234,7 @@ def handle_cancel_booking_flow(
         return callbacks.handoff_reply(), "handoff", "handoff", "handoff", form_data
 
     callbacks.cancel_booking_by_id(conn, int(booking["id"]), now)
+    _record_refund_if_needed(conn, booking, now, callbacks)
     cleared = {**form_data, "cancel_flow": None}
     return cancel_done_reply(booking, now), "payment_paid", "reserved", "payment_status", cleared
 
@@ -292,15 +295,30 @@ def advance_refund_allowed(booking: dict[str, Any], now: datetime | date | None 
     return (booking_date - current_date).days >= 7
 
 
+def _record_refund_if_needed(
+    conn: Any,
+    booking: dict[str, Any],
+    now: datetime | date | None,
+    callbacks: CancelFlowCallbacks,
+) -> None:
+    if not callbacks.record_refund_required:
+        return
+    if booking.get("payment_status") != "paid":
+        return
+    if not advance_refund_allowed(booking, now):
+        return
+    callbacks.record_refund_required(conn, booking, now)
+
+
 def _advance_rule_text(booking: dict[str, Any], now: datetime | date | None = None) -> str:
     if advance_refund_allowed(booking, now):
-        return "аванс можно вернуть по правилам отмены, потому что до даты брони больше 7 дней."
+        return "аванс можно вернуть по правилам отмены, потому что до даты брони 7 дней или больше."
     return "аванс по правилам не возвращается, если до брони осталось меньше 7 дней."
 
 
 def _advance_rule_text_for_many(bookings: list[dict[str, Any]], now: datetime | date | None = None) -> str:
     if bookings and all(advance_refund_allowed(booking, now) for booking in bookings):
-        return "авансы можно вернуть по правилам отмены, потому что до дат брони больше 7 дней."
+        return "авансы можно вернуть по правилам отмены, потому что до дат брони 7 дней или больше."
     if any(advance_refund_allowed(booking, now) for booking in bookings):
         return "по части броней аванс можно вернуть за 7+ дней до даты, по ближайшим броням аванс не возвращается."
     return "авансы по правилам не возвращаются, если до брони осталось меньше 7 дней."

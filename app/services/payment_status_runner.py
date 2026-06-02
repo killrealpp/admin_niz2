@@ -47,6 +47,7 @@ async def run_payment_status_loop(bot: Bot | None = None) -> None:
                 )
             if bot:
                 await notify_admin_about_ai_provider_issues(bot)
+                await notify_admin_about_refund_requests(bot)
                 await notify_admin_about_handoffs(bot)
                 await notify_admin_about_new_bookings(bot)
                 await notify_paid_payments_once(bot)
@@ -385,6 +386,34 @@ async def notify_admin_about_ai_provider_issues(bot: Bot) -> None:
         if sent:
             with get_connection() as conn:
                 system_logs_repo.mark_admin_notified(conn, log_id=item["id"])
+
+
+async def notify_admin_about_refund_requests(bot: Bot) -> None:
+    batch_limit = 50
+    while True:
+        with get_connection() as conn:
+            logs = system_logs_repo.list_admin_unnotified(conn, event_type="refund_required", limit=batch_limit)
+        if not logs:
+            return
+
+        all_sent = True
+        for item in logs:
+            payload = item.get("payload") or {}
+            text = (
+                "Требуется вернуть предоплату клиенту.\n"
+                f"Бронь #{payload.get('booking_id') or 'не указана'}: {payload.get('booking') or 'нет описания'}.\n"
+                f"Клиент: {payload.get('client_name') or 'не указано'}\n"
+                f"Телефон: {payload.get('phone') or 'не указан'}\n"
+                "Отмена сделана за 7+ дней до даты брони, аванс можно вернуть по правилам отмены."
+            )
+            sent = await notify_admin_text(bot, text)
+            if sent:
+                with get_connection() as conn:
+                    system_logs_repo.mark_admin_notified(conn, log_id=item["id"])
+            else:
+                all_sent = False
+        if len(logs) < batch_limit or not all_sent:
+            return
 
 
 async def notify_admin_about_handoffs(bot: Bot) -> None:

@@ -1,6 +1,6 @@
 # Broad Regression Scenarios
 
-Назначение: чеклист широких регрессий из полного `scripts/local_regression_suite.py`. Авто-проверка последнего прогона: `OK`, 2026-05-29.
+Назначение: чеклист широких регрессий из полного `scripts/local_regression_suite.py`. Авто-проверка последнего прогона: `OK`, 2026-06-01.
 
 ## Как Проверять Руками
 
@@ -25,3 +25,4 @@
 | REG-012 | Price/info replies from `best2info` | OK | TODO |
 | REG-013 | Live-1953 form corrections: uppercase name, on-site no-extras, phone-confirmation yes, paid notification date | OK | TODO |
 | REG-014 | Live-1953 post-booking bath boundary: bathhouse info, generic new booking, clean service correction | OK | TODO |
+| REG-015 | Live-19:09 post-booking service context, current-booking DB summary, general gazebo photo request, confirmation abort | OK | TODO |

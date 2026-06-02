@@ -738,6 +738,51 @@ def context_live_135_paid_gazebo_then_bathhouse_same_number(now: datetime) -> Co
     return ContextResult("Live 135: новая баня держит дату беседки и контекст", ok, f"state={state}", transcript)
 
 
+def context_paid_gazebo_summary_then_available_services(now: datetime) -> ContextResult:
+    suffix = "context_paid_gazebo_available_services"
+    transcript: list[tuple[str, str]] = []
+    created = reg._create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 17),
+        yclients_service_id="18201061",
+        provider_record_id="local_context_paid_gazebo_services",
+        phone="+79990002011",
+    )
+    stale_bath_form = reg._base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date=None,
+        time=None,
+        duration=None,
+        guests_count=None,
+        event_format=None,
+        phone="+79990002011",
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="payment_paid",
+            current_step="reserved",
+            next_step="payment_status",
+            form_data=stale_bath_form,
+        )
+    summary = _say(suffix, "а у меня сейчас есть брони?", now, transcript, 1)
+    options = _say(suffix, "а что еще можно забронить?", now, transcript, 2)
+    lowered_options = _low(options)
+    ok = (
+        "у вас 1 брон" in _low(summary)
+        and "беседка №" in _low(summary)
+        and "кроме вашей беседки" in lowered_options
+        and "помимо бани" not in lowered_options
+        and "ожидает подтверждения" not in lowered_options
+    )
+    return ContextResult("Live 19:09: список услуг берёт активную беседку из БД", ok, f"summary={summary} | options={options}", transcript)
+
+
 def context_bathhouse_large_group_blocks_before_format(now: datetime) -> ContextResult:
     suffix = "context_bathhouse_large_group"
     transcript: list[tuple[str, str]] = []
@@ -794,6 +839,35 @@ def context_confirmation_no_means_not_confirmed(now: datetime) -> ContextResult:
     return ContextResult("Подтверждение: «нет» не меняет допы", ok, f"state={state}", transcript)
 
 
+def context_confirmation_perexotel_aborts_draft(now: datetime) -> ContextResult:
+    suffix = "context_confirmation_perexotel_abort"
+    transcript: list[tuple[str, str]] = []
+    form = reg._base_form(
+        service_type="gazebo",
+        service_variant="Беседка №3",
+        date="2026-07-12",
+        time="12:00",
+        duration=20,
+        guests_count=12,
+        event_format="компания друзей",
+        phone="+79990002012",
+        upsell_items=["кальян"],
+    )
+    reg._create_reserved_conversation(suffix, now, form)
+    _set_state(suffix, now, status="awaiting_confirmation", current_step="awaiting_confirmation", next_step="confirmation", form_data=form)
+    reply = _say(suffix, "я перехотел, давай нет", now, transcript, 1)
+    state = _state(suffix)
+    updated = state.get("form_data") or {}
+    ok = (
+        "эту заявку не оформляю" in _low(reply)
+        and "если захотите" in _low(reply)
+        and state.get("current_step") == "service_type"
+        and not updated.get("service_type")
+        and updated.get("phone") == "+79990002012"
+    )
+    return ContextResult("Подтверждение: «перехотел» закрывает черновик", ok, f"state={state}", transcript)
+
+
 def _print_result(result: ContextResult) -> None:
     print(f"\n## {result.name}")
     for user_text, bot_text in result.transcript:
@@ -825,8 +899,10 @@ def main() -> None:
             context_weekday_price_question_mentions_discount(now),
             context_confirmation_time_change_and_typo_summary(now),
             context_live_135_paid_gazebo_then_bathhouse_same_number(now),
+            context_paid_gazebo_summary_then_available_services(now),
             context_bathhouse_large_group_blocks_before_format(now),
             context_confirmation_no_means_not_confirmed(now),
+            context_confirmation_perexotel_aborts_draft(now),
         ]
     finally:
         restore_common()

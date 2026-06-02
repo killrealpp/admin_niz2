@@ -1,5 +1,61 @@
 # Project Log
 
+## 2026-06-02 - improved positive upsell follow-up before continuing form
+
+- По live-ручному тесту после фразы `калик один` изменен UX шага допов: позитивный выбор теперь отвечает `Хорошо, кальян добавим ✅`, но не прыгает сразу к телефону/следующему полю. Бот остается на `upsell_items` и пишет: `Если хотите добавить что-то ещё, напишите. Если больше ничего не нужно, напишите «нет», и продолжим по анкете.`
+- При последующем `нет` выбранные допы сохраняются и анкета идет дальше к следующему обязательному полю или confirmation. Повторный позитивный выбор допов объединяется с уже выбранными позициями, поэтому `кальян` затем `и лед` дает `Допы: кальян, лед`, а не перезаписывает список.
+- Технически добавлены `_merge_selected_upsells()` и `_upsell_followup_reply()` в `message_handler.py`; active `current_step/next_step='upsell_items'` теперь имеет приоритет над `next_question(form_data)`, чтобы `нет` после уже сохраненного допа не трактовалось как `Допы: не нужны`.
+- Regression обновлен: `positive addon survives later negative`, `soft upsell accept after push`, `first mangal set selection`, `positive upsell asks for more then continues`, `mixed addon price and selection saves items`. Проверки: `compileall app scripts` OK; `local_regression_suite.py --group upsell` OK; `dialog_edge_suite.py` 15/15 OK; `dialog_context_suite.py` 19/19 OK. Первый параллельный запуск context-suite уперся в regression lock от edge-suite и был повторен отдельно успешно. Graphify обновлен (`450 nodes`, `2201 edges` после recluster).
+- После regression-прогонов БД снова очищена через `scripts/clear_db.py` и заново наполнена из YCLIENTS: `sync_yclients_records.py --once --days-back 1 --days-forward 60` дал `seen=121`, `upserted=121`; финально `users=0`, `conversations=0`, `messages=0`, `bookings=0`, `yclients_records=121`, `resource_busy_intervals=121`, strict sync fresh, `live_db_hygiene_audit.py --limit 20` clean.
+
+## 2026-06-02 - prepared clean DB state for manual Telegram test
+
+- Перед ручным тестированием выполнена операционная очистка локальной БД через `scripts/clear_db.py`: `users`, `conversations`, `messages`, `conversation_summaries`, `slot_holds`, `bookings`, `yclients_records`, `resource_busy_intervals`, `yclients_sync_state` и `system_logs` сброшены до `0`. Перед reset в БД было `users=4`, `conversations=4`, `messages=137`, `yclients_records=132`; `scripts/test_db.py` прошел и создал пробную строку, поэтому очистка выполнялась после проверки соединения.
+- Таблица записей заново наполнена из YCLIENTS командой `scripts/sync_yclients_records.py --once --days-back 1 --days-forward 60`: `seen=121`, `upserted=121`. Финальный `scripts/yclients_sync_status.py --strict` свежий (`records_seen=121`, `records_upserted=121`, `last_error=None`), `scripts/live_db_hygiene_audit.py --limit 20` чистый.
+- Production-код не менялся. Состояние для ручного теста: `users=0`, `conversations=0`, `messages=0`, `slot_holds=0`, `bookings=0`, `yclients_records=121`, `resource_busy_intervals=121`.
+
+## 2026-06-01 - fixed live 19:09 post-booking/photo/confirmation regressions
+
+- Продолжен пакет из прошлого чата по live-диалогу 01.06.2026 19:09-19:16: после оплаченной беседки вопрос `а что еще можно забронить?` теперь определяет текущую услугу по активным броням из БД через `active_user_bookings()`, а `form_data.service_type` использует только как fallback. Если в `form_data` осталась старая баня, клиент всё равно получает `Кроме вашей беседки...`, а не `Помимо бани...`.
+- Дополнительно закреплено, что `current_booking_question` всегда отвечает canonical summary из БД/holds, а не свободным `reply_to_user` от AI. Это закрыло найденный при продолжении красный context-сценарий: `а у меня сейчас есть брони?` больше не может сказать `Пока не вижу активных броней`, если локальная paid booking видна в БД.
+- Explicit-photo flow расширен на общий запрос `а беседки покажете?`: ответ перечисляет конкретные беседки, чтобы `media_for_client_message()` выбрал реальные `besedka*.jpg`, а не только текст "отправлю фото".
+- На `awaiting_confirmation` живой отказ `я перехотел, давай нет` закрывает ещё не созданный черновик, очищает slot-поля, сохраняет имя/телефон и возвращает шаг `service_type`.
+- Проверки: `.venv\Scripts\python.exe -m compileall app scripts` OK; `scripts/dialog_context_suite.py` 19/19 OK; `scripts/dialog_edge_suite.py` 15/15 OK; `scripts/local_regression_suite.py --group post_booking --group media --group fresh` OK; `scripts/dialog_stress_suite.py` 13/13 OK; `.\best2graph\update_graph.ps1` обновил Graphify (`561 nodes`, `2698 edges` после recluster). Во время stress были ожидаемые `AIProviderUnavailable`/402 в semantic preflight, но deterministic/degraded paths прошли, suite завершился 13/13.
+
+## 2026-06-01 - fixed post-booking startup/regression after latest changes
+
+- Диагностика запуска: `.venv\Scripts\python.exe -m compileall app scripts main.py` OK, `scripts/test_db.py` OK, короткий запуск `.venv\Scripts\python.exe main.py` не упал за 20 секунд и ушел в polling; исходная жалоба "проект не запускается" как стартовый crash не воспроизвелась после фикса.
+- Найден реальный regression в post-booking/current-booking слое: `dialog_stress_suite.py` краснел на сценариях текущих броней/отмены, когда paid booking текущего разговора мог пропасть из ответа из-за временно stale/missing YCLIENTS-cache row. `active_user_bookings()` теперь досоединяет paid локальные брони текущего разговора в статусах `created_in_yclients`/`journal_missing`, чтобы summary/cancel/reschedule не говорили "ничего не вижу" по оплаченной локальной записи.
+- Дополнительно закрыт плавающий ответ после отмены: `post_booking_flow.plain_ack_after_closed_booking()` теперь deterministic считает `ок`/`окей` спокойным ack после закрытой брони и возвращает текст про новую бронь, не отдавая это AI fallback-у.
+- Проверки: `compileall app scripts main.py` OK; `dialog_stress_suite.py` 13/13 OK; `dialog_edge_suite.py` 14/14 OK; `dialog_context_suite.py` 17/17 OK; `local_regression_suite.py --group post_booking --group cancel --group payments` OK; `scripts/test_db.py` OK; `scripts/live_db_hygiene_audit.py --limit 20` clean; `scripts/lint_best2info.py` OK; `.\best2graph\update_graph.ps1` обновил Graphify (`49 nodes`, `58 edges` после recluster).
+
+## 2026-06-01 - implemented state/text consistency hardening package
+
+- Реализован пакет [[roadmap/state-text-consistency-hardening-plan]] без большого разбора `message_handler.py`: `handle_incoming` делает semantic preflight для активных клиентских диалогов через текущий `AIResponse`, переиспользует результат в основной AI-ветке, а недоступность AI пишет `system_logs.event_type='ai_semantic_degraded'` и уходит в существующий safe fallback/deterministic path.
+- Добавлен state/text consistency guard для критичных ответов по допам: если generated/AI текст говорит `кальян добавлен`, но canonical `form_data.upsell_items` не содержит `кальян`, или summary говорит `Допы: не нужны` при другом state, backend пересобирает ответ из canonical state и пишет `state_text_consistency_rebuilt`.
+- Доработаны допы: `кальянчик`, `кальяна`, `калик один`, `ничего кроме кальяна`, `уберите все`, `уберите все, кальян оставьте`; `добавьте` работает как contextual accept после последнего upsell prompt. Positive addon survives later negative закреплен сценарием `кальян -> имя -> телефон -> нет`.
+- Cancel/refund: клиентский текст теперь явно говорит `7 дней или больше`; regression покрывает 6/7/8 дней, multi-booking cancel с refund event только для paid+refundable позиции, idempotent `refund_required` по booking id и admin notification drain всех pending logs с `admin_notified_at`.
+- Добавлен read-only `scripts/live_db_hygiene_audit.py`: проверяет orphan `bot_booking` intervals, paid/cancelled refundable bookings без `refund_required`, paid payments без `payment_notified_at`, regression waitlist rows и `refund_required` без `admin_notified_at`. Текущий audit чистый; известный archived local test paid booking #1 исключается по явной archive-пометке.
+- Проверки: `.venv\Scripts\python.exe -m compileall app scripts` OK; `scripts/local_regression_suite.py --group upsell` OK; `--group cancel` OK; `--group post_booking --group payments` OK; `scripts/dialog_context_suite.py` 17/17 OK; `scripts/dialog_edge_suite.py` 14/14 OK; `scripts/dialog_stress_suite.py` 13/13 OK; `scripts/live_db_hygiene_audit.py --limit 20` clean; `.\best2graph\update_graph.ps1` обновил Graphify (`547 nodes`, `3466 edges` до recluster). Наблюдение: из-за обязательного semantic preflight в активных deterministic ветках context/edge/stress чаще печатают `dialog_timing_slow`, функционально сценарии зеленые.
+
+## 2026-06-01 - planned state/text consistency hardening package
+
+- По пользовательскому плану и после перечитывания `best2obs/index.md`, `log.md`, `bugs/current-known-issues.md`, `architecture/backend.md`, `decisions/2026-05-27-dialog-state-policy.md` и `roadmap/pre-launch.md` зафиксирован новый roadmap [[roadmap/state-text-consistency-hardening-plan]].
+- Scope: закрыть риски 1-6 без production-правок сейчас: AI-first semantic pass для входящих клиентских сообщений, state/text consistency guard перед важными ответами, расширение upsell-сценариев, cancel/refund boundary по 7 дням, admin refund notification hygiene и read-only live DB audit после regression.
+- Пункт 7 отложен: большой разбор `message_handler.py` не делать до зеленого сценарного пакета. Код бота и тесты не запускались/не менялись.
+
+## 2026-06-01 - live Telegram kalik addon and refundable cancel admin notice
+
+- По последнему live-чату 16:48-16:57 подтверждены два нюанса: `Калик` на шаге допов получил текст `Кальян добавлен`, но не был надежно сохранен deterministic parser-ом, поэтому после телефона бот снова спросил допы, а второй отказ перезаписал сводку на `Допы: не нужны`; отмена брони в этом чате была за 3 дня до 4 июня, поэтому клиентский текст про невозврат аванса был корректным, но для отмен за 7+ дней не хватало отдельного админ-уведомления о возврате.
+- Исправлено: `form_patches.upsell_items_patch()` распознает разговорные алиасы кальяна `калик/калян/калиан`; после первого выбора допа дальнейшие шаги ведут к подтверждению с `Допы: кальян`, без повторного вопроса допов. `cancel_flow` при отмене оплаченной брони в refundable window пишет `system_logs.event_type='refund_required'`, а `payment_status_runner.notify_admin_about_refund_requests()` отправляет админу текст `Требуется вернуть предоплату клиенту...` и помечает лог `admin_notified_at`.
+- Regression coverage: добавлены `kalik addon survives to confirmation`, проверка `refund_required` system log в `paid cancel refund window text and admin refund log`, и `refund required notifies admin` с fake bot.
+- Проверки: `.venv\Scripts\python.exe -m compileall app scripts` OK; `scripts/local_regression_suite.py --group upsell` OK; `scripts/local_regression_suite.py --group cancel` OK; `scripts/dialog_edge_suite.py` 14/14 OK; `.\best2graph\update_graph.ps1` обновил Graphify-карту (`539 nodes`, `3366 edges` до recluster).
+
+## 2026-06-01 - restored PostgreSQL root certificate for verify-full
+
+- Восстановлен локальный `C:\Users\kaisa\.postgresql\root.crt` из TLS-цепочки PostgreSQL `luecahalemas.beget.app`: leaf `luecahalemas.beget.app`, intermediate `beget.app Intermediate Authority`, root `Beget Cloud Services Root Authority`.
+- Штатный `DB_SSLMODE=verify-full` снова проходит: `scripts/test_db.py` OK, `scripts/db_status.py` читает таблицы. После `scripts/sync_yclients_records.py --once` статус `scripts/yclients_sync_status.py --strict` fresh (`records_seen=124`, `last_error=None`). Production-код не менялся.
+
 ## 2026-06-01 - planned large-file decomposition roadmap
 
 - Без изменения production-кода создан [[roadmap/large-file-decomposition-plan]]: будущий план разгрузки `app/services/message_handler.py` и `scripts/local_regression_suite.py`, с опорой на текущую память и Graphify-карту.

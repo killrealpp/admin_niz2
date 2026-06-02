@@ -1,5 +1,40 @@
 # Current Known Issues
 
+## 2026-06-01 live Telegram 19:09 post-booking/photo/confirmation regressions
+
+- Статус: закрыто кодом и regression/context/edge/stress проверками.
+- Симптомы: после оплаченной беседки `а что еще можно забронить?` мог отвечать от старого `form_data` и писать `Помимо бани...`; общий запрос `а беседки покажете?` мог не приводить к реальной отправке фото; на финальном подтверждении `я перехотел, давай нет` оставлял черновик в состоянии `ожидает подтверждения`.
+- Дополнительно при продолжении найден риск: AI `current_booking_question` мог вернуть текст `Пока не вижу активных броней`, даже когда paid booking есть в БД, если deterministic summary marker не сработал.
+- Причины: service-list reply смотрел на `form_data.service_type` вместо активных броней; explicit-photo reply не называл конкретные gazebo variants; confirmation abort phrases не были в раннем abort guard; current-booking intent всё ещё мог использовать AI `reply_to_user`.
+- Исправлено: service context берётся из `active_user_bookings()`; current-booking intent всегда отвечает `_post_booking_summary()` из БД/holds; general gazebo photo reply перечисляет беседки; `_wants_abort_confirmation_draft()` закрывает живые отказные фразы на `awaiting_confirmation`.
+- Защищено: context live 19:09 `а у меня сейчас есть брони?` -> `а что еще можно забронить?`, edge `перехотел`, local regression `available services uses active booking not stale form`, `general gazebo photo request sends gazebo media`.
+- Проверки: `compileall app scripts` OK; `dialog_context_suite.py` 19/19 OK; `dialog_edge_suite.py` 15/15 OK; `local_regression_suite.py --group post_booking --group media --group fresh` OK; `dialog_stress_suite.py` 13/13 OK; Graphify обновлён.
+
+## 2026-06-01 post-booking current-booking visibility regression
+
+- Статус: закрыто кодом и regression-проверками `post_booking`/`cancel`/`payments` плюс context/edge/stress.
+- Симптом: после последних изменений stress мог показать только часть текущих paid броней или уйти в неудачный cancel/ack path; особенно рискованно для фраз вроде `чо там на мне висит по записям`, `баню убери, а беседку не трогай`, `Окей` после успешной отмены.
+- Причина: `active_user_bookings()` полностью доверял `filter_actual_journal_bookings()`. Если локальная paid booking текущего разговора временно теряла подтверждение из YCLIENTS-cache, она могла исчезнуть из summary/cancel/reschedule, хотя в локальной БД оставалась оплаченная created booking.
+- Исправлено: `active_user_bookings()` досоединяет paid локальные брони текущего разговора в статусах `created_in_yclients`/`journal_missing`, даже если journal-cache временно stale; `plain_ack_after_closed_booking()` deterministic принимает `ок`/`окей` после закрытой брони.
+- Защищено: `dialog_stress_suite.py` сценарии `Постбронь: странный вопрос про текущие брони`, `Отмена одной услуги, вторую оставить`, `Принудительный выбор беседки... «Дя» при отмене`; `local_regression_suite.py --group post_booking --group cancel --group payments` включает `post booking summary always uses db`, `ack after cancel does not say booking fixed`, paid cancel/refund checks.
+
+## 2026-06-01 state/text consistency hardening package
+
+- Статус: закрыто кодом и regression-проверками `upsell`/`cancel`/`post_booking`/`payments` плюс context/edge/stress.
+- Симптом риска: бот мог написать клиенту state-changing текст (`кальян добавлен`, `Допы: не нужны`, `аванс можно вернуть`) без гарантии, что canonical `form_data`/БД уже содержит соответствующее состояние или backoffice event.
+- Исправлено: active-dialog semantic preflight, degraded AI log, state/text consistency rebuild guard, расширенные hookah/keep/remove upsell-фразы, refund boundary 6/7/8 дней, partial multi-booking refund events only for paid+refundable bookings, full pending refund admin drain.
+- Защищено: `AI semantic preflight for active routes`, `AI said added with empty state is rebuilt`, `positive addon survives later negative`, `live hookah upsell phrases`, `cancel refund boundary 6 7 8 days`, `multi booking cancel refund only paid refundable`, `refund required notifies admin`.
+- Проверки: `compileall`, `local_regression_suite.py --group upsell`, `--group cancel`, `--group post_booking --group payments`, `dialog_context_suite.py`, `dialog_edge_suite.py`, `dialog_stress_suite.py`, read-only `live_db_hygiene_audit.py --limit 20` clean. Остаточное наблюдение: больше `dialog_timing_slow` в активных deterministic ветках из-за обязательного semantic pass.
+
+## 2026-06-01 live Telegram 16:48 kalik addon and refundable cancel notice
+
+- Статус: закрыто кодом и regression-проверками `upsell`/`cancel`.
+- Симптомы: в live-чате `Калик` получил ответ `Кальян добавлен`, но в следующем цикле бот снова спросил допы; после `Ничего`/`Нет` сводка показала `Допы: не нужны`, хотя клиент уже просил кальян. Для отмен оплаченных броней за 7+ дней клиенту писалось, что аванс можно вернуть, но админу не создавалось отдельное уведомление на ручной возврат.
+- Причины: `калик` не был deterministic marker-ом для `кальян`, поэтому первый ответ мог зависеть от AI-текста без надежного состояния `upsell_items=["кальян"]`. Cancel-flow знал правило 7 дней для клиентского текста, но не создавал отдельное событие для backoffice-возврата.
+- Исправлено: `upsell_items_patch()` распознает `калик/калян/калиан` как `кальян`; cancel-flow создает `system_logs.event_type='refund_required'` для paid-cancel в refundable window, а `payment_status_runner` отправляет админу текст `Требуется вернуть предоплату клиенту...`.
+- Защищено: `kalik addon survives to confirmation`, `paid cancel refund window text and admin refund log`, `refund required notifies admin`.
+- Проверки: `compileall app scripts` OK; `local_regression_suite.py --group upsell` OK; `local_regression_suite.py --group cancel` OK; `dialog_edge_suite.py` 14/14 OK; Graphify-карта обновлена.
+
 ## 2026-06-01 live Telegram 11:45 guest/options, upsell and post-booking context
 
 - Статус: закрыто кодом и regression/context/edge/stress проверками.

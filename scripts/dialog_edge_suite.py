@@ -301,6 +301,23 @@ def edge_confirmation_cancel_immediately(now: datetime) -> EdgeResult:
     return EdgeResult("Подтверждение: сразу отменяем еще не созданную бронь", ok, f"reply={reply} | state={state}", transcript)
 
 
+def edge_confirmation_perexotel_aborts(now: datetime) -> EdgeResult:
+    suffix = "edge_confirmation_perexotel"
+    transcript: list[tuple[str, str]] = []
+    _confirmation_conversation(suffix, now)
+    reply = _say(suffix, "я перехотел, давай нет", now, transcript)
+    state = _state(suffix)
+    form = state.get("form_data") or {}
+    ok = (
+        _has(reply, "эту заявку не оформляю")
+        and _has(reply, "если захотите")
+        and state.get("current_step") == "service_type"
+        and form.get("service_type") is None
+        and form.get("phone") == "+79990001002"
+    )
+    return EdgeResult("Подтверждение: живой отказ «перехотел» закрывает черновик", ok, f"reply={reply} | state={state}", transcript)
+
+
 def _paid_for_cancel(suffix: str, now: datetime) -> None:
     reg._create_paid_booking_for_action(
         suffix,
@@ -444,6 +461,7 @@ def main() -> None:
         edge_confirmation_summary_question,
         edge_confirmation_info_then_yes,
         edge_confirmation_cancel_immediately,
+        edge_confirmation_perexotel_aborts,
         edge_cancel_info_question,
         edge_cancel_unrelated_question,
         edge_cancel_no_then_reschedule,

@@ -1,5 +1,34 @@
 # best2 Project Memory
 
+## 2026-06-01 live 19:09 post-booking/photo/confirmation fixes
+
+- Закрыт пакет live-сбоев 19:09-19:16: post-booking `что еще можно забронить?` после оплаченной беседки теперь смотрит активные брони из БД, общий запрос `а беседки покажете?` реально приводит к отправке фото беседок, а `я перехотел, давай нет` на финальном подтверждении закрывает черновик без создания брони.
+- При продолжении найден и закрыт дополнительный риск: `current_booking_question` больше не использует AI `reply_to_user`, если нужен список текущих броней; canonical summary берётся из БД/holds. Это защищает фразу `а у меня сейчас есть брони?` от ложного `Пока не вижу активных броней`.
+- Проверки: `compileall app scripts`, `dialog_context_suite.py` 19/19, `dialog_edge_suite.py` 15/15, `local_regression_suite.py --group post_booking --group media --group fresh`, `dialog_stress_suite.py` 13/13; Graphify обновлён. Детали: [[log]], [[bugs/current-known-issues]], [[architecture/backend]], [[testing/dialog-test-matrix]].
+
+## 2026-06-01 post-booking startup/regression fix
+
+- После жалобы на запуск проверено: `main.py` компилируется и не падает за 20 секунд, уходит в polling; БД доступна через `scripts/test_db.py`.
+- Реальный сбой был в post-booking regression: paid booking текущего разговора мог исчезнуть из current-booking summary/cancel/reschedule, если YCLIENTS-cache временно не подтверждал одну из локальных paid записей. `active_user_bookings()` теперь досоединяет paid локальные брони текущего разговора в статусах `created_in_yclients`/`journal_missing`; `ок`/`окей` после отмены deterministic отвечает про новую бронь, а не через AI fallback.
+- Проверки: `compileall app scripts main.py`, `dialog_stress_suite.py` 13/13, `dialog_edge_suite.py` 14/14, `dialog_context_suite.py` 17/17, `local_regression_suite.py --group post_booking --group cancel --group payments`, `test_db.py`, `live_db_hygiene_audit.py --limit 20`, `lint_best2info.py`; Graphify обновлен. Детали: [[log]], [[bugs/current-known-issues]], [[architecture/backend]].
+
+## 2026-06-01 state/text consistency hardening implemented
+
+- Рабочий пакет [[roadmap/state-text-consistency-hardening-plan]] реализован без большого разбора `message_handler.py`: активные входящие клиентские сообщения получают semantic preflight через `AIResponse`, degraded AI path пишет `system_logs.event_type='ai_semantic_degraded'`, а основной AI-branch переиспользует preflight result.
+- Добавлен state/text guard для важных ответов по допам: если текст говорит, что кальян добавлен, но `form_data.upsell_items` не содержит `кальян`, или summary говорит `Допы: не нужны` при другом state, backend пересобирает ответ из canonical state и логирует `state_text_consistency_rebuilt`.
+- Допы расширены на живые фразы `кальянчик`, `калик один`, `ничего кроме кальяна`, `уберите все, кальян оставьте`; positive addon не перезаписывается последующим `нет`, mixed price+selection сохраняет выбранные items. Cancel/refund закреплен на границе 6/7/8 дней, multi-cancel создает refund events только для paid+refundable броней, admin runner drains все pending `refund_required`.
+- Добавлен read-only `scripts/live_db_hygiene_audit.py`; текущий audit чистый. Проверки: `compileall app scripts`, `local_regression_suite.py --group upsell`, `--group cancel`, `--group post_booking --group payments`, `dialog_context_suite.py` 17/17, `dialog_edge_suite.py` 14/14, `dialog_stress_suite.py` 13/13, Graphify обновлен (`547 nodes`, `3466 edges` до recluster). Наблюдение: active semantic preflight ожидаемо увеличил `dialog_timing_slow` в context/edge/stress.
+
+## 2026-06-01 state/text consistency hardening plan
+
+- Новый рабочий пакет зафиксирован в [[roadmap/state-text-consistency-hardening-plan]]: закрыть риски 1-6 вокруг AI-first semantic pass, state/text consistency guard, допов, отмены/возвратов, admin refund notifications и live DB hygiene.
+- Пункт 7 с большим разбором `message_handler.py` явно отложен: сейчас только точечные guard-ы, сценарии и проверки вокруг текущей архитектуры. Production-код не менялся.
+
+## 2026-06-01 live kalik addon/refundable cancel notice
+
+- Последний live-чат 16:48-16:57 разобран: `Калик` теперь deterministic сохраняется как `кальян`, поэтому подтверждение не может уйти в `Допы: не нужны` после уже выбранного кальяна; paid-cancel в refundable window теперь создает `system_logs.event_type='refund_required'`, а `payment_status_runner` уведомляет админа, что клиенту требуется вернуть предоплату.
+- Проверки: `compileall app scripts`, `local_regression_suite.py --group upsell`, `local_regression_suite.py --group cancel`, `dialog_edge_suite.py` 14/14; Graphify-карта обновлена. Детали: [[log]], [[bugs/current-known-issues]], [[architecture/backend]].
+
 ## 2026-06-01 stable test-run package
 
 - Live Telegram 11:45 fixes are guarded: `нас будет 30 человек, какая беседка подойдет` now saves guests and does not ask them again; `давайте первый набор` selects mangal set №1; after a gazebo booking, `что еще можно забронировать?` answers `Кроме вашей беседки...` instead of `Помимо бани...`.
@@ -104,6 +133,7 @@
 - [[roadmap/dialog-regression-scenarios]] - живые и автоматические сценарии, которые защищают диалог от повторяющихся ошибок.
 - [[roadmap/message-handler-refactor]] - план безопасного уменьшения `message_handler.py` без потери контекстной логики.
 - [[roadmap/large-file-decomposition-plan]] - будущий план разгрузки `message_handler.py`, `local_regression_suite.py` и соседних крупных сервисов.
+- [[roadmap/state-text-consistency-hardening-plan]] - ближайший точечный пакет guard-ов против рассинхрона AI-текста, `form_data` и БД; большой разбор `message_handler.py` отложен.
 - [[testing/dialog-test-matrix]] - матрица успешно проверенных диалоговых сценариев: что покрыто, где покрыто и какой статус последнего прогона.
 - [[testing/scenarios/standard]] - ручной чеклист стандартного happy-path.
 - [[testing/scenarios/context-live]] - ручной чеклист context/live-like сценариев.

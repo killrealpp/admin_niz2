@@ -137,6 +137,8 @@ def plain_ack_after_closed_booking(
     if confirmation_yes(text):
         return True
     return normalized in {
+        "ок",
+        "окей",
         "спасибо",
         "спс",
         "понял",

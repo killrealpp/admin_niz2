@@ -1,6 +1,6 @@
 # Edge Dialog Scenarios
 
-Назначение: ручной чеклист перебиваний, отмен, confirmation, reschedule и post-booking edge cases. Авто-проверка последнего прогона: `OK`, 2026-05-29, `scripts/dialog_edge_suite.py` 14/14.
+Назначение: ручной чеклист перебиваний, отмен, confirmation, reschedule и post-booking edge cases. Авто-проверка последнего прогона: `OK`, 2026-06-01, `scripts/dialog_edge_suite.py` 15/15.
 
 ## Как Проверять Руками
 
@@ -25,3 +25,4 @@
 | EDGE-012 | Info-вопрос внутри reschedule-flow | OK | TODO |
 | EDGE-013 | Вопрос про варианты переноса | OK | TODO |
 | EDGE-014 | Посторонний post-booking вопрос | OK | TODO |
+| EDGE-015 | `я перехотел, давай нет` на confirmation закрывает черновик | OK | TODO |

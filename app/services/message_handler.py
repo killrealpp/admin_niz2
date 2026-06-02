@@ -412,6 +412,117 @@ def _log_ai_provider_unavailable(
     )
 
 
+def _log_ai_semantic_degraded(
+    conn,
+    *,
+    conversation_id: int,
+    exc: AIProviderUnavailable,
+    text: str,
+    form_data: dict[str, Any],
+) -> None:
+    system_logs_repo.create(
+        conn,
+        level="warning",
+        event_type="ai_semantic_degraded",
+        message=str(exc),
+        conversation_id=conversation_id,
+        payload={
+            "status_code": exc.status_code,
+            "provider_payload": str(exc.payload or "")[:1000],
+            "user_text": text[:500],
+            "current_step": next_question(form_data)[0],
+        },
+    )
+
+
+def _should_run_semantic_preflight(conversation: dict[str, Any], *, conv_created: bool) -> bool:
+    if conv_created:
+        return False
+    if conversation.get("status") == "handoff":
+        return False
+    if conversation.get("current_step") or conversation.get("next_step"):
+        return True
+    form_data = conversation.get("form_data") or {}
+    return any(
+        form_data.get(key)
+        for key in (
+            "service_type",
+            "date",
+            "time",
+            "duration",
+            "guests_count",
+            "event_format",
+            "upsell_items",
+            "phone",
+            "cancel_flow",
+            "reschedule_flow",
+        )
+    )
+
+
+def _semantic_ai_pass(
+    conn,
+    *,
+    conversation: dict[str, Any],
+    text: str,
+    history: list[dict[str, Any]],
+    now: datetime,
+) -> Any:
+    summaries = _context_summaries(
+        conn,
+        conversation,
+        conversation.get("form_data") or {},
+        now,
+    )
+    return call_ai(
+        text=text,
+        form_data=conversation.get("form_data") or {},
+        history=history,
+        summaries=summaries,
+        current_datetime=now,
+        knowledge=_build_semantic_router_knowledge(conversation.get("form_data") or {}),
+    )
+
+
+def _state_text_consistency_reply(
+    conn,
+    *,
+    conversation_id: int,
+    reply: str,
+    form_data: dict[str, Any],
+) -> str:
+    normalized = reply.lower().replace("ё", "е")
+    upsells = [str(item).lower().replace("ё", "е") for item in (form_data.get("upsell_items") or [])]
+    reason: str | None = None
+    if "кальян" in normalized and "добав" in normalized and "кальян" not in upsells:
+        reason = "reply_says_hookah_added_without_state"
+    if "допы: не нужны" in normalized and upsells != ["не нужны"]:
+        reason = reason or "reply_summary_says_no_upsells_without_state"
+    if not reason:
+        return reply
+
+    if _booking_ready(form_data):
+        rebuilt = _confirmation_reply_text(form_data)
+    else:
+        _next_key, question = next_question(form_data)
+        rebuilt = question or _fallback_reply(form_data)[0]
+
+    system_logs_repo.create(
+        conn,
+        level="warning",
+        event_type="state_text_consistency_rebuilt",
+        message=reason,
+        conversation_id=conversation_id,
+        payload={
+            "reason": reason,
+            "original_reply": reply[:1000],
+            "rebuilt_reply": rebuilt[:1000],
+            "upsell_items": form_data.get("upsell_items"),
+        },
+    )
+    return rebuilt
+
+
 def _has_too_many_questions(text: str) -> bool:
     lowered = text.lower()
     if text.count("?") > 1:
@@ -568,6 +679,34 @@ def _confirmation_no(text: str) -> bool:
             "не отмен",
             "не надо отмен",
             "не нужно отмен",
+        )
+    )
+
+
+def _wants_abort_confirmation_draft(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е").strip(" .,!?:;")
+    compact = re.sub(r"[^\w]+", " ", normalized).strip()
+    if compact in {
+        "давай нет",
+        "давайте нет",
+        "нет не будем",
+        "не будем",
+        "я перехотел",
+        "я перехотела",
+        "я передумал",
+        "я передумала",
+    }:
+        return True
+    return _wants_abort_current_draft(text) or any(
+        marker in compact
+        for marker in (
+            "перехотел",
+            "перехотела",
+            "не будем оформ",
+            "не хочу оформ",
+            "не хочу брон",
+            "давай не будем",
+            "давайте не будем",
         )
     )
 
@@ -906,6 +1045,29 @@ def _question_text_for_key(key: str | None, form_data: dict[str, Any]) -> str | 
     if key == "phone":
         return "Телефон для бронирования?"
     return None
+
+
+def _merge_selected_upsells(current_items: Any, selected_items: list[str]) -> list[str]:
+    merged: list[str] = []
+    for item in list(current_items or []) + list(selected_items or []):
+        text = str(item).strip()
+        if not text or text == "не нужны":
+            continue
+        if text not in merged:
+            merged.append(text)
+    return merged
+
+
+def _upsell_followup_reply(items: list[str], price_reply: str | None = None) -> str:
+    items_text = ", ".join(items)
+    prefix = f"Хорошо, {items_text} добавим ✅"
+    if price_reply:
+        prefix = f"{price_reply}\n\n{prefix}"
+    return (
+        f"{prefix}\n\n"
+        "Если хотите добавить что-то ещё, напишите. "
+        "Если больше ничего не нужно, напишите «нет», и продолжим по анкете."
+    )
 
 
 def _pending_additional_booking_reply(conversation: dict[str, Any], text: str, now: datetime) -> tuple[str, str, str | None, dict[str, Any]] | None:
@@ -1321,6 +1483,31 @@ def _available_services_reply(form_data: dict[str, Any] | None = None) -> str:
     )
 
 
+def _primary_service_type_from_bookings(bookings: list[dict[str, Any]]) -> str | None:
+    service_types: list[str] = []
+    for booking in bookings:
+        service_type = str(booking.get("service_type") or "").strip()
+        if service_type and service_type not in service_types:
+            service_types.append(service_type)
+    if len(service_types) == 1:
+        return service_types[0]
+    return None
+
+
+def _available_services_reply_for_active_bookings(
+    conn,
+    conversation: dict[str, Any],
+    form_data: dict[str, Any],
+    now: datetime,
+) -> str:
+    active_service_type = _primary_service_type_from_bookings(
+        _active_user_bookings(conn, conversation, form_data, now)
+    )
+    if active_service_type:
+        return _available_services_reply({**form_data, "service_type": active_service_type})
+    return _available_services_reply(form_data)
+
+
 def _asks_gazebo_options(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
     return (
@@ -1584,7 +1771,7 @@ def _abort_current_draft(form_data: dict[str, Any]) -> tuple[str, dict[str, Any]
     reply = (
         "Хорошо, эту заявку не оформляю ✅\n\n"
         "Имя и телефон оставила, чтобы не спрашивать повторно. "
-        "Если хотите выбрать другую услугу или дату, напишите, что бронируем."
+        "Если захотите забронировать позже, просто напишите, что бронируем."
     )
     return reply, cleaned
 
@@ -2247,7 +2434,13 @@ def _handle_post_booking_message(
     status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"
 
     if _asks_available_services(text):
-        return _available_services_reply(form_data), status, "reserved", "payment_status", form_data
+        return (
+            _available_services_reply_for_active_bookings(conn, conversation, form_data, now),
+            status,
+            "reserved",
+            "payment_status",
+            form_data,
+        )
 
     if _asks_booking_summary(text) or _continues_booking_summary_question(text, history):
         cleared = {**form_data, "cancel_flow": None, "reschedule_flow": None, "swap_reschedule_flow": None}
@@ -2441,13 +2634,7 @@ def _handle_post_booking_message(
                 form_data,
             )
         summary = _post_booking_summary(conn, conversation, form_data, now)
-        if _asks_booking_summary(text):
-            reply = summary
-        elif reply_to_user:
-            reply = reply_to_user
-        else:
-            reply = summary
-        return reply, status, "reserved", "payment_status", form_data
+        return summary, status, "reserved", "payment_status", form_data
     if intent == "change_existing_booking":
         change_type = getattr(classified, "change_type", "unknown") or "unknown"
         if change_type == "cancel" or _wants_cancel_booking(text):
@@ -2679,6 +2866,40 @@ def _cancel_flow_callbacks() -> _CancelFlowCallbacks:
         handoff_reply=_handoff_reply,
         confirmation_yes=_confirmation_yes,
         confirmation_no=_confirmation_no,
+        record_refund_required=_record_refund_required,
+    )
+
+
+def _record_refund_required(conn, booking: dict[str, Any], now: datetime) -> None:
+    booking_id = int(booking["id"])
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1
+            FROM system_logs
+            WHERE event_type = 'refund_required'
+              AND payload->>'booking_id' = %s
+            LIMIT 1
+            """,
+            (str(booking_id),),
+        )
+        if cur.fetchone():
+            return
+    system_logs_repo.create(
+        conn,
+        level="warning",
+        event_type="refund_required",
+        message="paid booking cancelled inside refundable window",
+        conversation_id=booking.get("conversation_id"),
+        payload={
+            "booking_id": booking_id,
+            "user_id": booking.get("user_id"),
+            "client_name": booking.get("client_name"),
+            "phone": booking.get("phone"),
+            "booking": _booking_line_short(booking),
+            "payment_status": booking.get("payment_status"),
+            "cancelled_at": now.isoformat() if hasattr(now, "isoformat") else str(now),
+        },
     )
 
 
@@ -4336,6 +4557,27 @@ def handle_incoming(message: IncomingMessage) -> str:
             raw_payload=message.raw_payload,
         )
         history = messages_repo.list_recent(conn, conversation["id"], limit=20)
+        semantic_ai_result: Any | None = None
+        semantic_ai_error: AIProviderUnavailable | None = None
+        if _should_run_semantic_preflight(conversation, conv_created=conv_created):
+            try:
+                semantic_ai_result = _semantic_ai_pass(
+                    conn,
+                    conversation=conversation,
+                    text=message.text,
+                    history=history,
+                    now=now,
+                )
+            except AIProviderUnavailable as exc:
+                semantic_ai_error = exc
+                logger.warning("AI semantic preflight unavailable conversation_id=%s", conversation["id"])
+                _log_ai_semantic_degraded(
+                    conn,
+                    conversation_id=conversation["id"],
+                    exc=exc,
+                    text=message.text,
+                    form_data=conversation.get("form_data") or {},
+                )
 
         reminder_response = _handle_booking_reminder_response(conn, conversation, user, message.text, now)
         if reminder_response is not None:
@@ -4731,7 +4973,7 @@ def handle_incoming(message: IncomingMessage) -> str:
 
         if (
             conversation.get("current_step") == "awaiting_confirmation"
-            and _wants_cancel_booking(message.text)
+            and (_wants_cancel_booking(message.text) or _wants_abort_confirmation_draft(message.text))
             and not _looks_like_info_question(message.text, now=now)
         ):
             reply, form_data = _abort_current_draft(conversation.get("form_data") or {})
@@ -5251,8 +5493,8 @@ def handle_incoming(message: IncomingMessage) -> str:
                 return reply
         expected_key_before = next_question(current_form_data)[0]
         active_step_hint = conversation.get("next_step") or conversation.get("current_step")
-        if active_step_hint == "guests_count":
-            expected_key_before = "guests_count"
+        if active_step_hint in {"guests_count", "upsell_items"}:
+            expected_key_before = active_step_hint
         current_upsells = current_form_data.get("upsell_items") or []
         if (
             expected_key_before != "upsell_items"
@@ -5386,25 +5628,19 @@ def handle_incoming(message: IncomingMessage) -> str:
             selected_items = upsell_patch.get("upsell_items") or []
             if selected_items and selected_items != ["не нужны"]:
                 price_reply = _addon_price_reply(message.text) if _looks_like_price_question_text(message.text) else None
+                merged_items = _merge_selected_upsells(current_upsells, selected_items)
                 form_data = merge_form_data(
                     current_form_data,
-                    upsell_patch | {"upsell_offer_count": int(current_form_data.get("upsell_offer_count") or 0)},
+                    {
+                        **upsell_patch,
+                        "upsell_items": merged_items,
+                        "upsell_offer_count": int(current_form_data.get("upsell_offer_count") or 0),
+                    },
                 )
-                next_key, question = next_question(form_data)
-                items_text = ", ".join(selected_items)
-                prefix = f"Хорошо, {items_text} добавим ✅"
-                if price_reply:
-                    prefix = f"{price_reply}\n\n{prefix}"
-                if next_key is None:
-                    reply = f"{price_reply}\n\n{_confirmation_reply_text(form_data)}" if price_reply else _confirmation_reply_text(form_data)
-                    status = "awaiting_confirmation"
-                    current_step = "awaiting_confirmation"
-                    next_step = "confirmation"
-                else:
-                    reply = f"{prefix}\n\n{question}"
-                    status = "waiting_user"
-                    current_step = next_key
-                    next_step = next_key
+                reply = _upsell_followup_reply(merged_items, price_reply)
+                status = "waiting_user"
+                current_step = "upsell_items"
+                next_step = "upsell_items"
                 messages_repo.create(
                     conn,
                     conversation_id=conversation["id"],
@@ -5652,22 +5888,20 @@ def handle_incoming(message: IncomingMessage) -> str:
                 )
                 return deterministic_info
 
-        summaries = _context_summaries(
-            conn,
-            conversation,
-            conversation.get("form_data") or {},
-            now,
-        )
         deterministic_patch = early_patch
         try:
-            ai_result = call_ai(
-                text=message.text,
-                form_data=conversation.get("form_data") or {},
-                history=history,
-                summaries=summaries,
-                current_datetime=now,
-                knowledge=_build_semantic_router_knowledge(conversation.get("form_data") or {}),
-            )
+            if semantic_ai_result is not None:
+                ai_result = semantic_ai_result
+            elif semantic_ai_error is not None:
+                raise semantic_ai_error
+            else:
+                ai_result = _semantic_ai_pass(
+                    conn,
+                    conversation=conversation,
+                    text=message.text,
+                    history=history,
+                    now=now,
+                )
             time_patch = _time_period_patch(message.text)
             if _period_conflict(message.text, time_patch):
                 form_data = conversation.get("form_data") or {}
@@ -6408,6 +6642,12 @@ def handle_incoming(message: IncomingMessage) -> str:
                 next_key = "confirmation"
 
         reply = _remove_date_question_when_guest_question_exists(_clean_reply(reply))
+        reply = _state_text_consistency_reply(
+            conn,
+            conversation_id=conversation["id"],
+            reply=reply,
+            form_data=form_data,
+        )
         if next_key and current_step in {None, "service_type"} and form_data.get("service_type"):
             current_step = next_key
         messages_repo.create(

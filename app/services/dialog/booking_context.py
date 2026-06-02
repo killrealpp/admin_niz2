@@ -23,13 +23,16 @@ def active_user_bookings(
         now=now,
     )
     bookings = filter_actual_journal_bookings(conn, bookings, now)
-    if bookings:
-        return bookings
     fallback_bookings = bookings_repo.list_active_for_conversation(
         conn,
         conversation_id=conversation["id"],
     )
-    return filter_actual_journal_bookings(conn, fallback_bookings, now)
+    if bookings:
+        return _with_paid_conversation_fallback(bookings, fallback_bookings)
+    return _with_paid_conversation_fallback(
+        filter_actual_journal_bookings(conn, fallback_bookings, now),
+        fallback_bookings,
+    )
 
 
 def conversation_bookings_for_active_flow(conn, conversation: dict[str, Any]) -> list[dict[str, Any]]:
@@ -41,6 +44,33 @@ def conversation_bookings_for_active_flow(conn, conversation: dict[str, Any]) ->
         )
         if booking.get("status") != "cancelled"
     ]
+
+
+def _with_paid_conversation_fallback(
+    bookings: list[dict[str, Any]],
+    conversation_bookings: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Keep paid local bookings visible even if the journal cache is temporarily stale."""
+    seen_ids = {int(booking["id"]) for booking in bookings}
+    merged = list(bookings)
+    for booking in conversation_bookings:
+        booking_id = int(booking["id"])
+        if booking_id in seen_ids or booking.get("status") == "cancelled":
+            continue
+        if booking.get("payment_status") != "paid":
+            continue
+        if booking.get("status") not in {"created_in_yclients", "journal_missing"}:
+            continue
+        merged.append(booking)
+        seen_ids.add(booking_id)
+    return sorted(
+        merged,
+        key=lambda booking: (
+            booking.get("booking_date") or "",
+            booking.get("booking_time") or "",
+            int(booking["id"]),
+        ),
+    )
 
 
 def filter_actual_journal_bookings(

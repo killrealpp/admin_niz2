@@ -31,6 +31,23 @@ def explicit_photo_reply(
         if media_for_client_message(text, reply):
             return reply
         return f"Фото для {title} пока не добавлено в базу."
+    if "бесед" in text.lower().replace("ё", "е"):
+        titles = callbacks.suitable_available_gazebo_titles(form_data) or callbacks.available_gazebo_titles(form_data)
+        if not titles:
+            titles = [
+                "Беседка №1",
+                "Беседка №2",
+                "Беседка №3",
+                "Беседка №4",
+                "Беседка №5",
+                "Беседка №6",
+                "Беседка №8",
+                "Крытая беседка",
+            ]
+        names = ", ".join(titles[:8])
+        reply = f"Конечно, сейчас отправлю фото беседок: {names} 📸"
+        if media_for_client_message(text, reply):
+            return reply
     service_patch = callbacks.service_type_patch(text)
     service_type = service_patch.get("service_type")
     if service_type:
@@ -43,6 +60,23 @@ def explicit_photo_reply(
             if media_for_client_message(text, reply):
                 return reply
             return f"Фото для {service_title} пока не добавлено в базу."
+        if normalized_service == "gazebo":
+            titles = callbacks.suitable_available_gazebo_titles(form_data) or callbacks.available_gazebo_titles(form_data)
+            if not titles:
+                titles = [
+                    "Беседка №1",
+                    "Беседка №2",
+                    "Беседка №3",
+                    "Беседка №4",
+                    "Беседка №5",
+                    "Беседка №6",
+                    "Беседка №8",
+                    "Крытая беседка",
+                ]
+            names = ", ".join(titles[:8])
+            reply = f"Конечно, сейчас отправлю фото беседок: {names} 📸"
+            if media_for_client_message(text, reply):
+                return reply
     title = form_data.get("service_variant")
     if title:
         reply = f"Конечно, сейчас отправлю фото: {title} 📸"

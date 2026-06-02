@@ -20,8 +20,8 @@
 | Ветка | Чеклист | Последний авто-статус | Что внутри |
 |---|---|---:|---|
 | Standard | [[testing/scenarios/standard]] | OK | Базовая заявка, допы, confirmation, hold/payment, post-booking info. |
-| Context/Live | [[testing/scenarios/context-live]] | OK, 17/17 + live-135/live-1953/live-14:29/live-30.05/live-01.06 regressions | Контекст даты/гостей/услуги, live-135/live-1953/live-14:29/live-30.05/live-01.06, paid/expired hold нюансы, две брони, same-date references, confirmation-no и лимит бани. |
-| Edge | [[testing/scenarios/edge]] | OK, 14/14 | Перебивания анкеты, confirmation, cancel-flow, reschedule-flow, post-booking edge cases. |
+| Context/Live | [[testing/scenarios/context-live]] | OK, 19/19 + live-135/live-1953/live-14:29/live-30.05/live-01.06/live-19:09 regressions | Контекст даты/гостей/услуги, live-135/live-1953/live-14:29/live-30.05/live-01.06/live-19:09, paid/expired hold нюансы, две брони, same-date references, confirmation-no и лимит бани. |
+| Edge | [[testing/scenarios/edge]] | OK, 15/15 | Перебивания анкеты, confirmation, cancel-flow, reschedule-flow, post-booking edge cases. |
 | Stress | [[testing/scenarios/stress]] | OK, 13/13 | Опечатки, сленг, живые отказы, выборочная отмена, паузы, фото. |
 | Broad Regression | [[testing/scenarios/broad-regression]] | OK | Широкие зоны `local_regression_suite.py`: payments, holds, pricing, media, waitlist, handoff. |
 | Run Report | [[testing/scenario-run-2026-05-29]] | OK | Последний сценарный прогон от стандартных до нестандартных случаев. |
@@ -34,8 +34,8 @@
 | `python -m compileall app scripts` | OK | Python-код компилируется без синтаксических ошибок. |
 | `scripts/lint_best2info.py` | OK | Client-facing wiki проверяется на broken links/orphans и цены против `config/services_map.yaml`; факты без точной цены отмечаются как "уточним по факту". |
 | `scripts/local_regression_suite.py` | OK | Основные regression-группы бронирования, оплаты, post-booking, отмены, переноса, цен, допов, фото, waitlist и handoff проходят полностью. |
-| `scripts/dialog_context_suite.py` | OK, 17/17 | Бот держит контекст между сообщениями: дата, гости, выбранный объект, confirmation-state, вторая бронь после оплаты, лимит бани 15 гостей, `нет` на подтверждении и guest-count внутри вопроса о подборе беседки. |
-| `scripts/dialog_edge_suite.py` | OK, 14/14 | Нестандартные перебивания анкеты, confirmation, cancel-flow, reschedule-flow, post-booking и info-вопросы без анкеты не ломают состояние. |
+| `scripts/dialog_context_suite.py` | OK, 19/19 | Бот держит контекст между сообщениями: дата, гости, выбранный объект, confirmation-state, вторая бронь после оплаты, лимит бани 15 гостей, live-19:09 current-booking summary и guest-count внутри вопроса о подборе беседки. |
+| `scripts/dialog_edge_suite.py` | OK, 15/15 | Нестандартные перебивания анкеты, confirmation, confirmation-abort, cancel-flow, reschedule-flow, post-booking и info-вопросы без анкеты не ломают состояние. |
 | `scripts/dialog_stress_suite.py` | OK, 13/13 | Живые разговорные формулировки, опечатки, отказы, переносы, вопросы по базе и выборочные отмены работают. |
 | `scripts/dialog_regression_smoke.py` | OK | Legacy smoke ищет свободный подходящий слот, создаёт stub fake-payment без внешней YooKassa-ссылки и защищает, что номер беседки не превращается в количество гостей. |
 | `scripts/dialog_regression_smoke.py` + `dialog_context_suite.py` + `dialog_edge_suite.py` + `dialog_stress_suite.py` | OK | Сценарный прогон от стандартных до нестандартных случаев прошёл без failed-сценариев. |
@@ -60,6 +60,7 @@
 | `scripts/yclients_sync_status.py --strict` после one-shot sync 2026-06-01 | OK | Первичный strict был stale (`age_seconds=34651`); после `sync_yclients_records.py --once` статус fresh, `records_seen=123`, `records_upserted=123`, `last_error=None`. |
 | Safe operational smoke 2026-06-01 | OK | `test_db.py`, `validate_yclients_map.py`, `yookassa_webhook_hardening_smoke.py`, `yclients_smoke.py` прошли; `yookassa_smoke.py` не запускался, чтобы не создавать реальную внешнюю оплату. |
 | Live-01.06 guest/upsell/post-booking continuation | OK | `compileall`; `dialog_context_suite.py` 17/17; `local_regression_suite.py --group upsell`; `local_regression_suite.py --group post_booking`; `dialog_edge_suite.py` 14/14; `dialog_stress_suite.py` 13/13; `lint_best2info.py` OK. |
+| Live-01.06 19:09 post-booking/photo/confirmation package | OK | `compileall`; `dialog_context_suite.py` 19/19; `dialog_edge_suite.py` 15/15; `local_regression_suite.py --group post_booking --group media --group fresh`; `dialog_stress_suite.py` 13/13; Graphify updated. |
 
 ## Успешные Live/Context Сценарии
 
@@ -94,6 +95,7 @@
 | `время тоже поменяй с 11 до 08` на confirmation | `dialog_context_suite.py` | OK | Correction-flow имеет приоритет и обновляет summary, не попадает в reserved-hold glue. |
 | Опечатка `активыне заявки` | `dialog_context_suite.py` | OK | Бот показывает draft/current booking summary, а не уходит в side reply. |
 | После оплаченной беседки `что еще можно забронировать?` | `dialog_context_suite.py`, `local_regression_suite.py` | OK | Бот отвечает `Кроме вашей беседки...`, не использует шаблон `Помимо бани...` и не меняет текущую бронь. |
+| Оплаченная беседка со stale `form_data=bathhouse` -> `а у меня сейчас есть брони?` -> `а что еще можно забронить?` | `dialog_context_suite.py`, `local_regression_suite.py` | OK | Summary текущих броней и список дополнительных услуг берутся из активных броней БД, а не из устаревшего `form_data` или AI `reply_to_user`. |
 | Баня на 40 гостей | `local_regression_suite.py`, `dialog_context_suite.py` | OK | Бот блокирует оформление бани больше 15 гостей без ручного уточнения и предлагает просторную беседку/альтернативы. |
 | `на 30 число` после июньского контекста | `local_regression_suite.py` | OK | Day-only дата использует свежий месяц из текущей анкеты или `last_unavailable`, не прыгает на 30 мая. |
 | `нет` на финальном подтверждении | `local_regression_suite.py`, `dialog_context_suite.py` | OK | Бот понимает отказ от подтверждения, не меняет допы и спрашивает, что изменить. |
@@ -118,6 +120,7 @@
 | `а вода и лед сколько стоят? если можно, добавьте воду и лед` | `local_regression_suite.py`, `dialog_stress_suite.py` | OK | Бот отвечает по цене и сохраняет выбранные допы. |
 | Телефон + info-вопрос в одном сообщении | `dialog_edge_suite.py` | OK | Телефон сохраняется, info-ответ даётся, следующий шаг не теряется. |
 | `давай откажемся от брони` во время анкеты | `local_regression_suite.py`, `dialog_edge_suite.py`, `dialog_stress_suite.py` | OK | Незавершенный draft очищается, контакт сохраняется, оплаченные брони не трогаются. |
+| `я перехотел, давай нет` на финальном подтверждении | `dialog_context_suite.py`, `dialog_edge_suite.py` | OK | Бот закрывает ещё не созданный черновик, сохраняет контакт и возвращает шаг выбора услуги. |
 | `ну хз, я позже вам напишу` | `dialog_stress_suite.py` | OK | Draft ставится на паузу без повторного вопроса. |
 | `ну че нибудь` на шаге времени | `local_regression_suite.py` | OK | AI не придумывает время/длительность без явного сигнала. |
 | `с 9 утра до 21 ночи, если что можно на дольше остаться?` на шаге времени | `local_regression_suite.py` | OK | Явный период `09:00-21:00` имеет приоритет над открытым вопросом `можно подольше`; длительность остаётся 12 часов, а не 23 часа до 08:00. |
@@ -175,6 +178,7 @@
 | Сценарий | Покрытие | Статус | Что защищает |
 |---|---|---:|---|
 | `кинь фотку 3й беседки` | `dialog_stress_suite.py`, `local_regression_suite.py` | OK | Явный запрос фото распознаёт разговорный номер беседки. |
+| `а беседки покажете?` после активной/оплаченной беседки | `local_regression_suite.py` | OK | Общий запрос фото беседок возвращает текст с конкретными названиями, и media layer отдаёт набор `besedka*.jpg`. |
 | Фото не отправляется слишком рано без даты/гостей | `local_regression_suite.py` | OK | Auto-media не спамит до нормального контекста. |
 | Явный фото-запрос bypass AI | `local_regression_suite.py` | OK | Фото отправляется deterministic route, без смены состояния анкеты. |
 | Сводка двух броней: Беседка №1 + Баня | `local_regression_suite.py` | OK | Auto-media возвращает фото обеих услуг, включая `besedka1.jpg`, по тексту сводки и данным брони. |

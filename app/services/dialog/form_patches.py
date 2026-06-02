@@ -229,6 +229,11 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
     explicit_selection = _has_explicit_upsell_selection(normalized)
     if price_question and not explicit_selection:
         return {}
+    keep_selection = "кроме" in normalized or "остав" in normalized
+    if keep_selection:
+        kept_items = _upsell_items_from_markers(normalized)
+        if kept_items:
+            return {"upsell_items": kept_items}
     cleaned = normalized.strip(" .,!?:;")
     no_extras = (
         "нет",
@@ -254,6 +259,9 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
         "на месте возьмем",
         "на месте возьмём",
         "обойдемся своим",
+        "уберите все",
+        "убрать все",
+        "убери все",
     )
     fuzzy_no_extras = (
         "нет же",
@@ -282,6 +290,9 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
         "на месте возьмём",
         "там на месте",
         "обойдемся своим",
+        "уберите все",
+        "убрать все",
+        "убери все",
     )
     if cleaned in no_extras or (cleaned.startswith("нет ") and "нет ли" not in cleaned) or any(marker in normalized for marker in fuzzy_no_extras):
         return {"upsell_items": ["не нужны"]}
@@ -293,6 +304,13 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
     if _selects_small_mangal_set(normalized):
         return {"upsell_items": ["малый мангальный набор"]}
 
+    items = _upsell_items_from_markers(normalized)
+    if items:
+        return {"upsell_items": items}
+    return {}
+
+
+def _upsell_items_from_markers(normalized: str) -> list[str]:
     items: list[str] = []
     markers = {
         "базовый мангальный набор": ("базовый набор", "мангальный набор", "набор для мангала"),
@@ -301,19 +319,17 @@ def upsell_items_patch(text: str) -> dict[str, list[str]]:
         "решетка/шампуры": ("решет", "шампур"),
         "лед": ("лед", "льда"),
         "посуда": ("посуд", "стакан", "тарел"),
-        "кальян": ("кальян",),
+        "кальян": ("кальян", "кальяна", "кальянчик", "кальянчика", "калик", "калян", "калиан"),
         "вода": ("вода", "воду", "воды", "чай", "напит"),
     }
     for item, item_markers in markers.items():
         if any(_contains_upsell_marker(normalized, marker) for marker in item_markers):
             items.append(item)
-    if items:
-        return {"upsell_items": items}
-    return {}
+    return items
 
 
 def _contains_upsell_marker(normalized: str, marker: str) -> bool:
-    if marker in {"лед", "льда", "уголь", "розжиг", "кальян", "вода", "воду", "воды", "чай"}:
+    if marker in {"лед", "льда", "уголь", "розжиг", "кальян", "кальяна", "кальянчик", "кальянчика", "калик", "калян", "калиан", "вода", "воду", "воды", "чай"}:
         return bool(re.search(rf"(?<![a-zа-яё]){re.escape(marker)}(?![a-zа-яё])", normalized))
     return marker in normalized
 
@@ -459,7 +475,7 @@ def has_upsell_signal(text: str) -> bool:
     normalized = text.lower().replace("ё", "е")
     return any(
         _contains_upsell_marker(normalized, marker)
-        for marker in ("доп", "уголь", "розжиг", "решет", "решот", "шампур", "лед", "посуд", "кальян")
+        for marker in ("доп", "уголь", "розжиг", "решет", "решот", "шампур", "лед", "посуд", "кальян", "кальянчик", "калик", "калян", "калиан")
     )
 
 
@@ -473,8 +489,11 @@ def _has_explicit_upsell_selection(normalized: str) -> bool:
             "запиш",
             "возьм",
             "давайте",
+            "добавьте",
+            "добавь",
             "если можно",
             "полож",
+            "остав",
         )
     )
 

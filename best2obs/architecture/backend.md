@@ -1,5 +1,34 @@
 # Backend
 
+## 2026-06-01 live 19:09 post-booking, media and confirmation guards
+
+- Post-booking service-list replies now resolve the current service from `active_user_bookings()` first. This protects conversations where `form_data.service_type` is stale, for example still says `bathhouse` after the actual paid booking is a gazebo. The user-facing answer becomes `Кроме вашей беседки...`; `form_data` is only a fallback when no active booking identifies a single service.
+- `intent == "current_booking_question"` is DB-first. Once the post-booking classifier says the user is asking about current bookings, `message_handler` returns `_post_booking_summary()` from active bookings/holds and no longer trusts AI `reply_to_user` for the final text. This is the canonical boundary for "what bookings do I have?" questions.
+- Explicit media routing recognizes general gazebo photo requests without a number (`а беседки покажете?`, `фото беседок`, `как выглядят беседки`) and returns a reply naming concrete gazebo variants. `media_for_client_message()` can then select the real `besedka*.jpg` files instead of relying on a generic phrase.
+- On `awaiting_confirmation`, live abort phrases such as `я перехотел, давай нет` are treated as cancellation of an uncreated draft, not as an edit request or paid-booking cancel. The handler reuses `_abort_current_draft()`: slot fields are cleared, contact is preserved, and the next step is `service_type`.
+
+## 2026-06-01 post-booking current-booking fallback
+
+- `app/services/dialog/booking_context.py::active_user_bookings()` remains the shared source for current/future active bookings in post-booking summary, cancel and reschedule flows.
+- The function first asks `bookings_repo.list_future_active_for_user()` and applies `filter_actual_journal_bookings()` against local YCLIENTS/cache state. It now also merges paid bookings from the current conversation when they are local active records in `created_in_yclients` or `journal_missing`.
+- This fallback is intentionally limited to the current conversation and paid local bookings. It prevents a temporary stale/missing YCLIENTS-cache row from hiding a paid booking from the client, while still excluding cancelled records and unpaid drafts/holds.
+- After a successful cancellation, `post_booking_flow.plain_ack_after_closed_booking()` handles `ок` and `окей` deterministically, so the bot does not ask AI to answer a closed paid conversation and does not say the cancelled booking is still fixed.
+
+## 2026-06-01 state/text consistency hardening
+
+- `message_handler.handle_incoming()` now runs a semantic preflight AI pass for active client dialogs before deterministic branches. The result is reused by the later main AI branch, so active form, upsell, confirmation side-question, cancel-flow and post-booking texts all get one semantic `AIResponse` understanding layer. If the provider is unavailable, the path logs `system_logs.event_type='ai_semantic_degraded'` and continues through the existing safe fallback/deterministic behavior.
+- `message_handler._state_text_consistency_reply()` is a narrow canonical-state guard before the final assistant commit. It rebuilds replies from canonical state when text claims `кальян` was added without `form_data.upsell_items=["кальян"]`, or when a confirmation summary says `Допы: не нужны` while state has a different addon list. Rebuilds are logged as `state_text_consistency_rebuilt`.
+- `form_patches.upsell_items_patch()` recognizes more live hookah phrasing and keep/remove patterns: `кальянчик`, `кальяна`, `калик один`, `ничего кроме кальяна`, `уберите все`, `уберите все, кальян оставьте`. Contextual `добавьте` after an upsell prompt is treated as an accept of the offered item set.
+- Cancel-flow keeps refund side effects behind successful YCLIENTS deletion and local cancellation. Refund eligibility is `>= 7` calendar days; only paid refundable bookings produce `refund_required`, including partial multi-booking cancels. `payment_status_runner.notify_admin_about_refund_requests()` drains all pending refund logs in batches and marks each `admin_notified_at`.
+- `scripts/live_db_hygiene_audit.py` is a read-only operational audit for regression aftermath: orphan active `bot_booking` intervals, refundable paid/cancelled bookings without refund logs, paid payments without client notification marker, regression waitlist leftovers, and unnotified refund logs.
+
+## 2026-06-01 addon aliases and refundable cancel admin events
+
+- `form_patches.upsell_items_patch()` treats common spoken aliases for hookah (`калик`, `калян`, `калиан`) as the canonical addon `кальян`. This keeps addon state deterministic even when AI wording says "добавлен"; the form state, confirmation summary and later booking/YCLIENTS comment all read from `upsell_items`.
+- Cancel-flow now has a backend event boundary for refundable paid cancellations. If an already paid booking is cancelled and `advance_refund_allowed()` is true, the flow calls a callback that writes `system_logs.event_type='refund_required'` with booking id, client name, phone, booking summary and payment status.
+- `payment_status_runner` polls these `refund_required` logs alongside other admin tasks, sends the admin chat a direct "Требуется вернуть предоплату клиенту" message, and marks `system_logs.admin_notified_at` after successful delivery. This keeps client-facing cancellation text separate from backoffice refund work.
+- Duplicate refund logs are guarded by `booking_id` in the payload, so repeated cancel handling for the same booking should not spam the admin channel.
+
 ## 2026-06-01 live dialog state guards for guests, addons and post-booking service context
 
 - `message_handler._gazebo_guest_options_shortcut()` handles mixed guest-count + gazebo-selection questions before the generic upsell/form path. If the active draft is a gazebo, no variant is selected yet, and the message contains a guest-count signal such as `нас будет 30 человек`, backend stores `guests_count`, reuses known available variants, returns capacity-filtered gazebo options and moves the state to `service_variant` instead of asking guests again.

@@ -181,6 +181,7 @@
   },
   "active": "b4d6f28c1e41e1d3",
   "lastOpenFiles": [
+    "roadmap/state-text-consistency-hardening-plan.md",
     "roadmap/large-file-decomposition-plan.md",
     "prompts/codex-workflow.md",
     "decisions/2026-05-28-best2info-client-knowledge.md",
@@ -213,7 +214,6 @@
     "Добро пожаловать.md",
     "index.md",
     "architecture/backend.md",
-    "architecture/database.md",
     "daily/regression-suite-2026-05-26.err.log",
     "daily/regression-suite-2026-05-26.out.log",
     "prompts",
