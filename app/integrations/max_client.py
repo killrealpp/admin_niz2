@@ -6,7 +6,7 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 import time
 from typing import Any
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import httpx
 
@@ -385,13 +385,55 @@ def _attachment_payload_from_upload(
     upload_result: dict[str, Any],
 ) -> dict[str, Any]:
     result_data = _payload_dict(upload_result)
+    result_payload = _attachment_payload_from_response(result_data)
+    if result_payload is not None:
+        return result_payload
+
     if result_data.get("token"):
         return dict(result_data)
+
     info_data = _payload_dict(upload_info)
+    info_payload = _attachment_payload_from_response(info_data)
+    if info_payload is not None:
+        return info_payload
+
     token = info_data.get("token")
     if token:
         return {"token": token}
+
+    upload_url_token = _upload_token_from_payload(info_data)
+    if upload_url_token:
+        return {"token": upload_url_token}
+
     raise MaxApiError("MAX upload did not return attachment token")
+
+
+def _attachment_payload_from_response(data: dict[str, Any]) -> dict[str, Any] | None:
+    if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("photos"), dict):
+        return dict(data)
+    if data.get("token"):
+        return dict(data)
+    for value in data.values():
+        if isinstance(value, dict):
+            nested = _attachment_payload_from_response(value)
+            if nested is not None:
+                return nested
+    return None
+
+
+def _upload_token_from_payload(data: dict[str, Any]) -> str | None:
+    url = str(data.get("url") or data.get("upload_url") or "").strip()
+    if not url:
+        return None
+    parsed = urlparse(url)
+    query = parse_qs(parsed.query)
+    for key in ("token", "attachment_token", "upload_token"):
+        values = query.get(key)
+        if values and str(values[0]).strip():
+            return str(values[0]).strip()
+    return None
 
 
 __all__ = [

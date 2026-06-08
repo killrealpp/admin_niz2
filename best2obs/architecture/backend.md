@@ -6,6 +6,8 @@
 - The processor now has an explicit `await_related_media` option for short-lived event loops. Production MAX webhook uses it because `process_max_webhook_event()` is a sync worker hook that calls `asyncio.run(process_max_update(...))`; without awaiting related media, the temporary loop closes and cancels the background media task before photos are uploaded/sent.
 - This does not slow down the public MAX webhook HTTP response, because `app/bot/max_webhook_runner.py` accepts/deduplicates the request, queues the event and returns `200` before the worker calls `process_max_webhook_event()`.
 - MAX outbound text is sanitized at `MaxChannelClient.send_text()` to keep accidental Telegram-specific wording out of client-facing MAX replies. The shared knowledge prompt is also channel-neutral for response formatting.
+- MAX image upload payloads can be `{"photos": ...}` instead of `{"token": ...}`. `MaxApiClient.upload_file()` treats this as a valid attachment payload and preserves it for `MaxChannelClient.send_media()`. Nested token payloads and token-in-upload-URL fallbacks are also accepted.
+- Bot identity questions are deterministic in `dialog/info_flow.py`: the assistant name is "Любовь" and simple name questions do not go to the LLM.
 
 ## 2026-06-07 runtime ownership and MAX webhook branch
 

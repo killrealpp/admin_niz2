@@ -154,6 +154,29 @@ def assert_api_upload_file() -> None:
     assert "data" in upload_request["kwargs"]["files"]
 
 
+def assert_api_upload_file_accepts_photos_payload() -> None:
+    upload_url = "https://upload.max.test/upload"
+    fake = FakeHttpClient(
+        [
+            FakeResponse(200, {"url": upload_url}),
+            FakeResponse(200, {"photos": {"photo.jpg": {"token": "photo-token"}}}),
+        ]
+    )
+    client = MaxApiClient(
+        token=TOKEN,
+        base_url=BASE_URL,
+        http_trust_env=False,
+        client_factory=lambda **_kwargs: fake,
+        sleep=lambda _seconds: None,
+    )
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        image_path = Path(tmp_dir) / "photo.jpg"
+        image_path.write_bytes(b"fake-image")
+        payload = client.upload_file(image_path, upload_type="image")
+
+    assert payload == {"photos": {"photo.jpg": {"token": "photo-token"}}}
+
+
 async def assert_channel_media_upload_and_retry() -> None:
     with tempfile.TemporaryDirectory() as tmp_dir:
         image_path = Path(tmp_dir) / "photo.jpg"
@@ -353,6 +376,7 @@ def restore(patches: list[tuple[Any, str, Any]]) -> None:
 
 async def main() -> None:
     assert_api_upload_file()
+    assert_api_upload_file_accepts_photos_payload()
     await assert_channel_media_upload_and_retry()
     await assert_payment_link_button()
     await assert_media_failure_fallback_and_log()

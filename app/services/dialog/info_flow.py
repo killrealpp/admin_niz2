@@ -236,6 +236,16 @@ def deterministic_info_reply(
 ) -> str | None:
     normalized = text.lower().replace("ё", "е")
     next_key, question = callbacks.next_question(form_data)
+    if _asks_bot_name(normalized):
+        reply = "Меня зовут Любовь, я помощник по бронированию 😊"
+        if (
+            append_next_question
+            and question
+            and callbacks.should_append_next_question_after_info(form_data, next_key)
+            and not callbacks.reply_already_asks(reply, next_key, question)
+        ):
+            reply = f"{reply}\n\nПродолжим оформление: {question}"
+        return reply
     bathhouse_complaint = bathhouse_separate_booking_complaint_reply(text, form_data)
     if bathhouse_complaint:
         reply = bathhouse_complaint
@@ -353,6 +363,15 @@ def deterministic_info_reply(
     ):
         reply = f"{reply}\n\n{question}"
     return reply
+
+
+def _asks_bot_name(normalized: str) -> bool:
+    if not any(
+        marker in normalized
+        for marker in ("как тебя зовут", "как вас зовут", "твое имя", "твоё имя", "как звать")
+    ):
+        return False
+    return not any(marker in normalized for marker in ("меня зовут", "мое имя", "моё имя", "запиши", "бронь"))
 
 
 def active_booking_reference_info_reply(

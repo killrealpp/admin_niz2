@@ -275,9 +275,9 @@
     "semantic_hash": "175672eebc783ce4a0599170c45ff187"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\info_flow.py": {
-    "mtime": 1780471297.2728992,
-    "ast_hash": "ac7fcd096fd4d49be1fdf2298f245f0c",
-    "semantic_hash": "ac7fcd096fd4d49be1fdf2298f245f0c"
+    "mtime": 1780904733.4424293,
+    "ast_hash": "7189b919bc320140499427fa9ba5a01a",
+    "semantic_hash": "7189b919bc320140499427fa9ba5a01a"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\media_flow.py": {
     "mtime": 1780331408.8370032,
@@ -600,9 +600,9 @@
     "semantic_hash": "b9772d97bbb1d0d9a1d5980d920cd951"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\integrations\\max_client.py": {
-    "mtime": 1780669111.2299166,
-    "ast_hash": "1794765fed64d41c5b423d226091123a",
-    "semantic_hash": "1794765fed64d41c5b423d226091123a"
+    "mtime": 1780904762.272492,
+    "ast_hash": "04c66c3a2ddd6f1146a15487c5896acc",
+    "semantic_hash": "04c66c3a2ddd6f1146a15487c5896acc"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\max_api_client_smoke.py": {
     "mtime": 1780669446.6886973,
@@ -675,9 +675,9 @@
     "semantic_hash": "cd465d2e561515c6c271507cdef920c2"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\max_media_buttons_smoke.py": {
-    "mtime": 1780903424.4007387,
-    "ast_hash": "e2fb28c8d8e44e84534cd8af3d029687",
-    "semantic_hash": "e2fb28c8d8e44e84534cd8af3d029687"
+    "mtime": 1780904785.9974973,
+    "ast_hash": "401224262a81652666503ea856139194",
+    "semantic_hash": "401224262a81652666503ea856139194"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\register_max_webhook.py": {
     "mtime": 1780575193.5484662,
@@ -708,5 +708,10 @@
     "mtime": 1780855233.910645,
     "ast_hash": "e8251b6c3fa1352557d84c2948b5df41",
     "semantic_hash": "e8251b6c3fa1352557d84c2948b5df41"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\dialog_identity_smoke.py": {
+    "mtime": 1780904815.5236628,
+    "ast_hash": "bf19c4098966c3438154070b27a9fa0b",
+    "semantic_hash": "bf19c4098966c3438154070b27a9fa0b"
   }
 }
