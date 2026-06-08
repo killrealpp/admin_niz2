@@ -43,6 +43,14 @@ DNS is already propagated: `max.killrealp2.ru` resolves to `45.147.179.48`.
 - SSH to `45.147.179.48` on `22` and `2222` reaches TCP, but maintenance login is not usable from Codex. Attempts either time out during SSH banner exchange or return `Permission denied (publickey,password)` for the local `best2_deploy_ed25519` key.
 - Impact: commit `6062725` is pushed to GitHub, but `/opt/admin_niz2` could not be pulled/restarted by Codex. The server likely still runs the previous deployed code until an operator restores key auth or runs the deploy commands manually.
 
+2026-06-08 webhook-path recheck after local full audit:
+
+- DNS is correct: `max.killrealp2.ru` resolves to `45.147.179.48`; TCP `80` and `443` are reachable.
+- `http://max.killrealp2.ru/webhooks/max` returns `301` to HTTPS.
+- `https://max.killrealp2.ru/` returns nginx `404` quickly, so the HTTPS listener itself is alive.
+- Exact `https://max.killrealp2.ru/webhooks/max` times out from the workstation, while `https://max.killrealp2.ru/webhooks/max/` reaches the app and returns JSON `{"ok": false, "error": "not_found"}`. Since the active MAX subscription URL is the exact no-slash path, this is a production delivery risk until checked on the server.
+- `https://max.killrealp2.ru/webhooks/yookassa` returns nginx `404`, so the YooKassa webhook path is not proxied to the internal runner yet.
+
 ## Impact
 
 The original blocker prevented Codex from uploading/configuring the app. It was resolved by using temporary key-based SSH on port `2222` and by configuring the existing cloned project under `/opt/admin_niz2`.
@@ -64,3 +72,4 @@ Remaining cleanup:
 2. confirm password SSH is disabled as intended after no more emergency access is needed;
 3. keep `fail2ban` active;
 4. later harden `best2.service` graceful shutdown so a normal `systemctl restart` does not log `Client channel stopped unexpectedly: telegram`.
+5. check exact nginx locations for `/webhooks/max` and `/webhooks/yookassa`; expected server-local probes are `curl -i http://127.0.0.1:8089/webhooks/max` -> `200 service=max-webhook` and `curl -i http://127.0.0.1:8088/webhooks/yookassa` -> `200 service=yookassa-webhook`.

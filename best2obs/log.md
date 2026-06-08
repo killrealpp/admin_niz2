@@ -1,5 +1,13 @@
 # Project Log
 
+## 2026-06-08 - Full local recheck after live MAX payment/routing report
+
+- Added a permanent regression case to `scripts/local_regression_suite.py`: active gazebo hold + failed YooKassa payment + `current_step='awaiting_new_date'` + user text `давай еще баню забронируем на 14 июня`. The fake AI deliberately returns no useful patch, so the backend must reset stale gazebo state by deterministic routing.
+- The new case is green: the bot starts a fresh bathhouse form, preserves only contact/name, clears gazebo `service_variant`/`last_unavailable`, keeps `date=2026-06-14`, and asks for a bathhouse time/period without mentioning gazebo.
+- Broad verification passed locally: `compileall app scripts`, `dialog_contextual_photo_smoke.py`, `max_media_buttons_smoke.py`, `max_outbound_text_smoke.py`, `max_webhook_runner_smoke.py`, `yookassa_webhook_hardening_smoke.py`, `local_regression_suite.py --group fresh --group payments --group post_booking --group media --group services`, `db_status.py`, `telegram_status.py`, `max_status.py`, `yclients_sync_status.py --strict`, `live_health_report.py`, and `live_db_hygiene_audit.py --limit 20`.
+- Live DB health is currently `status=ok`, YCLIENTS is fresh, Telegram has empty webhook/pending `0`, and MAX has one active subscription for `message_created`/`bot_started`.
+- Remaining blockers are operational: local `yookassa_status.py` still times out during SSL handshake to YooKassa from the workstation, the live payment row already showed YooKassa `401 invalid_credentials`, and the public server path has nginx/webhook issues (`https://max.killrealp2.ru/webhooks/max` exact path times out; `/webhooks/max/` returns app JSON `not_found`; `/webhooks/yookassa` returns nginx `404`). Details: [[bugs/2026-06-08-live-bathhouse-new-booking-and-yookassa-payment]], [[bugs/2026-06-08-yookassa-payment-enable-blockers]], [[bugs/2026-06-08-server-ssh-https-blocker]].
+
 ## 2026-06-08 - Live MAX payment and wrong-service routing diagnostics
 
 - Local `.env` was updated for the intended YooKassa mode: `PREPAYMENT_MODE=percent`, `PREPAYMENT_PERCENT=50`, non-empty `YOOKASSA_WEBHOOK_SECRET`, and `YOOKASSA_WEBHOOK_URL=https://max.killrealp2.ru/webhooks/yookassa?...`. The server `/opt/admin_niz2/.env` still must be updated separately by the operator.

@@ -2,14 +2,16 @@
 
 ## Status
 
-Open for production deployment. Code safety helpers were added locally; live payment enablement was not applied.
+Open for production deployment. Code safety helpers are local/committed, but live payment enablement is still blocked by credentials/connectivity and server proxy setup.
 
 ## Findings
 
 - Payment code already supports YooKassa payment links through `create_payment_link_for_holds()` after booking confirmation.
 - The current production MAX launch had deliberately disabled real YooKassa runtime actions: `PAYMENT_PROVIDER=disabled`, payment status sync disabled and YooKassa webhook disabled.
-- Local `.env` observed during safe checks is not production-payment-ready: `PREPAYMENT_MODE=fixed`, `PREPAYMENT_AMOUNT_RUB=1`, `YOOKASSA_WEBHOOK_SECRET` empty and `YOOKASSA_WEBHOOK_URL` points to an unrelated YooKassa/YCLIENTS URL instead of the bot webhook path.
-- Read-only `scripts/yookassa_status.py` attempted `GET /webhooks` and hit an SSL handshake timeout. This did not create a payment and did not register a webhook, but it is a launch blocker until the server can reach YooKassa reliably.
+- Local `.env` was updated to the intended payment mode (`PREPAYMENT_MODE=percent`, `PREPAYMENT_PERCENT=50`, non-empty webhook secret, bot webhook URL), but server `/opt/admin_niz2/.env` must be updated separately by the operator.
+- Live payment creation produced a failed `payments` row with YooKassa `401 invalid_credentials`, so the server `PAYMENT_SHOP_ID` or `PAYMENT_SECRET_KEY` is wrong/invalid for the configured shop.
+- Read-only `scripts/yookassa_status.py` attempted `GET /webhooks` and hit an SSL handshake timeout from the workstation. This did not create a payment and did not register a webhook, but server-side connectivity still needs to be checked.
+- Public `https://max.killrealp2.ru/webhooks/yookassa` currently returns nginx `404`, so nginx does not yet proxy the YooKassa path to the internal webhook runner.
 
 ## Local Fixes
 
@@ -31,4 +33,5 @@ Open for production deployment. Code safety helpers were added locally; live pay
 
 - `scripts/yookassa_webhook_hardening_smoke.py` passed locally.
 - `scripts/register_yookassa_webhook.py --dry-run --url https://max.killrealp2.ru/webhooks/yookassa?secret=placeholder` passed and did not call YooKassa API.
+- `scripts/register_yookassa_webhook.py --dry-run` passes locally with the current redacted URL and does not call YooKassa API.
 - `scripts/local_regression_suite.py --group payments` passed after paid-state sync stabilization.

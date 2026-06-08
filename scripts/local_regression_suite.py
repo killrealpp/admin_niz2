@@ -386,6 +386,110 @@ def _test_new_service_from_waiting_date_resets_old_slot(now: datetime) -> Check:
         message_handler.generate_process_reply = original_generate
 
 
+def _test_new_bath_after_active_gazebo_hold_resets_old_state(now: datetime) -> Check:
+    suffix = "new_bath_after_gazebo_hold"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №4",
+            date=None,
+            time=None,
+            duration=None,
+            guests_count=10,
+            event_format="компания друзей",
+            client_name="Петя",
+            phone=TEST_PHONE,
+            upsell_items=["уголь"],
+            last_unavailable={
+                "service_type": "gazebo",
+                "service_variant": "Беседка №4",
+                "date": "2026-06-14",
+                "time": "12:00",
+                "duration": 4,
+                "guests_count": 10,
+            },
+        ),
+    )
+    actual_now = datetime.now(ZoneInfo(get_settings().app_timezone))
+    with get_connection() as conn:
+        hold = slot_holds_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            service_type="gazebo",
+            yclients_service_id="local_gazebo_4",
+            slot_date=date(2026, 6, 14),
+            slot_time=time(12, 0),
+            duration_minutes=240,
+            expires_at=actual_now + timedelta(minutes=15),
+        )
+        payment = payments_repo.create_pending(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            booking_ids=[],
+            provider="yookassa",
+            amount=Decimal("1.00"),
+            currency="RUB",
+            description="test failed payment",
+            raw_payload={"hold_ids": [hold["id"]], "state": "payment_intent_created"},
+        )
+        payments_repo.mark_failed(
+            conn,
+            payment_id=payment["id"],
+            raw_payload={
+                "hold_ids": [hold["id"]],
+                "state": "provider_create_failed",
+                "error": "invalid_credentials",
+            },
+        )
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="awaiting_new_date",
+            next_step="date",
+            form_data=created["conversation"]["form_data"],
+        )
+
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="booking_request",
+            action="ask_next_question",
+            current_step="date",
+            changed_fields=[],
+            form_data_patch={},
+        )
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    try:
+        reply = _send(suffix, "давай еще баню забронируем на 14 июня", now)
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        reply_lower = reply.lower().replace("ё", "е")
+        ok = (
+            form.get("service_type") == "bathhouse"
+            and form.get("date") == "2026-06-14"
+            and not form.get("service_variant")
+            and not form.get("last_unavailable")
+            and form.get("client_name") == "Петя"
+            and form.get("phone") == TEST_PHONE
+            and state.get("current_step") in {"time", "duration"}
+            and "бесед" not in reply_lower
+        )
+        return Check("new bath after active gazebo hold resets old state", ok, f"{reply} | {form}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+
+
 def _test_plain_new_service_request_resets_old_form(now: datetime) -> Check:
     suffix = "plain_new_service_reset"
     created = _create_reserved_conversation(
@@ -8971,6 +9075,11 @@ REGRESSION_CASES: tuple[RegressionCase, ...] = (
         "fresh",
         "new service while awaiting date resets old slot",
         _test_new_service_from_waiting_date_resets_old_slot,
+    ),
+    RegressionCase(
+        "fresh",
+        "new bath after active gazebo hold resets old state",
+        _test_new_bath_after_active_gazebo_hold_resets_old_state,
     ),
     RegressionCase(
         "fresh",

@@ -1,5 +1,11 @@
 # best2 Project Memory
 
+## 2026-06-08 Full local recheck and remaining production blockers
+
+- The live MAX wrong-service report is now guarded by a deterministic regression: active gazebo hold + failed payment + `давай еще баню забронируем на 14 июня` resets to a fresh bathhouse form, clears stale gazebo fields and asks for bathhouse time. Details: [[bugs/2026-06-08-live-bathhouse-new-booking-and-yookassa-payment]].
+- Local verification is green across compile, MAX/media/webhook smokes, contextual photo smoke, core dialog groups (`fresh`, `payments`, `post_booking`, `media`, `services`), DB/YCLIENTS/TG/MAX health and hygiene.
+- Remaining blockers are production operations, not the local dialog path: YooKassa credentials/connectivity must be fixed on the server, and nginx/webhook paths need server-side recheck because exact `https://max.killrealp2.ru/webhooks/max` currently times out from the workstation while `/webhooks/yookassa` returns 404. Details: [[bugs/2026-06-08-yookassa-payment-enable-blockers]], [[bugs/2026-06-08-server-ssh-https-blocker]].
+
 ## 2026-06-08 Live MAX payment and stale service diagnostics
 
 - Live MAX payment link failure is explained by a real `payments` row with YooKassa `401 invalid_credentials`; server `PAYMENT_SHOP_ID` / `PAYMENT_SECRET_KEY` must be corrected and checked with `scripts/yookassa_status.py`.

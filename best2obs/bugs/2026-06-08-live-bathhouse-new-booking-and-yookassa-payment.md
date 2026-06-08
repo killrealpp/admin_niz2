@@ -2,7 +2,10 @@
 
 ## Status
 
-Open; diagnostics only.
+Partially guarded locally.
+
+- Wrong-service routing has a local deterministic regression guard.
+- YooKassa payment link remains blocked by production credentials/connectivity.
 
 ## User Symptom
 
@@ -34,13 +37,18 @@ The user also reported that the payment link was not sent.
 
 ## Needed Fix
 
-- Add a regression case for: active gazebo hold + failed/no payment + `current_step='awaiting_new_date'` + user says `давай еще баню забронируем на 14 июня`.
-- Expected behavior: start a fresh bathhouse form, preserve contact/name only, clear gazebo `service_variant` and `last_unavailable`, check bathhouse availability for 2026-06-14, and ask for a bathhouse time if needed.
+- Added a regression case for: active gazebo hold + failed/no payment + `current_step='awaiting_new_date'` + user says `давай еще баню забронируем на 14 июня`.
+- Expected behavior is now guarded locally: start a fresh bathhouse form, preserve contact/name only, clear gazebo `service_variant` and `last_unavailable`, keep `date=2026-06-14`, and ask for a bathhouse time if needed.
 - Do not change Telegram/MAX adapters for this bug; fix should be inside shared dialog routing/fresh-start logic.
 - Fix YooKassa separately by correcting server credentials and running read-only `scripts/yookassa_status.py` before any live payment smoke.
 
+## Verification
+
+- `scripts/local_regression_suite.py --case "new bath after active gazebo hold resets old state"` passed with fake AI returning no useful `form_data_patch`.
+- `scripts/local_regression_suite.py --group fresh --group payments --group post_booking --group media --group services` passed.
+- `scripts/live_health_report.py` is `status=ok`; `scripts/live_db_hygiene_audit.py --limit 20` is clean.
+
 ## Safety
 
-- No production code change was made during this diagnostic.
+- No real payment was created by Codex during this diagnostic/fix.
 - No YooKassa webhook registration `--apply` was run.
-- No real payment was created by Codex during this diagnostic.
