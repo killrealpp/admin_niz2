@@ -12,6 +12,7 @@ Fixed locally; production deployment is still blocked by unstable SSH maintenanc
 - After the first local lifecycle fix, live MAX attempted media delivery but sent the fallback: "Фото сейчас не получилось отправить в MAX...".
 - User asked "как тебя зовут"; the bot answered "Бест" even though project knowledge says the assistant is named "Любовь".
 - During a bathhouse draft/confirmation, the user asked which gazebos exist, then asked "покажете их?". The bot treated the message as part of the bathhouse confirmation context and repeated the bathhouse draft summary instead of showing gazebo photos.
+- A follow-up variant "а покажете их?" later fell through to the LLM fallback: "нет фотографий беседок", even though local image files exist.
 
 ## Root Cause
 
@@ -31,7 +32,7 @@ The Telegram mention came from shared dialog/prompt text leaking a Telegram-spec
 
 The "Бест" answer was an LLM drift on a simple identity question; it should be deterministic and should not depend on the model.
 
-The "покажете их?" failure was a context-resolution gap. The media route understood explicit requests like "покажите фото беседок", but not pronoun follow-ups where "их" referred to gazebos from the previous assistant message. On `awaiting_confirmation`, such side questions could fall through to confirmation summary behavior.
+The "покажете их?" / "а покажете их?" failure was a context-resolution gap. The media route understood explicit requests like "покажите фото беседок", but not pronoun follow-ups where "их" referred to gazebos from recent conversation. On `awaiting_confirmation`, such side questions could fall through to confirmation summary behavior or LLM fallback if the recent gazebo cue was not the previous assistant message.
 
 ## Fix
 
@@ -41,12 +42,12 @@ The "покажете их?" failure was a context-resolution gap. The media rou
 - `app/knowledge/runtime.md` now says "client chat" instead of "Telegram" for generic response formatting guidance.
 - `MaxApiClient.upload_file()` now accepts MAX image upload payloads containing `photos`, plus nested token payloads and upload URL token fallbacks.
 - `app/services/dialog/info_flow.py` now answers bot-name questions deterministically as "Любовь" before calling the LLM.
-- `app/services/dialog/info_flow.py` now resolves contextual media follow-ups like "покажете их?" when the recent assistant history mentioned gazebo options, and rewrites them internally to the existing explicit gazebo photo path.
+- `app/services/dialog/info_flow.py` now resolves contextual media follow-ups like "покажете их?" / "а покажете их?" when recent history points to gazebos, including either assistant gazebo-options text or a previous user gazebo question. It rewrites the message internally to the existing explicit gazebo photo path.
 - `app/services/message_handler.py` applies the same contextual media guard before `awaiting_confirmation` side replies, so current bathhouse confirmation state does not swallow a gazebo photo follow-up.
 - `app/prompts/system_prompt.md` and `app/prompts/response_generator.md` are channel-neutral for client-chat formatting.
 - Regression coverage was added to `scripts/max_media_buttons_smoke.py` and `scripts/max_outbound_text_smoke.py`.
 - `scripts/dialog_identity_smoke.py` covers the deterministic "как тебя зовут" answer.
-- `scripts/dialog_contextual_photo_smoke.py` covers the "gazebo list -> покажете их?" follow-up and verifies that related media paths are selected.
+- `scripts/dialog_contextual_photo_smoke.py` covers the "gazebo list -> покажете их?" and "gazebo context -> а покажете их?" follow-ups and verifies that related media paths are selected.
 
 ## Verification
 

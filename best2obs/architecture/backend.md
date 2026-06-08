@@ -9,6 +9,7 @@
 - MAX image upload payloads can be `{"photos": ...}` instead of `{"token": ...}`. `MaxApiClient.upload_file()` treats this as a valid attachment payload and preserves it for `MaxChannelClient.send_media()`. Nested token payloads and token-in-upload-URL fallbacks are also accepted.
 - Bot identity questions are deterministic in `dialog/info_flow.py`: the assistant name is "Любовь" and simple name questions do not go to the LLM.
 - Contextual photo follow-ups are handled before generic info/confirmation fallbacks. `dialog/info_flow.py::contextual_photo_reply()` resolves messages like "покажете их?" to the existing explicit gazebo photo path when recent assistant history listed gazebo options, and `message_handler.py` calls it before `awaiting_confirmation` side replies so a current bathhouse draft does not hide gazebo media requests.
+- Payment-status questions no longer call the external YooKassa sync before answering when the local DB already has a `paid` payment row for the conversation. `message_handler_flow_glue.py` and `post_booking_flow.py` still run sync for pending payments, but local paid state is treated as authoritative enough to answer quickly and avoid transient YooKassa/network timeouts in paid flows.
 
 ## 2026-06-07 runtime ownership and MAX webhook branch
 

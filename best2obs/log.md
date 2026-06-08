@@ -1,5 +1,16 @@
 # Project Log
 
+## 2026-06-08 - MAX contextual photos widened and YooKassa payment enablement prepared locally
+
+- User reported a second live MAX wording: after the gazebo discussion, "а покажете их?" still answered through the LLM fallback ("нет фотографий беседок") instead of deterministic media routing.
+- Widened `contextual_photo_reply()` in `app/services/dialog/info_flow.py`: pronoun photo requests now resolve to gazebo photos when recent history contains either an assistant gazebo-options answer or a user's previous gazebo question. `scripts/dialog_contextual_photo_smoke.py` now covers both "покажете их?" and "а покажете их?", including user-only gazebo history.
+- Prepared YooKassa operations without creating a real payment or registering webhooks: `scripts/register_yookassa_webhook.py` now defaults to dry-run and requires `--apply` for real `POST /webhooks`; `scripts/yookassa_status.py` lists redacted webhook/status data with read-only API calls.
+- Stabilized paid payment replies: `message_handler_flow_glue.py` and `post_booking_flow.py` no longer call external YooKassa sync before answering when the local conversation already has a `paid` payment row. Pending payments still use sync.
+- Safe checks passed: `compileall app scripts`, `dialog_contextual_photo_smoke.py`, `max_media_buttons_smoke.py`, `max_outbound_text_smoke.py`, `yookassa_webhook_hardening_smoke.py`, `register_yookassa_webhook.py --dry-run --url https://max.killrealp2.ru/webhooks/yookassa?secret=placeholder`, `local_regression_suite.py --case "paid booking payment question is deterministic"`, and `local_regression_suite.py --group payments`.
+- Read-only `yookassa_status.py` hit an SSL handshake timeout to YooKassa from the local workstation. No payment was created and no webhook was registered; this remains a production enablement blocker until server-side connectivity is checked.
+- Graphify update was attempted after code changes; it refreshed artifacts but again reported node-count protection (`220` vs `221`) and refused the final overwrite. No force overwrite was used.
+- Production deployment/restart is still pending because current SSH maintenance access is blocked/flaky. Details: [[bugs/2026-06-08-max-webhook-media-background-task]], [[bugs/2026-06-08-yookassa-payment-enable-blockers]], [[bugs/2026-06-08-server-ssh-https-blocker]].
+
 ## 2026-06-08 - MAX contextual gazebo photo follow-up fixed locally
 
 - User reported a live MAX case: after asking which gazebos are available, the follow-up "покажете их?" was treated as part of the current bathhouse draft/confirmation and returned the bathhouse booking summary instead of gazebo photos.

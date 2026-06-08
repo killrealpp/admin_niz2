@@ -387,7 +387,7 @@ def contextual_photo_reply(
         return None
     if "бесед" in normalized:
         return callbacks.explicit_photo_reply(text, form_data)
-    if not _last_assistant_mentioned_gazebo_options(history):
+    if not _recent_history_points_to_gazebos(history):
         return None
     return callbacks.explicit_photo_reply("покажите фото беседок", form_data)
 
@@ -398,15 +398,16 @@ def _looks_like_contextual_photo_request(normalized: str) -> bool:
     return any(marker in normalized for marker in ("их", "эти", "все", "варианты", "фото", "фотк", "картин", "как выгляд"))
 
 
-def _last_assistant_mentioned_gazebo_options(history: list[dict[str, Any]]) -> bool:
+def _recent_history_points_to_gazebos(history: list[dict[str, Any]]) -> bool:
     for item in reversed(history[-8:]):
-        if item.get("sender") == SENDER_USER:
-            continue
-        if item.get("sender") != SENDER_ASSISTANT:
+        sender = item.get("sender")
+        if sender not in {SENDER_ASSISTANT, SENDER_USER}:
             continue
         text = str(item.get("text") or "").lower().replace("ё", "е")
         if "бесед" not in text:
             continue
+        if sender == SENDER_USER:
+            return True
         if any(marker in text for marker in ("№1", "№2", "№3", "№4", "№5", "№6", "№8", "крытая бесед", "вариант")):
             return True
     return False

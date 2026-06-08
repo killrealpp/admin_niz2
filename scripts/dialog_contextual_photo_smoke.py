@@ -70,6 +70,25 @@ def main() -> None:
         "besedka1.jpg",
         "besedka2.jpg",
     ]
+    reply_with_particle = contextual_photo_reply(
+        "а покажете их?",
+        {"service_type": "bathhouse"},
+        history,
+        callbacks=_callbacks([]),
+    )
+    assert reply_with_particle is not None
+    assert "фото беседок" in reply_with_particle
+
+    user_only_history = [{"sender": SENDER_USER, "text": "какие беседки у вас есть?"}]
+    user_only_reply = contextual_photo_reply(
+        "а покажете их?",
+        {"service_type": "bathhouse"},
+        user_only_history,
+        callbacks=_callbacks([]),
+    )
+    assert user_only_reply is not None
+    assert "фото беседок" in user_only_reply
+
     confirmation_reply = _awaiting_confirmation_side_reply(
         text="покажете их?",
         form_data={"service_type": "bathhouse"},

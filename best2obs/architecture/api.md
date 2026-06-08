@@ -81,6 +81,13 @@
 - Это снижает риск мусорных/слишком больших запросов, но наружный production всё равно должен идти через reverse proxy + HTTPS + firewall/body limits на уровне сервера.
 - Smoke: `python scripts/yookassa_webhook_hardening_smoke.py`.
 
+## 2026-06-08 YooKassa registration/status safety
+
+- `scripts/register_yookassa_webhook.py` is now dry-run by default, matching the MAX registration safety pattern. It validates a public HTTPS URL with path `/webhooks/yookassa`, prints a redacted plan and only calls YooKassa `POST /webhooks` when `--apply` is explicitly passed.
+- Default registration events are `payment.succeeded` and `payment.canceled`. If the registered URL carries `?secret=...`, script output redacts the query.
+- `scripts/yookassa_status.py` is the read-only status helper for payment launch checks. It prints safe payment config flags, prepayment mode/amount/percent, webhook flags and a redacted list of configured YooKassa webhooks from `GET /webhooks`.
+- No real payment or webhook registration was performed while adding these helpers.
+
 ## Telegram
 
 Библиотека: `aiogram`.

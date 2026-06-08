@@ -54,15 +54,28 @@ def payment_status_reply(
     create_missing_yclients_records: Callable[[Any], Any],
     log_exception: Callable[[str, Any], None],
 ) -> tuple[str, str]:
+    payments_before_sync = payments_repo.list_for_conversation(
+        conn,
+        conversation_id=conversation["id"],
+    )
+    has_local_paid_payment = any(
+        payment.get("status") == "paid"
+        for payment in payments_before_sync
+    )
     try:
-        sync_payment_statuses(conn)
+        if not has_local_paid_payment:
+            sync_payment_statuses(conn)
         create_missing_yclients_records(conn)
     except Exception:
         log_exception("Payment status sync failed conversation_id=%s", conversation["id"])
 
-    payments = payments_repo.list_for_conversation(
-        conn,
-        conversation_id=conversation["id"],
+    payments = (
+        payments_before_sync
+        if has_local_paid_payment
+        else payments_repo.list_for_conversation(
+            conn,
+            conversation_id=conversation["id"],
+        )
     )
     if not payments:
         return (

@@ -1254,9 +1254,12 @@ def _impl_handle_post_booking_message(
     try:
         payments = payments_repo.list_for_conversation(conn, conversation_id=conversation["id"])
         if payments:
-            sync_payment_statuses(conn)
+            has_local_paid_payment = any(payment.get("status") == "paid" for payment in payments)
+            if not has_local_paid_payment:
+                sync_payment_statuses(conn)
             create_missing_yclients_records(conn)
-            payments = payments_repo.list_for_conversation(conn, conversation_id=conversation["id"])
+            if not has_local_paid_payment:
+                payments = payments_repo.list_for_conversation(conn, conversation_id=conversation["id"])
         if any(payment.get("status") == "paid" for payment in payments):
             conversation = {**conversation, "status": "payment_paid"}
     except Exception:

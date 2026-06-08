@@ -355,6 +355,7 @@ set -a
 source /etc/best2/best2.env
 set +a
 ./.venv/bin/python scripts/yookassa_webhook_hardening_smoke.py
+./.venv/bin/python scripts/yookassa_status.py
 ```
 
 Reverse proxy должен давать public HTTPS endpoint:
@@ -373,10 +374,28 @@ OK для GET: HTTP 200 и JSON с `service: yookassa-webhook`.
 - если proxy не добавляет `X-Webhook-Secret`, в registered URL должен быть query `?secret=...` вне git;
 - локальный порт `8088` не открыт наружу напрямую.
 
-Зарегистрировать webhook только на production-сервере после smoke:
+Сначала всегда dry-run:
 
 ```bash
-./.venv/bin/python scripts/register_yookassa_webhook.py
+./.venv/bin/python scripts/register_yookassa_webhook.py --dry-run
+```
+
+Dry-run должен показать:
+
+- `calls_yookassa_api=false`;
+- `method=POST`;
+- `path=/webhooks`;
+- `events=["payment.succeeded", "payment.canceled"]`;
+- `payment_configured=true`;
+- `webhook_enabled=true`;
+- `webhook_secret_configured=true`;
+- `url` без раскрытия query-secret.
+
+Реальную регистрацию выполнять только на production-сервере после отдельного явного подтверждения:
+
+```bash
+./.venv/bin/python scripts/register_yookassa_webhook.py --apply
+./.venv/bin/python scripts/yookassa_status.py
 ```
 
 OK: зарегистрированы события `payment.succeeded` и `payment.canceled`, `journalctl -u best2` без webhook startup/processing errors.
