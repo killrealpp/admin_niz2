@@ -38,6 +38,7 @@ DNS is already propagated: `max.killrealp2.ru` resolves to `45.147.179.48`.
 2026-06-08 deploy-pull recheck after commit `6062725`:
 
 - Public MAX webhook health from the workstation is green: `https://max.killrealp2.ru/webhooks/max` returns HTTP 200 with `service=max-webhook`.
+- One repeat GET timed out, then the next GET returned HTTP 200; this should be treated as an intermittent public health symptom until server logs/nginx upstream timing can be inspected over SSH. `HEAD` returns the known `501 Unsupported method ('HEAD')`.
 - `max_status.py` shows one active subscription for `https://max.killrealp2.ru/webhooks/max` with update types `message_created` and `bot_started`; `telegram_status.py` is OK with an empty Telegram webhook and pending updates `0`.
 - SSH to `45.147.179.48` on `22` and `2222` reaches TCP, but maintenance login is not usable from Codex. Attempts either time out during SSH banner exchange or return `Permission denied (publickey,password)` for the local `best2_deploy_ed25519` key.
 - Impact: commit `6062725` is pushed to GitHub, but `/opt/admin_niz2` could not be pulled/restarted by Codex. The server likely still runs the previous deployed code until an operator restores key auth or runs the deploy commands manually.
