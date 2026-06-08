@@ -169,6 +169,7 @@ from app.services.dialog.info_flow import (
     active_booking_reference_info_reply as _active_booking_reference_info_reply_impl,
     answer_info_during_form as _answer_info_during_form_impl,
     append_current_service_question as _append_current_service_question_impl,
+    contextual_photo_reply as _contextual_photo_reply_impl,
     deterministic_info_reply as _deterministic_info_reply_impl,
     looks_like_info_question as _looks_like_info_question_impl,
     reply_already_asks as _reply_already_asks_impl,
@@ -1856,6 +1857,14 @@ def _awaiting_confirmation_side_reply(
     form_data: dict[str, Any],
     history: list[dict[str, Any]],
 ) -> str:
+    contextual_photo = _contextual_photo_reply_impl(
+        text,
+        form_data,
+        history,
+        callbacks=_info_flow_callbacks(),
+    )
+    if contextual_photo:
+        return contextual_photo
     return _awaiting_confirmation_side_reply_impl(
         text=text,
         form_data=form_data,

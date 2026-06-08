@@ -8,6 +8,7 @@
 - MAX outbound text is sanitized at `MaxChannelClient.send_text()` to keep accidental Telegram-specific wording out of client-facing MAX replies. The shared knowledge prompt is also channel-neutral for response formatting.
 - MAX image upload payloads can be `{"photos": ...}` instead of `{"token": ...}`. `MaxApiClient.upload_file()` treats this as a valid attachment payload and preserves it for `MaxChannelClient.send_media()`. Nested token payloads and token-in-upload-URL fallbacks are also accepted.
 - Bot identity questions are deterministic in `dialog/info_flow.py`: the assistant name is "Любовь" and simple name questions do not go to the LLM.
+- Contextual photo follow-ups are handled before generic info/confirmation fallbacks. `dialog/info_flow.py::contextual_photo_reply()` resolves messages like "покажете их?" to the existing explicit gazebo photo path when recent assistant history listed gazebo options, and `message_handler.py` calls it before `awaiting_confirmation` side replies so a current bathhouse draft does not hide gazebo media requests.
 
 ## 2026-06-07 runtime ownership and MAX webhook branch
 

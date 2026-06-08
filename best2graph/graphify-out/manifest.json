@@ -275,9 +275,9 @@
     "semantic_hash": "175672eebc783ce4a0599170c45ff187"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\info_flow.py": {
-    "mtime": 1780904733.4424293,
-    "ast_hash": "7189b919bc320140499427fa9ba5a01a",
-    "semantic_hash": "7189b919bc320140499427fa9ba5a01a"
+    "mtime": 1780905917.2930362,
+    "ast_hash": "8d2b406f702265ad8c71c309d9090463",
+    "semantic_hash": "8d2b406f702265ad8c71c309d9090463"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\media_flow.py": {
     "mtime": 1780331408.8370032,
@@ -350,9 +350,9 @@
     "semantic_hash": "780dec2a4d7bcb875cd4ee3f72f9539f"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_handler.py": {
-    "mtime": 1780559778.686094,
-    "ast_hash": "653a8e81eb0abc752817e2b643fb1809",
-    "semantic_hash": "653a8e81eb0abc752817e2b643fb1809"
+    "mtime": 1780905975.873095,
+    "ast_hash": "4ae58f83a20e9b73cd28e6b00ce50886",
+    "semantic_hash": "4ae58f83a20e9b73cd28e6b00ce50886"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\message_retention_runner.py": {
     "mtime": 1779435384.5563242,
@@ -713,5 +713,10 @@
     "mtime": 1780904815.5236628,
     "ast_hash": "bf19c4098966c3438154070b27a9fa0b",
     "semantic_hash": "bf19c4098966c3438154070b27a9fa0b"
+  },
+  "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\dialog_contextual_photo_smoke.py": {
+    "mtime": 1780906423.9668138,
+    "ast_hash": "c803b6184e0077814b7b4acb2871a6dc",
+    "semantic_hash": "c803b6184e0077814b7b4acb2871a6dc"
   }
 }

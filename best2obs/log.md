@@ -1,5 +1,15 @@
 # Project Log
 
+## 2026-06-08 - MAX contextual gazebo photo follow-up fixed locally
+
+- User reported a live MAX case: after asking which gazebos are available, the follow-up "покажете их?" was treated as part of the current bathhouse draft/confirmation and returned the bathhouse booking summary instead of gazebo photos.
+- Fixed locally by adding `contextual_photo_reply()` in `app/services/dialog/info_flow.py`. It detects contextual photo requests like "покажете их?" and, when the recent assistant history listed gazebo options, routes the message through the existing explicit gazebo photo path.
+- Wired the same guard before `awaiting_confirmation` side replies in `app/services/message_handler.py`, so an active bathhouse confirmation state does not swallow a gazebo photo follow-up.
+- Added `scripts/dialog_contextual_photo_smoke.py`; it covers the exact "gazebo list -> покажете их?" scenario, verifies the `awaiting_confirmation` wrapper path, and checks that gazebo media paths are selected.
+- Local verification passed through the project venv: `compileall app scripts`, `dialog_contextual_photo_smoke.py`, `dialog_identity_smoke.py`, `max_media_buttons_smoke.py`, `max_outbound_text_smoke.py`, and `local_regression_suite.py --group media`.
+- Graphify update was attempted after the code change; it refreshed graph artifacts but again reported node-count protection (`311` vs `312`) and refused the final overwrite. No force overwrite was used.
+- Production deployment/restart is still pending because the current SSH maintenance path to the server is blocked/flaky. Details: [[bugs/2026-06-08-max-webhook-media-background-task]], [[bugs/2026-06-08-server-ssh-https-blocker]].
+
 ## 2026-06-08 - MAX webhook photo delivery bug fixed locally
 
 - Reproduced the user's MAX symptom from code flow: the bot could send "сейчас отправлю фото" text from the shared dialog, but production MAX webhook processing used `asyncio.run()` while related media was scheduled as a background task. The temporary event loop closed before the media task could upload/send photos.

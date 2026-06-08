@@ -5,7 +5,8 @@
 - MAX live photo issue root causes are found and fixed locally: production webhook processing closed a temporary `asyncio.run()` loop before background related-media tasks could upload/send photos, and MAX image upload can return a valid `photos` payload without a top-level `token`.
 - Local fix: MAX webhook path now waits for related media in the worker queue, MAX upload parsing accepts `photos` payloads, MAX outbound text sanitizes accidental Telegram mentions, and shared prompts are channel-neutral for client-chat formatting.
 - The live "как тебя зовут" drift is fixed locally: name questions now answer deterministically as "Любовь" before LLM fallback.
-- Checks are green locally: compileall, MAX media/outbound/inbound/webhook smokes, `dialog_identity_smoke.py`, channel contract, media regression, read-only MAX status and safe live MAX upload-only check for `banya.jpg`.
+- The live "покажете их?" after gazebo options drift is fixed locally: contextual photo follow-ups now resolve to gazebo photos even during a bathhouse confirmation state.
+- Checks are green locally: compileall, MAX media/outbound/inbound/webhook smokes, `dialog_identity_smoke.py`, `dialog_contextual_photo_smoke.py`, channel contract, media regression, read-only MAX status and safe live MAX upload-only check for `banya.jpg`.
 - Production still needs deployment/restart under `/opt/admin_niz2`, but current SSH maintenance access is blocked/flaky (`2222` banner timeout/key auth denial, `22` banner timeout).
 - Details: [[log]], [[bugs/2026-06-08-max-webhook-media-background-task]], [[bugs/2026-06-08-server-ssh-https-blocker]].
 

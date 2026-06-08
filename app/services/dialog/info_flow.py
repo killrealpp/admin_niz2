@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
+from app.core.constants import SENDER_ASSISTANT, SENDER_USER
 from app.services.dialog.bathhouse_flow import (
     bathhouse_active_reply_mentions_separate_booking,
     bathhouse_alcohol_reply,
@@ -374,6 +375,43 @@ def _asks_bot_name(normalized: str) -> bool:
     return not any(marker in normalized for marker in ("меня зовут", "мое имя", "моё имя", "запиши", "бронь"))
 
 
+def contextual_photo_reply(
+    text: str,
+    form_data: dict[str, Any],
+    history: list[dict[str, Any]],
+    *,
+    callbacks: InfoFlowCallbacks,
+) -> str | None:
+    normalized = text.lower().replace("ё", "е")
+    if not _looks_like_contextual_photo_request(normalized):
+        return None
+    if "бесед" in normalized:
+        return callbacks.explicit_photo_reply(text, form_data)
+    if not _last_assistant_mentioned_gazebo_options(history):
+        return None
+    return callbacks.explicit_photo_reply("покажите фото беседок", form_data)
+
+
+def _looks_like_contextual_photo_request(normalized: str) -> bool:
+    if not any(marker in normalized for marker in ("покаж", "показать", "скинь", "пришли", "отправь")):
+        return False
+    return any(marker in normalized for marker in ("их", "эти", "все", "варианты", "фото", "фотк", "картин", "как выгляд"))
+
+
+def _last_assistant_mentioned_gazebo_options(history: list[dict[str, Any]]) -> bool:
+    for item in reversed(history[-8:]):
+        if item.get("sender") == SENDER_USER:
+            continue
+        if item.get("sender") != SENDER_ASSISTANT:
+            continue
+        text = str(item.get("text") or "").lower().replace("ё", "е")
+        if "бесед" not in text:
+            continue
+        if any(marker in text for marker in ("№1", "№2", "№3", "№4", "№5", "№6", "№8", "крытая бесед", "вариант")):
+            return True
+    return False
+
+
 def active_booking_reference_info_reply(
     conn,
     conversation: dict[str, Any],
@@ -443,6 +481,9 @@ def answer_info_during_form(
 ) -> tuple[str, str | None]:
     next_key, question = callbacks.next_question(form_data)
     ai_reply = callbacks.clean_reply((getattr(ai_result, "reply_to_user", "") or "").strip())
+    contextual_photo = contextual_photo_reply(text, form_data, history, callbacks=callbacks)
+    if contextual_photo:
+        return contextual_photo, next_key
     photo_reply = callbacks.explicit_photo_reply(text, form_data)
     if photo_reply:
         return photo_reply, next_key
