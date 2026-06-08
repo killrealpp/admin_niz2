@@ -11,6 +11,7 @@ Open for production deployment. Code safety helpers are local/committed, but liv
 - Local `.env` was updated to the intended payment mode (`PREPAYMENT_MODE=percent`, `PREPAYMENT_PERCENT=50`, non-empty webhook secret, bot webhook URL), but server `/opt/admin_niz2/.env` must be updated separately by the operator.
 - Live payment creation produced a failed `payments` row with YooKassa `401 invalid_credentials`, so the server `PAYMENT_SHOP_ID` or `PAYMENT_SECRET_KEY` is wrong/invalid for the configured shop.
 - Read-only `scripts/yookassa_status.py` attempted `GET /webhooks` and hit an SSL handshake timeout from the workstation. This did not create a payment and did not register a webhook, but server-side connectivity still needs to be checked.
+- Server-side `scripts/yookassa_status.py` now reaches YooKassa but returns `401 invalid_credentials` with description `Authentication type is not allowed`. The same server output shows production payment env is still not applied: `PAYMENT_STATUS_SYNC_ENABLED=false`, `PREPAYMENT_MODE=fixed`, `YOOKASSA_WEBHOOK_ENABLED=false`, no webhook secret, and webhook URL still points to the old YCLIENTS URL.
 - Public `https://max.killrealp2.ru/webhooks/yookassa` currently returns nginx `404`, so nginx does not yet proxy the YooKassa path to the internal webhook runner.
 
 ## Local Fixes
