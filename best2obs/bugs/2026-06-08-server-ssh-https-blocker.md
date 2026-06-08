@@ -35,6 +35,13 @@ DNS is already propagated: `max.killrealp2.ru` resolves to `45.147.179.48`.
 - A fresh SSH repeat on port `2222` still failed intermittently: some attempts timed out during SSH banner exchange, others reached authentication and were denied. This blocked a current repeat of server-side MAX media fake smokes from the workstation.
 - Public HTTPS/MAX launch state remains resolved from the earlier deploy; this is now a maintenance-access hardening issue, not a MAX webhook/media blocker.
 
+2026-06-08 deploy-pull recheck after commit `6062725`:
+
+- Public MAX webhook health from the workstation is green: `https://max.killrealp2.ru/webhooks/max` returns HTTP 200 with `service=max-webhook`.
+- `max_status.py` shows one active subscription for `https://max.killrealp2.ru/webhooks/max` with update types `message_created` and `bot_started`; `telegram_status.py` is OK with an empty Telegram webhook and pending updates `0`.
+- SSH to `45.147.179.48` on `22` and `2222` reaches TCP, but maintenance login is not usable from Codex. Attempts either time out during SSH banner exchange or return `Permission denied (publickey,password)` for the local `best2_deploy_ed25519` key.
+- Impact: commit `6062725` is pushed to GitHub, but `/opt/admin_niz2` could not be pulled/restarted by Codex. The server likely still runs the previous deployed code until an operator restores key auth or runs the deploy commands manually.
+
 ## Impact
 
 The original blocker prevented Codex from uploading/configuring the app. It was resolved by using temporary key-based SSH on port `2222` and by configuring the existing cloned project under `/opt/admin_niz2`.

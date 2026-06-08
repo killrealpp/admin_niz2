@@ -1,5 +1,13 @@
 # Project Log
 
+## 2026-06-08 - Deploy commit pushed, server pull blocked by SSH key access
+
+- Implemented the requested pending-fix deploy slice locally and pushed commit `6062725` (`Fix MAX contextual media and prepare YooKassa checks`) to `origin/main`.
+- Local pre-push checks passed: `compileall app scripts`, `dialog_contextual_photo_smoke.py`, `dialog_identity_smoke.py`, `max_media_buttons_smoke.py`, `max_outbound_text_smoke.py`, `yookassa_webhook_hardening_smoke.py`, `register_yookassa_webhook.py --dry-run --url https://max.killrealp2.ru/webhooks/yookassa?secret=placeholder`, and `git diff --check` on the changed runtime/script files.
+- Public production health from the workstation is green for MAX: `https://max.killrealp2.ru/webhooks/max` returns HTTP 200 with `service=max-webhook`; `max_status.py` shows one active subscription for `message_created` and `bot_started`; `telegram_status.py` shows Telegram API OK, empty webhook and pending updates `0`.
+- Server deployment is blocked at the maintenance-access step: SSH to `45.147.179.48` on `22`/`2222` reaches TCP, but attempts either time out during banner exchange or return `Permission denied (publickey,password)` for the local `best2_deploy_ed25519` key. No server `git pull`, service restart, YooKassa apply or subscription mutation was performed in this turn.
+- Next operator action: restore key-based root access by placing the current public key into `/root/.ssh/authorized_keys` (or run the listed server commands manually from the provider console), then pull `6062725` on `/opt/admin_niz2` and restart `best2.service`. Details: [[bugs/2026-06-08-server-ssh-https-blocker]].
+
 ## 2026-06-08 - MAX contextual photos widened and YooKassa payment enablement prepared locally
 
 - User reported a second live MAX wording: after the gazebo discussion, "а покажете их?" still answered through the LLM fallback ("нет фотографий беседок") instead of deterministic media routing.
