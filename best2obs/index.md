@@ -1,5 +1,10 @@
 # best2 Project Memory
 
+## 2026-06-08 Live MAX payment and stale service diagnostics
+
+- Live MAX payment link failure is explained by a real `payments` row with YooKassa `401 invalid_credentials`; server `PAYMENT_SHOP_ID` / `PAYMENT_SECRET_KEY` must be corrected and checked with `scripts/yookassa_status.py`.
+- Live MAX wrong-service answer after `давай еще баню забронируем на 14 июня` is a shared-dialog routing bug: conversation stayed on `service_type='gazebo'` with an active gazebo hold, while direct bathhouse availability for 2026-06-14 works. Details: [[bugs/2026-06-08-live-bathhouse-new-booking-and-yookassa-payment]].
+
 ## 2026-06-08 MAX photo delivery fix pending deploy
 
 - MAX live photo issue root causes are found and fixed locally: production webhook processing closed a temporary `asyncio.run()` loop before background related-media tasks could upload/send photos, and MAX image upload can return a valid `photos` payload without a top-level `token`.

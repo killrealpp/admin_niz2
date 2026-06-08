@@ -1,5 +1,13 @@
 # Project Log
 
+## 2026-06-08 - Live MAX payment and wrong-service routing diagnostics
+
+- Local `.env` was updated for the intended YooKassa mode: `PREPAYMENT_MODE=percent`, `PREPAYMENT_PERCENT=50`, non-empty `YOOKASSA_WEBHOOK_SECRET`, and `YOOKASSA_WEBHOOK_URL=https://max.killrealp2.ru/webhooks/yookassa?...`. The server `/opt/admin_niz2/.env` still must be updated separately by the operator.
+- `scripts/register_yookassa_webhook.py --dry-run` passes locally with `calls_yookassa_api=false` and redacted URL; no YooKassa webhook `--apply` was run and no payment was created by Codex.
+- Live DB diagnostics found the payment-link root cause for the user's gazebo hold: a `payments` row was created for hold `150` but failed with YooKassa `401 invalid_credentials`, leaving no `payment_url`.
+- Live DB also explains the wrong MAX answer for "давай еще баню забронируем на 14 июня": conversation `1` still had `form_data.service_type='gazebo'`, `service_variant='Беседка №4'`, `current_step='awaiting_new_date'`, and an active gazebo hold for 2026-06-14. A direct local availability check for `bathhouse` on 2026-06-14 works, so the bug is routing/state, not local availability tables.
+- Diagnostics are recorded in [[bugs/2026-06-08-live-bathhouse-new-booking-and-yookassa-payment]]. No production code was changed in this diagnostic slice.
+
 ## 2026-06-08 - Deploy commit pushed, server pull blocked by SSH key access
 
 - Implemented the requested pending-fix deploy slice locally and pushed commit `6062725` (`Fix MAX contextual media and prepare YooKassa checks`) to `origin/main`.
