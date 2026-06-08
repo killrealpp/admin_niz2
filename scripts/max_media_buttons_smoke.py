@@ -7,6 +7,7 @@ from contextlib import contextmanager
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 from typing import Any, Sequence
 
@@ -17,7 +18,7 @@ from app.bot import max_channel_client as max_adapter  # noqa: E402
 from app.bot import client_message_processor as shared_processor  # noqa: E402
 from app.bot.channel_types import DeliveryTarget  # noqa: E402
 from app.bot.max_channel_client import MAX_MEDIA_FALLBACK_TEXT, MaxChannelClient  # noqa: E402
-from app.bot.max_message_processor import process_max_update  # noqa: E402
+from app.bot.max_message_processor import process_max_update, process_max_webhook_event  # noqa: E402
 from app.core.constants import CHANNEL_MAX  # noqa: E402
 from app.integrations.max_client import MaxApiClient, MaxApiError  # noqa: E402
 
@@ -281,6 +282,52 @@ async def assert_max_processor_auto_media() -> None:
     ]
 
 
+async def assert_max_webhook_processor_sends_related_media_before_return() -> None:
+    api = RecordingMaxApiClient()
+    patches: list[tuple[Any, str, Any]] = []
+    try:
+        patch_attr(
+            patches,
+            shared_processor,
+            "handle_incoming",
+            lambda _incoming: "Показываю фото беседки.",
+        )
+        patch_attr(
+            patches,
+            shared_processor,
+            "is_explicit_photo_request",
+            lambda _text: True,
+        )
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            image_path = Path(tmp_dir) / "photo.jpg"
+            image_path.write_bytes(b"fake-image")
+            patch_attr(
+                patches,
+                shared_processor,
+                "media_for_client_message",
+                lambda _text, _reply: [image_path],
+            )
+            event = SimpleNamespace(
+                payload=_max_message_payload("покажи фото беседки 1"),
+                event_type="message_created",
+                event_key="media-smoke",
+            )
+            reply = await asyncio.to_thread(
+                process_max_webhook_event,
+                event,
+                channel_client=MaxChannelClient(api, attachment_retry_delays=()),
+            )
+    finally:
+        restore(patches)
+
+    assert reply == "Показываю фото беседки."
+    assert len(api.messages) >= 2
+    assert api.messages[0]["text"] == "Показываю фото беседки."
+    assert api.messages[1]["attachments"] == [
+        {"type": "image", "payload": {"token": "token-1"}}
+    ]
+
+
 def _max_message_payload(text: str) -> dict[str, Any]:
     return {
         "update_type": "message_created",
@@ -310,6 +357,7 @@ async def main() -> None:
     await assert_payment_link_button()
     await assert_media_failure_fallback_and_log()
     await assert_max_processor_auto_media()
+    await assert_max_webhook_processor_sends_related_media_before_return()
     print("max_media_buttons_smoke=ok")
 
 

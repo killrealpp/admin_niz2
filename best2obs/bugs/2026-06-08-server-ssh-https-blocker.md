@@ -2,7 +2,7 @@
 
 ## Status
 
-Open.
+Resolved for MAX launch; SSH hardening remains.
 
 ## Context
 
@@ -29,11 +29,17 @@ DNS is already propagated: `max.killrealp2.ru` resolves to `45.147.179.48`.
 - `http://max.killrealp2.ru/` now returns HTTP 200 from nginx with a static page.
 - HTTPS still times out; `https://max.killrealp2.ru/webhooks/max` is still not a valid MAX webhook endpoint.
 
+2026-06-08 later maintenance recheck:
+
+- Local private-key ACL was tightened so Windows OpenSSH no longer rejects the key file as too open.
+- A fresh SSH repeat on port `2222` still failed intermittently: some attempts timed out during SSH banner exchange, others reached authentication and were denied. This blocked a current repeat of server-side MAX media fake smokes from the workstation.
+- Public HTTPS/MAX launch state remains resolved from the earlier deploy; this is now a maintenance-access hardening issue, not a MAX webhook/media blocker.
+
 ## Impact
 
-Codex cannot upload `/opt/best2`, create `/etc/best2/best2.env`, install dependencies, configure nginx/certbot/systemd, start the MAX webhook runner, or safely run `register_max_webhook.py --apply`.
+The original blocker prevented Codex from uploading/configuring the app. It was resolved by using temporary key-based SSH on port `2222` and by configuring the existing cloned project under `/opt/admin_niz2`.
 
-Step 12 MAX Launch Gate remains open. MAX subscriptions remain `0`.
+Step 12 MAX Launch Gate is now completed for the MAX production webhook slice: `best2.service` is active, `https://max.killrealp2.ru/webhooks/max` returns HTTP 200, and MAX subscriptions show one active subscription for `message_created` and `bot_started`.
 
 ## Likely Causes To Check On Server/Provider Panel
 
@@ -44,13 +50,9 @@ Step 12 MAX Launch Gate remains open. MAX subscriptions remain `0`.
 
 ## Needed Fix
 
-Restore working SSH or provide a provider web console/alternate SSH port. After access works, continue with:
+Remaining cleanup:
 
-1. deploy current best2 to `/opt/best2`;
-2. create `/etc/best2/best2.env` from the current local env with production MAX webhook settings;
-3. install venv dependencies;
-4. configure nginx HTTPS 443 for `max.killrealp2.ru`;
-5. start `best2.service`;
-6. verify `curl -i https://max.killrealp2.ru/webhooks/max` returns HTTP 200 with `service=max-webhook`;
-7. run `scripts/register_max_webhook.py --dry-run`;
-8. run `scripts/register_max_webhook.py --apply` only after the endpoint is green.
+1. keep or remove temporary SSH port `2222` after a stable maintenance access policy is chosen;
+2. confirm password SSH is disabled as intended after no more emergency access is needed;
+3. keep `fail2ban` active;
+4. later harden `best2.service` graceful shutdown so a normal `systemctl restart` does not log `Client channel stopped unexpectedly: telegram`.

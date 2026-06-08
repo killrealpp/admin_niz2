@@ -1,5 +1,12 @@
 # Backend
 
+## 2026-06-08 MAX webhook related-media lifecycle
+
+- `app/bot/client_message_processor.py` still sends post-reply media asynchronously by default, preserving the long-running Telegram polling and MAX polling behavior.
+- The processor now has an explicit `await_related_media` option for short-lived event loops. Production MAX webhook uses it because `process_max_webhook_event()` is a sync worker hook that calls `asyncio.run(process_max_update(...))`; without awaiting related media, the temporary loop closes and cancels the background media task before photos are uploaded/sent.
+- This does not slow down the public MAX webhook HTTP response, because `app/bot/max_webhook_runner.py` accepts/deduplicates the request, queues the event and returns `200` before the worker calls `process_max_webhook_event()`.
+- MAX outbound text is sanitized at `MaxChannelClient.send_text()` to keep accidental Telegram-specific wording out of client-facing MAX replies. The shared knowledge prompt is also channel-neutral for response formatting.
+
 ## 2026-06-07 runtime ownership and MAX webhook branch
 
 - `app/bot/runtime.py` is now the owner of process-level background services for normal `main.py` startup: YCLIENTS sync loop, payment status sync loop, message retention loop and lightweight webhook servers start once per process, independent of whether `CLIENT_CHANNELS` is `telegram`, `max` or `telegram,max`.

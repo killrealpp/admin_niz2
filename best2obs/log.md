@@ -1,5 +1,66 @@
 # Project Log
 
+## 2026-06-08 - MAX webhook photo delivery bug fixed locally
+
+- Reproduced the user's MAX symptom from code flow: the bot could send "сейчас отправлю фото" text from the shared dialog, but production MAX webhook processing used `asyncio.run()` while related media was scheduled as a background task. The temporary event loop closed before the media task could upload/send photos.
+- Fixed the webhook lifecycle locally: `process_client_message()` now supports `await_related_media`, and `process_max_webhook_event()` enables it so MAX webhook worker processing waits for related media before closing its loop. The HTTP webhook handler still returns `200` quickly because processing already happens through the runner queue.
+- Added MAX outbound text sanitization so accidental `Telegram`/`телеграм` mentions are replaced before a client-facing MAX send. Also made the runtime knowledge prompt channel-neutral: "client chat" instead of "Telegram".
+- Added regression coverage to `scripts/max_media_buttons_smoke.py` for webhook related-media delivery and to `scripts/max_outbound_text_smoke.py` for MAX Telegram-mention sanitization.
+- Local verification passed: compileall, `max_media_buttons_smoke.py`, `max_outbound_text_smoke.py`, `max_inbound_normalization_smoke.py`, `max_webhook_runner_smoke.py`, `channel_contract_smoke.py`, `local_regression_suite.py --group media`, and read-only `max_status.py` (`subscriptions_count=1`).
+- Graphify update was attempted after code changes. The extractor scanned changed files, but the graph tool refused the final overwrite because the new graph had `234` nodes while existing `graph.json` had `235`; no force overwrite was used.
+- Production deployment is still pending because current SSH access to `45.147.179.48` is blocked/flaky: `2222` alternates between banner timeout and key auth denial, while `22` times out during banner exchange. Details: [[bugs/2026-06-08-max-webhook-media-background-task]], [[bugs/2026-06-08-server-ssh-https-blocker]].
+
+## 2026-06-08 - Reusable MAX/Telegram and server-access playbooks
+
+- Created [[prompts/multi-channel-bot-integration-skill]] as a reusable AI instruction for future projects that need Telegram/MAX or other multi-channel entry/exit parity around one shared dialog core.
+- Created [[operations/ai-remote-server-access-playbook]] as a reusable SSH/nginx/systemd/HTTPS access guide for safely giving an AI operator temporary access to a remote Linux server without sending passwords through chat.
+- Rechecked MAX media/photo behavior through safe fake smokes. Local `scripts/max_media_buttons_smoke.py`, `scripts/max_outbound_text_smoke.py`, and `scripts/max_api_client_smoke.py` passed on this turn; the same server-side fake smokes had passed after the production deploy. A current repeat over SSH was blocked by the known flaky server SSH path (`2222` banner timeout / key auth denial), not by MAX media code. These checks verify adapter media/buttons/upload request shape without sending unsolicited live media to users.
+
+## 2026-06-08 - MAX production webhook launched on server
+
+- Production deployment completed on the remote server under `/opt/admin_niz2`.
+- Access was restored through temporary key-based SSH on port `2222`; regular port `22` stayed flaky under SSH noise, so `2222` remains as the current maintenance access path. `fail2ban` was restarted and is active again.
+- Server `.env` was adjusted for safe production runtime without printing secrets: `APP_ENV=production`, `CLIENT_CHANNELS=telegram,max`, `MAX_MODE=webhook`, `MAX_WEBHOOK_ENABLED=true`, `MAX_WEBHOOK_HOST=127.0.0.1`, `MAX_WEBHOOK_PORT=8089`, `MAX_WEBHOOK_PATH=/webhooks/max`, `MAX_SEND_RELATED_MEDIA=true`. Real YooKassa runtime actions were disabled for this launch: `PAYMENT_PROVIDER=disabled`, `PAYMENT_STATUS_SYNC_ENABLED=false`, `YOOKASSA_WEBHOOK_ENABLED=false`.
+- Beget CA was installed at `/root/.postgresql/root.crt`; server dependencies were installed in `/opt/admin_niz2/.venv`.
+- Server preflight passed: `compileall app scripts`, `db_status.py`, `max_status.py`, `telegram_status.py`, `register_max_webhook.py --dry-run`, YCLIENTS one-shot sync (`seen=133`, `upserted=133`), strict sync status, `live_health_report.py`, and `live_db_hygiene_audit.py --limit 20`.
+- `best2.service` was created and enabled. It is active, starts Telegram polling and the MAX webhook runner, and listens internally on `127.0.0.1:8089`.
+- nginx was configured with `/etc/nginx/sites-available/best2-max.conf` for `max.killrealp2.ru`, proxying `/webhooks/max` to `127.0.0.1:8089`. Let's Encrypt certificate was issued successfully for `max.killrealp2.ru`; certbot reports expiry `2026-09-06` and scheduled renewal.
+- Public endpoint verification passed from outside the server: `https://max.killrealp2.ru/webhooks/max` returns HTTP `200` with `{"ok": true, "service": "max-webhook"}`.
+- MAX webhook registration was applied after the green endpoint. `scripts/register_max_webhook.py --apply` returned `success=true`; final `scripts/max_status.py` shows `subscriptions_count=1` for `https://max.killrealp2.ru/webhooks/max` with update types `message_created` and `bot_started`.
+- Final post-launch checks passed: `best2.service` active/enabled, Telegram status OK with webhook empty and pending `0`, MAX status OK with active subscription, live health `status=ok`, hygiene clean, YCLIENTS fresh.
+- Residual operational note: `systemctl restart best2.service` logs a transient `Client channel stopped unexpectedly: telegram` during SIGTERM because the runtime treats graceful Telegram polling stop as a channel exit. The service restarts and remains healthy, but graceful shutdown handling should be hardened later.
+
+## 2026-06-08 - SSH key exists locally but transport still blocked
+
+- Local key files `best2_deploy_ed25519` and `best2_deploy_ed25519.pub` exist under the user's `.ssh` directory.
+- Codex tried key-based SSH on `45.147.179.48:22`; the key loaded locally, but the connection still failed before an SSH session/banner was established (`No existing session`), so this is still transport/server-side, not password/key authentication.
+- Codex also tried `45.147.179.48:2222`; the port is not reachable/listening externally yet.
+- Next step remains server-console repair: ensure the public key is in `/root/.ssh/authorized_keys`, configure SSH to listen on `2222`, account for Ubuntu `ssh.socket` if enabled, and allowlist Codex IP `83.149.70.79`.
+
+## 2026-06-08 - SSH still blocked after allowlist attempt
+
+- Rechecked external access after the user asked to verify again. Codex external IP remains `83.149.70.79`.
+- TCP `22` and `443` are reachable, but `ssh-keyscan -p 22` still times out before receiving an SSH banner, so Codex still cannot administer the server directly.
+- `http://max.killrealp2.ru/` no longer serves the full n8n UI; it now returns HTTP `404` from nginx/upstream. HTTPS `https://max.killrealp2.ru/webhooks/max` still times out.
+- Recommended next step is to configure an alternate temporary SSH listener on `2222`, allow it for Codex IP `83.149.70.79`, and keep the existing `22` listener untouched.
+
+## 2026-06-08 - Server console output analyzed for MAX deploy
+
+- User provided server console output from `/opt/admin_niz2`.
+- `ssh.service` is active and listening on `0.0.0.0:22`/`[::]:22`, but the server is under heavy SSH noise: `fail2ban` shows thousands of failed attempts and multiple banned IPs, and the logs show repeated preauth closes. Codex's current external IP is `83.149.70.79`, matching recent `sshd` log entries that closed before authentication.
+- `nginx -T` shows only an existing `server_name n8n.ermantgz.ru` block proxying to `localhost:5679`; there is no dedicated `max.killrealp2.ru` server block yet. Public HTTP for `max.killrealp2.ru` therefore falls through to the existing n8n/default site.
+- Server ports currently show nginx on `80`/`443`, docker proxy on `8080`, and no listener on `8088`/`8089`; best2 MAX webhook runner is not running yet.
+- `/opt/admin_niz2/.env` permissions were tightened manually with `chmod 600 .env`.
+- Next safe path: temporarily allowlist Codex IP or otherwise restore SSH access, then configure `/opt/admin_niz2` service and a separate nginx HTTPS server block for `max.killrealp2.ru` proxying `/webhooks/max` to `127.0.0.1:8089`.
+
+## 2026-06-08 - MAX production deploy SSH recheck after manual server setup
+
+- User manually cloned/prepared the project on the server under `/opt/admin_niz2` and created `/opt/admin_niz2/.env`.
+- External recheck still cannot establish SSH from Codex: TCP `22` is reachable, but `ssh-keyscan` times out before receiving an SSH banner. Codex still cannot run commands on the server directly.
+- Public HTTP for `max.killrealp2.ru` currently serves an n8n UI page through `nginx/1.24.0 (Ubuntu)`. This means the domain is already routed to an existing nginx/n8n site.
+- HTTPS still times out, and `https://max.killrealp2.ru/webhooks/max` is not reachable. MAX webhook registration remains unsafe until nginx HTTPS 443 and the best2 webhook runner are verified.
+- No server changes were made by Codex, no MAX webhook registration was performed, and no subscription/payment mutation was performed.
+
 ## 2026-06-08 - MAX production deploy recheck still blocked by SSH
 
 - Rechecked the server after the user reported it should be working. DNS still resolves `max.killrealp2.ru` to `45.147.179.48`.

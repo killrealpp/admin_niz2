@@ -35,6 +35,7 @@ async def process_client_message(
     text_options: Mapping[str, Any] | None = None,
     media_options: Mapping[str, Any] | None = None,
     send_related_media: bool = True,
+    await_related_media: bool = False,
     log_context: str | None = None,
 ) -> str | None:
     text_options_dict = dict(text_options or {})
@@ -52,7 +53,7 @@ async def process_client_message(
                 await typing_task
         await channel_client.send_text(target, reply, **text_options_dict)
         if send_related_media:
-            _schedule_related_media(
+            media_task = _schedule_related_media(
                 channel_client,
                 target,
                 incoming.channel,
@@ -60,7 +61,13 @@ async def process_client_message(
                 incoming.text,
                 reply,
                 media_options_dict,
+                log_result=not await_related_media,
             )
+            if await_related_media:
+                try:
+                    await media_task
+                except Exception:
+                    logger.exception("Related media send failed target=%s", target.address)
         return reply
     except Exception:
         logger.exception(
@@ -97,7 +104,9 @@ def _schedule_related_media(
     text: str,
     reply: str,
     media_options: Mapping[str, Any],
-) -> None:
+    *,
+    log_result: bool = True,
+) -> asyncio.Task[Any]:
     task = asyncio.create_task(
         _send_related_media(
             channel_client,
@@ -109,7 +118,9 @@ def _schedule_related_media(
             dict(media_options),
         )
     )
-    task.add_done_callback(_log_related_media_result)
+    if log_result:
+        task.add_done_callback(_log_related_media_result)
+    return task
 
 
 def _log_related_media_result(task: asyncio.Task[Any]) -> None:

@@ -1,5 +1,29 @@
 # best2 Project Memory
 
+## 2026-06-08 MAX photo delivery fix pending deploy
+
+- MAX live photo issue root cause is found and fixed locally: production webhook processing closed a temporary `asyncio.run()` loop before background related-media tasks could upload/send photos.
+- Local fix: MAX webhook path now waits for related media in the worker queue, MAX outbound text sanitizes accidental Telegram mentions, and the generic runtime knowledge prompt no longer says "Telegram" for client-chat formatting.
+- Checks are green locally: compileall, MAX media/outbound/inbound/webhook smokes, channel contract, media regression and read-only MAX status.
+- Production still needs deployment/restart under `/opt/admin_niz2`, but current SSH maintenance access is blocked/flaky (`2222` banner timeout/key auth denial, `22` banner timeout).
+- Details: [[log]], [[bugs/2026-06-08-max-webhook-media-background-task]], [[bugs/2026-06-08-server-ssh-https-blocker]].
+
+## 2026-06-08 Reusable MAX/Telegram integration instructions
+
+- Reusable AI instruction for future projects is now documented in [[prompts/multi-channel-bot-integration-skill]]. It explains how to add MAX as a peer entry/exit channel beside Telegram without forking the dialog core, including adapters, runtime modes, typing, voice/audio, media/photos, payments boundary and production launch gate.
+- Remote server access handoff is now documented in [[operations/ai-remote-server-access-playbook]]. It covers key-based SSH, temporary maintenance port, nginx/HTTPS, systemd deployment, webhook checks, registration gates and cleanup/revocation.
+- MAX media/photo smokes were rechecked safely. Local fake MAX media/buttons, outbound text and API-client smoke checks pass; the same server-side fake smokes had passed after deploy, but a current repeat over SSH was blocked by the known flaky maintenance SSH path. No unsolicited live media or payment actions were sent.
+
+## 2026-06-08 MAX production webhook launched
+
+- MAX production webhook is live for `best2` on the remote server under `/opt/admin_niz2`.
+- Runtime: `best2.service` is active/enabled, Telegram polling is running, and MAX webhook runner listens internally on `127.0.0.1:8089/webhooks/max`.
+- Public endpoint is green: `https://max.killrealp2.ru/webhooks/max` returns HTTP 200 with `service=max-webhook`; nginx has a dedicated `max.killrealp2.ru` server block and Let's Encrypt certificate expiring `2026-09-06`.
+- MAX subscription registration was applied after endpoint verification. `max_status.py` shows `subscriptions_count=1` for update types `message_created` and `bot_started`.
+- Safety state: real YooKassa runtime actions are disabled for this launch (`PAYMENT_PROVIDER=disabled`, payment status sync disabled, YooKassa webhook disabled). Admin notifications remain Telegram.
+- Operational cleanup remains: temporary key-based SSH access on port `2222` is still enabled, `fail2ban` is active again, and graceful `best2.service` restart logs a transient Telegram channel stop warning.
+- Details: [[log]], [[bugs/2026-06-08-server-ssh-https-blocker]], [[operations/production-runbook]], [[architecture/api]], [[architecture/backend]].
+
 ## 2026-06-08 MAX production deploy blocker
 
 - DNS for `max.killrealp2.ru` is propagated to `45.147.179.48`; local and public resolvers agree.

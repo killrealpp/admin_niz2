@@ -243,6 +243,19 @@ async def assert_channel_client_target_and_split() -> None:
     assert typing_api.actions == [{"chat_id": "chat-1", "action": "typing_on"}]
 
 
+async def assert_max_text_sanitizes_telegram_mentions() -> None:
+    api = RecordingMaxApiClient()
+    client = MaxChannelClient(api)
+    await client.send_text(
+        DeliveryTarget(channel=CHANNEL_MAX, external_id="user-1"),
+        "Фотографии отправляются в Telegram автоматически. Если не видно в телеграме, напишите еще раз.",
+    )
+    text = str(api.calls[0]["text"])
+    assert "Telegram" not in text
+    assert "телеграм" not in text.lower()
+    assert "MAX" in text
+
+
 def max_payload() -> dict[str, Any]:
     return {
         "update_type": "message_created",
@@ -328,6 +341,7 @@ def main() -> None:
     assert_api_send_message_payload()
     assert_api_guards_and_redaction()
     asyncio.run(assert_channel_client_target_and_split())
+    asyncio.run(assert_max_text_sanitizes_telegram_mentions())
     asyncio.run(assert_inbound_to_shared_processor())
     asyncio.run(assert_bot_started_direct_welcome())
     print("max_outbound_text_smoke=ok")

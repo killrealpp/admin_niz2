@@ -47,6 +47,7 @@ async def process_max_update(
     api_client: MaxApiClient | None = None,
     error_text: str = MAX_TEXT_MVP_ERROR,
     send_related_media: bool = True,
+    await_related_media: bool = False,
     log_context: str | None = None,
 ) -> str | None:
     channel_client = channel_client or MaxChannelClient()
@@ -61,6 +62,7 @@ async def process_max_update(
             api_client=api_client,
             error_text=error_text,
             send_related_media=send_related_media,
+            await_related_media=await_related_media,
             log_context=log_context,
         )
     target = max_delivery_target_from_incoming(incoming)
@@ -70,6 +72,7 @@ async def process_max_update(
         channel_client,
         error_text=error_text,
         send_related_media=send_related_media,
+        await_related_media=await_related_media,
         log_context=log_context or "max text inbound",
     )
 
@@ -85,6 +88,7 @@ def process_max_webhook_event(
             event.payload,
             channel_client=channel_client,
             error_text=error_text,
+            await_related_media=True,
             log_context=f"max webhook {event.event_type}:{event.event_key}",
         )
     )
@@ -116,6 +120,7 @@ async def _process_non_text_update(
     api_client: MaxApiClient | None,
     error_text: str,
     send_related_media: bool,
+    await_related_media: bool,
     log_context: str | None,
 ) -> str | None:
     if max_update_type(update) != "message_created":
@@ -175,6 +180,7 @@ async def _process_non_text_update(
         channel_client,
         error_text=error_text,
         send_related_media=send_related_media,
+        await_related_media=await_related_media,
         log_context=log_context or "max voice inbound",
     )
 

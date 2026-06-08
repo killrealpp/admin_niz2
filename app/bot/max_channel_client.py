@@ -50,6 +50,7 @@ class MaxChannelClient:
         **options: Any,
     ) -> None:
         _ensure_max_target(target)
+        text = _sanitize_max_text(text)
         attachments = _attachments_from_options(text, options)
         for chunk in split_max_text(text):
             await asyncio.to_thread(
@@ -232,6 +233,22 @@ def _payment_link_from_text(text: str) -> str | None:
 
 def _strip_url(value: str) -> str:
     return value.rstrip(".,;:!?)]}>\"'")
+
+
+def _sanitize_max_text(text: str) -> str:
+    sanitized = str(text or "")
+    sanitized = re.sub(r"\bTelegram\b", "MAX", sanitized, flags=re.IGNORECASE)
+    sanitized = re.sub(
+        r"\b[Тт]елеграм(?:е|у|ом|а)?\b",
+        "MAX",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"\b[Тт]елег(?:е|у|ом|а)?\b",
+        "MAX",
+        sanitized,
+    )
+    return sanitized
 
 
 def _upload_type_for_path(path: Path) -> str:
