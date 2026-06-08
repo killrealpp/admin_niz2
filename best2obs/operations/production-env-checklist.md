@@ -130,12 +130,12 @@ Step 10 уже добавил MAX media upload и link-button для payment URL
 | `YOOKASSA_WEBHOOK_ENABLED` | `true` | Release target: webhook runner стартует вместе с `main.py`. |
 | `YOOKASSA_WEBHOOK_HOST` | `127.0.0.1` за reverse proxy, либо `0.0.0.0` только с firewall | Внутренний порт не должен быть открыт наружу напрямую. |
 | `YOOKASSA_WEBHOOK_PORT` | `8088` или выбранный локальный порт | Reverse proxy должен вести на этот порт. |
-| `YOOKASSA_WEBHOOK_PATH` | `/webhooks/yookassa` | `register_yookassa_webhook.py` требует этот path в public URL. |
+| `YOOKASSA_WEBHOOK_PATH` | `/webhooks/yookassa` | Public URL должен иметь этот path. |
 | `YOOKASSA_WEBHOOK_SECRET` | non-empty | Обязателен при `APP_ENV=production`; проверяется через `X-Webhook-Secret` или query `secret`. |
 | `YOOKASSA_WEBHOOK_MAX_BODY_BYTES` | `32768` или меньше/равно proxy body limit | Proxy limit не должен быть больше application limit без причины. |
 | `YOOKASSA_WEBHOOK_URL` | public HTTPS URL с path `/webhooks/yookassa` | Если proxy не добавляет `X-Webhook-Secret`, URL должен включать query `?secret=...` вне git. |
 
-Production endpoint должен быть доступен по HTTPS, а внутренний `8088` не должен быть открыт публично напрямую.
+Production endpoint должен быть доступен по HTTPS, а внутренний `8088` не должен быть открыт публично напрямую. Для YooKassa HTTP Basic Auth уведомления настраиваются вручную в личном кабинете (`Интеграция -> HTTP-уведомления`); API `/v3/webhooks` относится к OAuth-интеграциям.
 
 ## Проверка safe summary
 

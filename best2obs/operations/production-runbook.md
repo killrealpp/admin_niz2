@@ -383,22 +383,30 @@ OK для GET: HTTP 200 и JSON с `service: yookassa-webhook`.
 Dry-run должен показать:
 
 - `calls_yookassa_api=false`;
-- `method=POST`;
-- `path=/webhooks`;
+- `method=manual_dashboard`;
+- `api_registration_supported=false`;
+- `dashboard_section=Интеграция -> HTTP-уведомления`;
 - `events=["payment.succeeded", "payment.canceled"]`;
 - `payment_configured=true`;
 - `webhook_enabled=true`;
 - `webhook_secret_configured=true`;
 - `url` без раскрытия query-secret.
 
-Реальную регистрацию выполнять только на production-сервере после отдельного явного подтверждения:
+Для YooKassa shopId/secret-key HTTP Basic Auth webhook не регистрируется через `/v3/webhooks`: этот API предназначен для OAuth partner integrations. В production нужно вручную включить HTTP-уведомления в личном кабинете YooKassa:
+
+- раздел `Интеграция -> HTTP-уведомления`;
+- URL из `YOOKASSA_WEBHOOK_URL`, включая `?secret=...`, если proxy не добавляет `X-Webhook-Secret`;
+- события `payment.succeeded` и `payment.canceled`;
+- public HTTPS endpoint на `443` или `8443`.
+
+После настройки в кабинете проверить:
 
 ```bash
-./.venv/bin/python scripts/register_yookassa_webhook.py --apply
 ./.venv/bin/python scripts/yookassa_status.py
+curl -i https://DOMAIN/webhooks/yookassa
 ```
 
-OK: зарегистрированы события `payment.succeeded` и `payment.canceled`, `journalctl -u best2` без webhook startup/processing errors.
+OK: `scripts/yookassa_status.py` возвращает `status=ok` и `auth_ok=true`; GET webhook endpoint возвращает `service=yookassa-webhook`; `journalctl -u best2` без webhook startup/processing errors.
 
 ## Проверить DB и hygiene
 

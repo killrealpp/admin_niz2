@@ -83,9 +83,10 @@
 
 ## 2026-06-08 YooKassa registration/status safety
 
-- `scripts/register_yookassa_webhook.py` is now dry-run by default, matching the MAX registration safety pattern. It validates a public HTTPS URL with path `/webhooks/yookassa`, prints a redacted plan and only calls YooKassa `POST /webhooks` when `--apply` is explicitly passed.
-- Default registration events are `payment.succeeded` and `payment.canceled`. If the registered URL carries `?secret=...`, script output redacts the query.
-- `scripts/yookassa_status.py` is the read-only status helper for payment launch checks. It prints safe payment config flags, prepayment mode/amount/percent, webhook flags and a redacted list of configured YooKassa webhooks from `GET /webhooks`.
+- YooKassa has two webhook setup modes. For the shopId/secret-key HTTP Basic Auth integration used by `best2`, HTTP notifications must be configured in the YooKassa dashboard (`Интеграция -> HTTP-уведомления`). The `/v3/webhooks` API is for OAuth partner integrations, not this app's Basic Auth flow.
+- `scripts/register_yookassa_webhook.py` is now a validation/plan helper only. It validates a public HTTPS URL with path `/webhooks/yookassa`, prints a redacted dashboard setup plan, and refuses `--apply` instead of calling the OAuth-only webhook API.
+- Default notification events are `payment.succeeded` and `payment.canceled`. If the URL carries `?secret=...`, script output redacts the query.
+- `scripts/yookassa_status.py` is the read-only status helper for payment launch checks. It prints safe payment config flags, prepayment mode/amount/percent, webhook flags and checks YooKassa Basic Auth via `GET /payments?limit=1`.
 - No real payment or webhook registration was performed while adding these helpers.
 
 ## Telegram

@@ -22,25 +22,6 @@ def _redact_url(value: str) -> str:
     return urlunparse(parsed._replace(query="[redacted]"))
 
 
-def _webhook_items(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_items = payload.get("items")
-    if not isinstance(raw_items, list):
-        return []
-    items: list[dict[str, Any]] = []
-    for item in raw_items:
-        if not isinstance(item, dict):
-            continue
-        items.append(
-            {
-                "id": item.get("id"),
-                "event": item.get("event"),
-                "active": item.get("active"),
-                "url": _redact_url(str(item.get("url") or "")),
-            }
-        )
-    return items
-
-
 def main() -> None:
     settings = get_settings()
     configured = bool(settings.payment_shop_id and settings.payment_secret_key)
@@ -56,6 +37,9 @@ def main() -> None:
         "yookassa_webhook_url": _redact_url(settings.yookassa_webhook_url),
         "yookassa_webhook_secret_configured": bool(settings.yookassa_webhook_secret),
         "calls_yookassa_api": configured,
+        "auth_check_path": "/payments?limit=1",
+        "webhook_api_registration_supported": False,
+        "webhook_setup": "manual_dashboard_http_notifications_for_basic_auth",
     }
     if not configured:
         result["status"] = "skipped"
@@ -63,19 +47,18 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return
     try:
-        payload = YooKassaClient().list_webhooks()
+        payload = YooKassaClient().list_payments(limit=1)
     except YooKassaError as exc:
         result["status"] = "error"
         result["error"] = str(exc)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         raise SystemExit(1) from exc
 
-    items = _webhook_items(payload)
     result.update(
         {
             "status": "ok",
-            "webhooks_count": len(items),
-            "webhooks": items,
+            "auth_ok": True,
+            "payments_seen": len(payload.get("items") or []),
         }
     )
     print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))

@@ -1,5 +1,10 @@
 # best2 Project Memory
 
+## 2026-06-08 YooKassa Basic Auth webhook/status correction
+
+- YooKassa webhook API `/v3/webhooks` is OAuth-only; for `best2` shopId/secret-key HTTP Basic Auth, HTTP notifications must be configured manually in the YooKassa dashboard (`Интеграция -> HTTP-уведомления`).
+- `scripts/yookassa_status.py` now checks credentials via read-only `GET /payments?limit=1`, and `scripts/register_yookassa_webhook.py` refuses `--apply` while printing a safe manual setup plan. Details: [[architecture/api]], [[operations/production-runbook]], [[bugs/2026-06-08-yookassa-payment-enable-blockers]].
+
 ## 2026-06-08 Full local recheck and remaining production blockers
 
 - The live MAX wrong-service report is now guarded by a deterministic regression: active gazebo hold + failed payment + `давай еще баню забронируем на 14 июня` resets to a fresh bathhouse form, clears stale gazebo fields and asks for bathhouse time. Details: [[bugs/2026-06-08-live-bathhouse-new-booking-and-yookassa-payment]].

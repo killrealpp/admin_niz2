@@ -1,5 +1,11 @@
 # Project Log
 
+## 2026-06-08 - YooKassa status helper corrected for Basic Auth
+
+- Found the root of the confusing YooKassa `Authentication type is not allowed` result: the old `scripts/yookassa_status.py` checked `/v3/webhooks`, but YooKassa webhook API setup is OAuth-only. For the shopId/secret-key HTTP Basic Auth flow used by `best2`, HTTP notifications are configured manually in the merchant dashboard.
+- Updated `YooKassaClient` with read-only `list_payments(limit=1)` and changed `scripts/yookassa_status.py` to check credentials via `GET /payments?limit=1` instead of `/webhooks`. Local workstation still gets an SSL handshake timeout to YooKassa, but the script now targets the correct Basic Auth endpoint.
+- Updated `scripts/register_yookassa_webhook.py`: it now prints a redacted manual-dashboard setup plan and refuses `--apply` before any YooKassa API call. Updated [[architecture/api]], [[operations/production-runbook]], [[operations/production-env-checklist]] and [[bugs/2026-06-08-yookassa-payment-enable-blockers]] accordingly.
+
 ## 2026-06-08 - Full local recheck after live MAX payment/routing report
 
 - Added a permanent regression case to `scripts/local_regression_suite.py`: active gazebo hold + failed YooKassa payment + `current_step='awaiting_new_date'` + user text `давай еще баню забронируем на 14 июня`. The fake AI deliberately returns no useful patch, so the backend must reset stale gazebo state by deterministic routing.
@@ -8,6 +14,7 @@
 - Live DB health is currently `status=ok`, YCLIENTS is fresh, Telegram has empty webhook/pending `0`, and MAX has one active subscription for `message_created`/`bot_started`.
 - Remaining blockers are operational: local `yookassa_status.py` still times out during SSL handshake to YooKassa from the workstation, the live payment row already showed YooKassa `401 invalid_credentials`, and the public server path has nginx/webhook issues (`https://max.killrealp2.ru/webhooks/max` exact path times out; `/webhooks/max/` returns app JSON `not_found`; `/webhooks/yookassa` returns nginx `404`). Details: [[bugs/2026-06-08-live-bathhouse-new-booking-and-yookassa-payment]], [[bugs/2026-06-08-yookassa-payment-enable-blockers]], [[bugs/2026-06-08-server-ssh-https-blocker]].
 - Operator then ran the deploy checks directly on `/opt/admin_niz2`: compile, the new regression, MAX media/outbound smokes and YooKassa webhook hardening smoke passed. Server `scripts/yookassa_status.py` still fails with YooKassa `401 invalid_credentials` / `Authentication type is not allowed`, and the server env summary shows payment production mode is not applied yet (`payment_status_sync_enabled=false`, `prepayment_mode=fixed`, `YOOKASSA_WEBHOOK_ENABLED=false`, no webhook secret, webhook URL still the old YCLIENTS URL).
+- After the server `.env` was corrected, the server summary shows production payment flags are now loaded (`payment_status_sync_enabled=true`, `prepayment_mode=percent`, `YOOKASSA_WEBHOOK_ENABLED=true`, webhook secret configured). The remaining YooKassa `401 invalid_credentials` is therefore not caused by percent prepayment mode or webhook flags; it points to the YooKassa shop/API secret pair or to the shop being connected through a non-API/old HTTP protocol mode.
 
 ## 2026-06-08 - Live MAX payment and wrong-service routing diagnostics
 

@@ -1,7 +1,9 @@
-"""Prepare or apply YooKassa webhook registration.
+"""Prepare YooKassa HTTP-notification webhook setup.
 
-Default mode is dry-run and does not call YooKassa API. Use --apply manually
-only after the public HTTPS endpoint and the local webhook runner are ready.
+For the shopId/secret-key HTTP Basic Auth integration used by this app,
+YooKassa webhooks are configured in the merchant dashboard, not through
+the `/v3/webhooks` OAuth API. This script validates and prints the safe
+dashboard setup plan.
 """
 
 from __future__ import annotations
@@ -17,8 +19,6 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.core.config import get_settings  # noqa: E402
-from app.integrations.yookassa_client import YooKassaClient  # noqa: E402
-
 
 DEFAULT_EVENTS = ("payment.succeeded", "payment.canceled")
 
@@ -65,15 +65,15 @@ def _print_payload(payload: dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Dry-run or manually apply YooKassa webhook registration. "
-            "Default mode does not call YooKassa API."
+            "Validate and print the YooKassa HTTP-notification setup plan. "
+            "For HTTP Basic Auth shops, configure these notifications in the YooKassa dashboard."
         )
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument(
         "--apply",
         action="store_true",
-        help="Actually call YooKassa API. Without this flag the script is dry-run only.",
+        help="Unsupported for HTTP Basic Auth shops; kept as a guard against accidental API calls.",
     )
     mode.add_argument(
         "--dry-run",
@@ -100,9 +100,10 @@ def main() -> None:
         "provider": "yookassa",
         "events": events,
         "url": _redact_url(webhook_url),
-        "calls_yookassa_api": bool(args.apply),
-        "method": "POST",
-        "path": "/webhooks",
+        "calls_yookassa_api": False,
+        "method": "manual_dashboard",
+        "dashboard_section": "Интеграция -> HTTP-уведомления",
+        "api_registration_supported": False,
         "payment_configured": bool(settings.payment_shop_id and settings.payment_secret_key),
         "webhook_enabled": bool(settings.yookassa_webhook_enabled),
         "webhook_secret_configured": bool(settings.yookassa_webhook_secret),
@@ -111,22 +112,11 @@ def main() -> None:
 
     if not args.apply:
         return
-    if not settings.payment_shop_id or not settings.payment_secret_key:
-        raise SystemExit("YooKassa credentials are not configured")
-
-    client = YooKassaClient()
-    results = []
-    for event in events:
-        response = client.create_webhook(event=event, url=webhook_url)
-        results.append(
-            {
-                "event": event,
-                "id": response.get("id"),
-                "active": response.get("active"),
-                "url": _redact_url(str(response.get("url") or "")),
-            }
-        )
-    _print_payload({"status": "applied", "response": results})
+    raise SystemExit(
+        "YooKassa webhook API registration requires OAuth and is not supported for "
+        "the current shopId/secret-key HTTP Basic Auth integration. Configure "
+        "HTTP notifications manually in the YooKassa dashboard."
+    )
 
 
 if __name__ == "__main__":

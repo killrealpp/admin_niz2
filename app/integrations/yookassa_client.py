@@ -112,6 +112,9 @@ class YooKassaClient:
     def get_payment(self, provider_payment_id: str) -> dict[str, Any]:
         return self._request_with_retry("GET", f"/payments/{provider_payment_id}")
 
+    def list_payments(self, *, limit: int = 1) -> dict[str, Any]:
+        return self._request_with_retry("GET", "/payments", params={"limit": limit})
+
     def create_webhook(self, *, event: str, url: str) -> dict[str, Any]:
         return self._request_with_retry(
             "POST",
