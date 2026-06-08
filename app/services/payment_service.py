@@ -17,6 +17,7 @@ from app.db.repositories import (
     webhook_events_repo,
 )
 from app.integrations.yookassa_client import YooKassaClient, YooKassaError
+from app.services.bathhouse_pricing import bathhouse_price_components
 from app.services.availability_service import check_availability, load_services_map
 from app.services.yclients_record_service import (
     create_missing_yclients_records,
@@ -364,6 +365,14 @@ def _base_price_for_item(item: dict[str, Any]) -> Decimal | None:
     if not service_type:
         return None
     config = load_services_map().get(service_type) or {}
+    if service_type == "bathhouse":
+        components = bathhouse_price_components(
+            config,
+            date_value=item.get("booking_date") or item.get("slot_date"),
+            duration_minutes=item.get("duration_minutes"),
+        )
+        if components:
+            return Decimal(str(components["total_price"])).quantize(Decimal("0.01"))
     variant = _matching_price_variant(config, item)
     raw_price = variant.get("price") if variant else config.get("price")
     if raw_price in (None, ""):

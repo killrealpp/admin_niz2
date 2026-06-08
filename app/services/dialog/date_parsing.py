@@ -166,6 +166,66 @@ def date_patch_after_marker(
     return _next_day_number_patch(day, now.date())
 
 
+def explicit_numeric_dates(text: str, now: datetime) -> list[str]:
+    normalized = text.lower().replace("ё", "е")
+    dates: list[str] = []
+    seen: set[str] = set()
+    for match in re.finditer(r"(?<!\d)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?", normalized):
+        day = int(match.group(1))
+        month = int(match.group(2))
+        raw_year = match.group(3)
+        year = int(raw_year) if raw_year else now.date().year
+        if raw_year and year < 100:
+            year += 2000
+        try:
+            candidate = date(year, month, day)
+        except ValueError:
+            continue
+        if not raw_year and candidate < now.date():
+            try:
+                candidate = candidate.replace(year=candidate.year + 1)
+            except ValueError:
+                continue
+        value = candidate.isoformat()
+        if value not in seen:
+            dates.append(value)
+            seen.add(value)
+    return dates
+
+
+def numeric_date_time_patch(text: str, now: datetime) -> dict[str, str]:
+    normalized = text.lower().replace("ё", "е")
+    match = re.search(
+        r"(?<!\d)(\d{1,2})[./](\d{1,2})(?:[./](\d{2,4}))?\s*(?:на|в|к)?\s*(\d{1,2})(?:[:.](\d{2}))?",
+        normalized,
+    )
+    if not match:
+        return {}
+    after = normalized[match.end() : match.end() + 24]
+    if any(marker in after for marker in ("человек", "чел", "гостей", "гостя", "гость")):
+        return {}
+    day = int(match.group(1))
+    month = int(match.group(2))
+    raw_year = match.group(3)
+    year = int(raw_year) if raw_year else now.date().year
+    if raw_year and year < 100:
+        year += 2000
+    hour = int(match.group(4))
+    minute = int(match.group(5) or 0)
+    if hour > 23 or minute > 59:
+        return {}
+    try:
+        candidate = date(year, month, day)
+    except ValueError:
+        return {}
+    if not raw_year and candidate < now.date():
+        try:
+            candidate = candidate.replace(year=candidate.year + 1)
+        except ValueError:
+            return {}
+    return {"date": candidate.isoformat(), "time": f"{hour:02d}:{minute:02d}"}
+
+
 def has_date_signal(text: str) -> bool:
     normalized = text.lower()
     if any(word in normalized for word in ("сегодня", "завтра", "послезавтра")):

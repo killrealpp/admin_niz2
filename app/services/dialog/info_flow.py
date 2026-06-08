@@ -5,6 +5,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable
 
+from app.services.dialog.bathhouse_flow import (
+    bathhouse_active_reply_mentions_separate_booking,
+    bathhouse_alcohol_reply,
+    bathhouse_period_options_reply,
+    bathhouse_pool_included_reply,
+    bathhouse_separate_booking_complaint_reply,
+    looks_like_bathhouse_period_options_question,
+)
+
 
 @dataclass(frozen=True)
 class InfoQuestionCallbacks:
@@ -152,6 +161,14 @@ def looks_like_info_question(
     )
     if any(re.search(pattern, normalized) for pattern in question_patterns):
         return True
+    if "бассейн" in normalized and any(marker in normalized for marker in ("вмест", "входит", "включ", "идет", "идёт", "есть")):
+        return True
+    if (
+        "отдель" in normalized
+        and "брон" in normalized
+        and any(marker in normalized for marker in ("почему", "зачем", "че", "чё", "что", "говор"))
+    ):
+        return True
     if re.search(r"\bсколько\b", normalized):
         return any(
             marker in normalized
@@ -175,6 +192,10 @@ def looks_like_info_question(
                 "свое",
                 "принести",
                 "привезти",
+                "пить",
+                "выпить",
+                "алког",
+                "напит",
             )
         )
     markers = (
@@ -200,6 +221,8 @@ def looks_like_info_question(
         "веник",
         "веники",
         "венич",
+        "алког",
+        "выпить",
     )
     return any(marker in normalized for marker in markers)
 
@@ -213,6 +236,39 @@ def deterministic_info_reply(
 ) -> str | None:
     normalized = text.lower().replace("ё", "е")
     next_key, question = callbacks.next_question(form_data)
+    bathhouse_complaint = bathhouse_separate_booking_complaint_reply(text, form_data)
+    if bathhouse_complaint:
+        reply = bathhouse_complaint
+        if question:
+            reply = f"{reply}\n\nПродолжим оформление: {question}"
+        return reply
+    pool_reply = bathhouse_pool_included_reply(text, form_data)
+    if pool_reply:
+        reply = pool_reply
+        if (
+            append_next_question
+            and question
+            and callbacks.should_append_next_question_after_info(form_data, next_key)
+            and not callbacks.reply_already_asks(reply, next_key, question)
+        ):
+            reply = f"{reply}\n\nПродолжим оформление: {question}"
+        return reply
+    alcohol_reply = bathhouse_alcohol_reply(text, form_data)
+    if alcohol_reply:
+        reply = alcohol_reply
+        if (
+            append_next_question
+            and question
+            and callbacks.should_append_next_question_after_info(form_data, next_key)
+            and not callbacks.reply_already_asks(reply, next_key, question)
+        ):
+            reply = f"{reply}\n\n{question}"
+        return reply
+    if looks_like_bathhouse_period_options_question(text):
+        period_reply = bathhouse_period_options_reply(form_data)
+        if period_reply:
+            reply, _period_next_key = period_reply
+            return reply
     photo_reply = callbacks.explicit_photo_reply(text, form_data)
     if photo_reply:
         return photo_reply
@@ -287,6 +343,8 @@ def deterministic_info_reply(
         reply = "Да, туалет на территории есть."
     else:
         return None
+    if bathhouse_active_reply_mentions_separate_booking(reply, form_data):
+        reply = "Баню уже оформляем; это баня с бассейном."
     if (
         append_next_question
         and question
@@ -410,6 +468,9 @@ def answer_info_during_form(
             history=history,
             required_meaning=required,
         )
+
+    if bathhouse_active_reply_mentions_separate_booking(reply, form_data):
+        reply = "Баню уже оформляем; это баня с бассейном."
 
     if (
         question

@@ -18,13 +18,6 @@ class VoiceTranscriptionError(RuntimeError):
 
 async def transcribe_telegram_voice(bot: Bot, message: Message) -> str:
     settings = get_settings()
-    if not settings.voice_transcription_enabled:
-        raise VoiceTranscriptionError("Voice transcription is disabled")
-    provider = settings.voice_transcription_provider.lower().strip()
-    if provider == "openrouter" and not settings.openrouter_api_key:
-        raise VoiceTranscriptionError("OPENROUTER_API_KEY is required for voice transcription")
-    if provider == "openai" and not settings.openai_api_key:
-        raise VoiceTranscriptionError("OPENAI_API_KEY is required for voice transcription")
     if not message.voice:
         raise VoiceTranscriptionError("Telegram message has no voice payload")
     if message.voice.duration and message.voice.duration > settings.voice_transcription_max_seconds:
@@ -35,9 +28,15 @@ async def transcribe_telegram_voice(bot: Bot, message: Message) -> str:
         raise VoiceTranscriptionError("Telegram file path is empty")
     audio = BytesIO()
     await bot.download_file(telegram_file.file_path, destination=audio)
-    audio.seek(0)
-    audio.name = "voice.ogg"
+    return await transcribe_audio_bytes(audio.getvalue(), filename="voice.ogg")
 
+
+async def transcribe_audio_bytes(audio_bytes: bytes, *, filename: str = "voice.ogg") -> str:
+    settings = get_settings()
+    provider = _voice_provider(settings)
+    audio = BytesIO(audio_bytes)
+    audio.seek(0)
+    audio.name = filename or "voice.ogg"
     text = await asyncio.to_thread(
         _transcribe_audio,
         audio,
@@ -51,6 +50,17 @@ async def transcribe_telegram_voice(bot: Bot, message: Message) -> str:
     if not text:
         raise VoiceTranscriptionError("Empty voice transcription")
     return text
+
+
+def _voice_provider(settings: object) -> str:
+    if not settings.voice_transcription_enabled:
+        raise VoiceTranscriptionError("Voice transcription is disabled")
+    provider = settings.voice_transcription_provider.lower().strip()
+    if provider == "openrouter" and not settings.openrouter_api_key:
+        raise VoiceTranscriptionError("OPENROUTER_API_KEY is required for voice transcription")
+    if provider == "openai" and not settings.openai_api_key:
+        raise VoiceTranscriptionError("OPENAI_API_KEY is required for voice transcription")
+    return provider
 
 
 def _transcribe_audio(

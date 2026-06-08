@@ -1,5 +1,145 @@
 # Backend
 
+## 2026-06-07 runtime ownership and MAX webhook branch
+
+- `app/bot/runtime.py` is now the owner of process-level background services for normal `main.py` startup: YCLIENTS sync loop, payment status sync loop, message retention loop and lightweight webhook servers start once per process, independent of whether `CLIENT_CHANNELS` is `telegram`, `max` or `telegram,max`.
+- `app/bot/telegram_bot.py` remains the Telegram adapter/runtime, but it can now run polling with `manage_background_services=False` when called from the shared runtime. Direct Telegram-only calls stay backward-compatible because `run_polling()` / `run_bot()` still manage background services by default.
+- MAX runtime validation happens before background tasks are started. Local polling requires `MAX_MODE=polling`, `MAX_WEBHOOK_ENABLED=false`, non-production app env and a configured token; production webhook mode requires `MAX_MODE=webhook`, `MAX_WEBHOOK_ENABLED=true` and `MAX_WEBHOOK_SECRET`.
+- `CLIENT_CHANNELS=telegram,max` now starts Telegram polling and MAX intake from one `main.py` process. For local/dev this uses shared MAX polling. For production webhook mode, the runtime starts `start_max_webhook_server(event_processor=make_max_webhook_event_processor())`.
+- This keeps MAX as a transport around the shared dialog core. `message_handler.py` is still not copied or forked for MAX, and admin/backoffice notifications remain Telegram-owned for the MVP.
+
+## 2026-06-05 MAX parity runtime and adapter layer
+
+- `main.py` now starts client channels through `app/bot/runtime.py`. The default remains Telegram-only via `CLIENT_CHANNELS=telegram`; local dual-channel testing can use `CLIENT_CHANNELS=telegram,max`.
+- MAX in `main.py` is allowed only as local/dev polling: `MAX_MODE=polling`, `MAX_WEBHOOK_ENABLED=false`, non-production `APP_ENV`, configured `MAX_BOT_TOKEN`, and no active MAX webhook subscriptions. Active-subscription and DB readiness checks live in the shared MAX polling loop.
+- `app/bot/max_live_polling.py` is the shared MAX long-polling runtime. `scripts/max_dev_live_polling.py` is now an operator/debug wrapper around the same loop, so script behavior and `main.py` behavior do not drift.
+- MAX `bot_started` is a first-touch transport event, not a dialog message: `app/bot/max_message_processor.py` sends the shared `START_WELCOME_TEXT` directly through the MAX adapter. Telegram `/start` uses the same text from `app/bot/welcome_texts.py`.
+- MAX text, transcribed MAX voice and Telegram text/voice still converge in `process_client_message()` and shared `handle_incoming()`. `message_handler.py` remains channel-agnostic and was not copied for MAX.
+- Voice transcription now has a provider-agnostic byte helper: `transcribe_audio_bytes()`. Telegram voice downloads via Telegram Bot API and then calls the helper; MAX voice/audio finds a downloadable URL from the update or `GET /messages/{messageId}`, downloads with size limits, and reuses the same helper. Unsupported MAX attachments and failed audio paths answer with clear text fallbacks instead of being silently ignored.
+- MAX media is enabled for parity smokes through runtime/config (`MAX_SEND_RELATED_MEDIA=true`) while keeping the same channel adapter boundary. YooKassa live payment provider is disabled by the local MAX dev runner unless explicitly allowed.
+
+## 2026-06-05 MAX local live polling dev runner
+
+- `scripts/max_dev_live_polling.py` is a local/dev-only MAX runtime for manual testing. After the parity slice it is a wrapper around the shared `app/bot/max_live_polling.py` loop; `main.py` can start the same MAX polling path when `CLIENT_CHANNELS` includes `max`. Telegram remains the default because `CLIENT_CHANNELS=telegram` unless explicitly overridden.
+- The runner requires safe polling conditions before it reads updates: not production, `MAX_MODE=polling`, `MAX_WEBHOOK_ENABLED=false`, no active MAX webhook subscriptions from `GET /subscriptions`, configured `MAX_BOT_TOKEN`, and a successful short DB `SELECT 1` preflight. This keeps it from mixing webhook + polling for the same bot and from sending MAX error replies while PostgreSQL is down.
+- Incoming MAX updates still use the shared channel path: `normalize_max_update()` / `max_delivery_target_from_incoming()` -> `process_client_message()` -> shared `handle_incoming()` -> `MaxChannelClient.send_text()`. It does not copy or fork `message_handler.py`.
+- By default the runner keeps local tests safer: YooKassa provider is disabled inside the process unless `--allow-real-payments` is explicitly passed, and related media upload is off unless `--send-media` is passed. DB writes for normal conversations are still expected once DB is available, because the shared dialog path stores users/conversations/messages.
+
+## 2026-06-04 MAX Step 10 media/button boundary
+
+- `app/bot/max_channel_client.py` is no longer text-only: `MaxChannelClient.send_media()` implements the post-MVP MAX media path behind the existing `ChannelClient` contract. It uploads local media with `MaxApiClient.upload_file()`, sends MAX attachments with upload `token`, retries `attachment.not.ready` and caps a single media message to the local `MAX_MEDIA_SEND_LIMIT`.
+- MAX media failure semantics are client-safe: if upload/send fails, the adapter sends a short text fallback to the MAX user and records `system_logs.event_type='max_media_delivery_failed'` with the target/channel and media filenames. This keeps dialog processing from forking for MAX and avoids marking media as silently delivered.
+- `app/bot/max_message_processor.py` now uses `process_client_message(..., send_related_media=True)` for normalized MAX messages, so explicit photo requests and auto-photo routing use the shared `client_message_processor` path. The dev polling smoke remains dry-run/text-only through `DryRunMaxChannelClient`.
+- MAX payment-link buttons live at the MAX adapter boundary: `MaxChannelClient.send_text()` keeps the original text with the URL, and adds an `inline_keyboard` link button only for explicit link-button options or payment/prepayment text with an HTTP URL. Telegram delivery and user-facing Telegram text order are unchanged.
+- Contact request buttons were not added in this slice. Phone collection stays text input until a later `request_contact` + hash-validation slice is explicitly requested. Admin notifications remain Telegram-owned.
+
+## 2026-06-04 MAX Step 9 user notification routing
+
+- `app/bot/client_notification_router.py` builds the client-facing `NotificationRouter`: Telegram is registered when the runtime has an aiogram bot; MAX text delivery is registered only when `MAX_BOT_TOKEN` is configured. This helper does not start MAX polling/webhook and does not register subscriptions.
+- `app/services/client_notification_service.py` is the shared client-notification delivery boundary. It builds `DeliveryTarget(channel=user_channel, external_id=user_external_id, chat_id optional)`, sends text through `NotificationRouter`, and records `system_logs.event_type='client_notification_delivery_failed'` when the channel/target is missing, unknown or the adapter raises.
+- Client notification callers treat `delivered=False` as non-delivery: paid payment notifications do not set `payment_notified_at`, expired holds do not set `expired_notified_at`, booking reminders do not set `reminder_sent_at`, and waitlist requests do not move to `status='notified'` unless router delivery succeeds.
+- `app/services/payment_status_runner.py` now routes client text notifications by user channel for auto-resent payment links, paid payment confirmations, paid-without-booking notices, journal-pending paid notices, expired holds and booking reminders. Telegram paid-booking media remains a Telegram-only post-text step; MAX MVP receives text only.
+- `app/services/waitlist_service.py` now routes waitlist match notifications by user channel through the same notification boundary.
+- Repository notification queries must return both `user_external_id` and `user_channel`: `payments_repo.list_paid_unnotified()`, `slot_holds_repo.list_expired_unnotified()`, `bookings_repo.list_due_reminders()` and `waitlist_repo.list_active_due()`.
+- Admin/backoffice notifications remain Telegram-owned in this MVP slice (`notify_admin_*` paths still use `admin_telegram_service`). This slice does not wire MAX webhook runner into `main.py`/`telegram_bot.py`, does not call `POST /subscriptions`, does not add MAX media/buttons/contact/voice and does not create real payments.
+
+## 2026-06-04 MAX Step 8 outbound text boundary
+
+- `app/bot/max_channel_client.py` is the MAX text-only `ChannelClient` adapter for the MVP. `MaxChannelClient.send_text()` sends ordinary text through `MaxApiClient.send_message()` and does not implement MAX media/buttons/contact/voice.
+- MAX delivery target selection is channel-contract driven: if `DeliveryTarget.chat_id` is present, MAX outbound uses `POST /messages?chat_id=...`; otherwise it uses `DeliveryTarget.external_id` as `POST /messages?user_id=...`. This preserves the Step 2 transport contract without changing `TelegramChannelClient`.
+- MAX text length handling is split at the channel adapter boundary: `split_max_text()` chunks outbound text to the `4000` character MAX limit. The lower-level API wrapper also guards against a single over-limit payload, so direct misuse fails before a live request.
+- `app/bot/max_message_processor.py` is the safe Step 8 inbound-to-outbound glue. `process_max_update()` runs `normalize_max_update() -> max_delivery_target_from_incoming() -> process_client_message(..., send_related_media=False)` with `MaxChannelClient` by default. This keeps `message_handler.py` as the single dialog core and keeps MAX MVP text-only.
+- `process_max_webhook_event()` and `make_max_webhook_event_processor()` are callable hooks for `app/bot/max_webhook_runner.py`, but this step still does not import/start the MAX webhook runner from `main.py` or `telegram_bot.py`, does not register webhook subscriptions and does not call `POST /subscriptions`.
+- `app/bot/max_polling_runner.py` remains a dev/test smoke path with `DryRunMaxChannelClient`; it still does not send `POST /messages`, so Step 5 safe polling behavior is preserved.
+- Telegram delivery is unchanged: `app/bot/telegram_channel_client.py`, Telegram normalization and Telegram runtime were not edited in Step 8. Admin notifications remain Telegram for MVP.
+
+## 2026-06-04 MAX Step 7 inbound normalization boundary
+
+- `app/bot/max_router.py` owns MAX inbound normalization for the text-only MVP. Its public entry is `normalize_max_update(update) -> IncomingMessage | None`.
+- Supported MVP events are `message_created` with text and `bot_started`. `message_created` builds `IncomingMessage(channel='max')` from common MAX shapes (`message.body.text`, string `body`, nested `message_created`, root `text`). `bot_started` becomes `/start` or `/start <payload>` and stores the deeplink payload in `raw_payload["payload"]`.
+- Normalized MAX messages preserve `external_user_id`, `user_name`, `message_time` and a MAX-specific `raw_payload` summary: `source`, `update_type`, `timestamp`, `chat_id`, `message_id`, optional `payload` and a copy of the original update. Unknown, non-text or userless events are ignored with debug logging and do not raise.
+- `max_delivery_target_from_incoming()` derives `DeliveryTarget(channel='max', external_id, chat_id)` from a normalized MAX message. This is currently used only by `app/bot/max_polling_runner.py` to keep the Step 5 dev polling smoke compatible.
+- `app/bot/max_polling_runner.py::normalize_max_text_update()` is now a thin text-only wrapper around `normalize_max_update()`. It still returns `(IncomingMessage, DeliveryTarget)` for `message_created` and still ignores `bot_started`, so the polling smoke remains dev/test-only and does not send `POST /messages`.
+- This slice does not wire MAX webhook events into `process_client_message()`, does not connect `start_max_webhook_server()` to `main.py` or `telegram_bot.py`, does not add a MAX outbound client, does not register webhook subscriptions and does not change Telegram normalization in `app/bot/router.py`.
+
+## 2026-06-04 MAX Step 6 webhook runner boundary
+
+- `app/bot/max_webhook_runner.py` owns the MAX webhook accept/dedup/queue boundary. It is not imported by `main.py` or `app/bot/telegram_bot.py`, so Telegram polling and current production startup stay unchanged.
+- `start_max_webhook_server(event_processor=None)` starts a lightweight internal HTTP server only when `MAX_WEBHOOK_ENABLED=true`; it fail-fast rejects `MAX_MODE != webhook` and requires `MAX_WEBHOOK_SECRET` for `APP_ENV=production/prod`. New runtime config keys are `MAX_WEBHOOK_HOST`, `MAX_WEBHOOK_PORT` and `MAX_WEBHOOK_MAX_BODY_BYTES`.
+- The HTTP handler validates path, `X-Max-Bot-Api-Secret`, content length/body limit, UTF-8 JSON and JSON-object shape. For a valid new payload it writes `webhook_events(provider='max', event_type, provider_object_id=stable_max_event_key(...))` before enqueueing.
+- Duplicate handling reuses the existing unique index on `webhook_events(provider, event_type, provider_object_id)`: a repeat event returns `200 OK` with `duplicate=true` and is not put into the in-memory queue again.
+- The first queue is intentionally in-memory. The worker calls an optional `event_processor` and marks the `webhook_events` row processed only after that processor succeeds. Without a processor, accepted events are logged and left with `processed_at=NULL`; this avoids pretending that Step 7 inbound normalization or Step 8 outbound delivery already happened.
+- This slice does not add `inbound_events`, does not normalize MAX payloads into `IncomingMessage`, does not send `POST /messages`, does not register webhook subscriptions and does not move admin notifications out of Telegram.
+
+## 2026-06-04 MAX Step 5 dev polling smoke boundary
+
+- `app/bot/max_polling_runner.py` owns the dev/test-only MAX polling smoke boundary. It is not imported by `main.py` or `app/bot/telegram_bot.py`, so production startup and Telegram polling stay unchanged.
+- `run_max_dev_polling_smoke()` checks MAX local/runtime blockers before polling: `APP_ENV=production`, `MAX_WEBHOOK_ENABLED=true`, `MAX_MODE != polling` and existing webhook subscriptions all stop the smoke before `GET /updates`.
+- The smoke uses a minimal local `message_created` text normalizer to build `IncomingMessage(channel='max')` and `DeliveryTarget(channel='max')`, then runs the existing shared path `process_client_message() -> handle_incoming()`. This confirms the channel-aware DB/dialog path without forking `message_handler.py`.
+- `DryRunMaxChannelClient` intentionally captures reply/typing/media counts instead of sending `POST /messages`. The smoke calls `process_client_message(..., send_related_media=False)` so post-reply media routing cannot mark auto-media as sent without real MAX delivery. Real MAX outbound text, webhook runner, broad MAX inbound normalization (`bot_started`, callbacks, contact/media) and user notifications by channel remain separate later steps.
+
+## 2026-06-04 MAX Step 3 Telegram processing boundary
+
+- `app/bot/client_message_processor.py` owns the behavior-preserving client-message processing path for current Telegram traffic and future channel adapters: per-user lock by `channel:external_user_id`, `asyncio.to_thread(handle_incoming, incoming)`, typing loop through `ChannelClient`, reply delivery, post-reply media routing and error fallback.
+- `app/bot/telegram_channel_client.py` implements `TelegramChannelClient` over `aiogram.Bot`. It preserves Telegram inbound reply semantics by using `message.reply(...)` when `reply_to_message` is passed, and preserves post-reply media/notes by using `message.answer...` when `source_message` is passed.
+- `app/bot/telegram_bot.py` is still the Telegram adapter/runtime. It owns `/start`, `/status`, text/caption/voice handlers, Telegram normalization, voice transcription, dispatcher registration, polling and background loop startup/shutdown.
+- Background loops remain Telegram-first in this slice: YCLIENTS sync, payment status, message retention and YooKassa webhook server still start from `telegram_bot.py` with the aiogram bot. Admin notifications for MAX MVP remain Telegram.
+- This step did not add MAX polling, MAX webhook, MAX API client, MAX outbound, webhook registration or real payment smoke. `message_handler.py` remains the single dialog core entry and was not copied for MAX.
+
+## 2026-06-04 MAX transport contract skeleton
+
+- Шаг 2 MAX route ввел пассивный transport contract без подключения MAX runtime и без изменения Telegram behavior.
+- Channel constants теперь включают `CHANNEL_TELEGRAM = "telegram"`, `CHANNEL_MAX = "max"` и `SUPPORTED_CLIENT_CHANNELS` в `app/core/constants.py`. Для transport-layer импортов добавлен `app/bot/channel_types.py`, который экспортирует эти channel constants вместе с `DeliveryTarget` и `OutboundMessage`.
+- `DeliveryTarget(channel, external_id, chat_id=None)` нормализует адрес доставки; `address` выбирает `chat_id`, если он задан, иначе `external_id`. `OutboundMessage` хранит text/media/parse_mode/notify/raw_payload и нормализует `media_paths` в tuple.
+- `app/bot/channel_client.py` определяет `ChannelClient` Protocol: `send_text`, `send_media`, `send_typing`, `answer_callback`. `app/bot/notification_router.py` добавляет skeleton `NotificationRouter`, который dispatch-ит по `DeliveryTarget.channel` и бросает `NotificationDeliveryError`, если adapter для канала не зарегистрирован.
+- `app/core/config.py` теперь читает MAX/config contract поля: `CLIENT_CHANNELS`, `MAX_BOT_TOKEN`, `MAX_API_BASE_URL`, `MAX_WEBHOOK_ENABLED`, `MAX_WEBHOOK_PATH`, `MAX_WEBHOOK_URL`, `MAX_WEBHOOK_SECRET`, `MAX_MODE`; `safe_summary()` показывает только безопасные флаги (`client_channels`, `max_configured`, `max_mode`, `max_webhook_enabled`) без токена/secret.
+- Этот срез не создавал `MaxApiClient`, `MaxChannelClient`, MAX polling/webhook и не менял `handle_incoming()`; следующий за ним behavior-preserving Telegram extraction описан в секции выше.
+
+## 2026-06-04 planned MAX channel transport boundary
+
+- План MAX MVP сохраняет один общий диалоговый путь: `IncomingMessage -> handle_incoming() -> reply`.
+- Новый transport layer должен добавить `CHANNEL_MAX`, `DeliveryTarget`, `OutboundMessage`, `ChannelClient`, `NotificationRouter` и channel adapters без изменений в `handle_incoming()` под MAX.
+- Telegram adapter должен остаться behavior-preserving: polling, lock, reply delivery, media hook и error handling выносятся в общий processor/`TelegramChannelClient` без изменения Telegram UX.
+- MAX adapter MVP должен нормализовать `message_created` и `bot_started`, создавать/использовать пользователей как `channel='max'` и отправлять обычный текст через `POST /messages`.
+- Клиентские payment/hold/reminder/waitlist notifications должны постепенно идти через `NotificationRouter` по каналу пользователя; admin notifications MVP остаются в Telegram.
+- MAX payment link в первом MVP отправляется обычным текстом. MAX media, link-button оплаты, contact-button и voice/audio adapter остаются post-MVP.
+
+## 2026-06-04 reference/unavailable route boundary
+
+- `app/services/dialog/reference_flow.py` now owns the behavior-preserving reference/unavailable helper slice. It contains `same_booking_reference_patch()` for copying same-date/same-time from active paid/current bookings, plus route helpers for free-dates-after-unavailable, alternative-services-after-unavailable and same-unavailable-date repeat handling.
+- The module uses callback dataclasses so DB lookups, availability checks, AI process reply and legacy parser functions stay injected by `message_handler_flow_glue.py`. This keeps side effects in the coordinator and avoids moving repository writes or assistant-message persistence into the helper module.
+- `RouteResult` is introduced for these reference routes with `reply`, `status`, `current_step`, `next_step`, `form_data` and optional `intent`. `message_handler_flow_glue.py` commits it through the local `commit_route_result()` wrapper, so assistant messages still go through the single `_commit_assistant_response()` boundary.
+- `app/services/message_handler.py` now imports `preserve_current_service_for_reference()` from `reference_flow.py`. The guard keeps the current draft service when a same-reference phrase mentions another already-paid service as the source (`в то же время что беседка` while filling a bathhouse), unless the message is an explicit new-service request.
+- This slice does not introduce the final route-priority table yet. Current routing order is intentionally preserved; the visible next step is media route extraction and then explicit route priority.
+
+## 2026-06-04 live period parsing and gazebo capacity replacement guard
+
+- `app/services/dialog/time_parsing.py` keeps local `дня/вечера/ночи` context while parsing explicit periods. This protects phrases like `с 12 дня до 8 вечера` as `12:00-20:00` and keeps guest ranges such as `15-17 человек` out of time parsing.
+- `app/services/dialog/bathhouse_flow.py::bathhouse_period_options_reply()` is the shared client-facing bathhouse period prompt. It asks for a concrete period before availability and shows package prices in a compact table instead of dense per-hour wording.
+- `app/services/dialog/message_handler_flow_glue.py::_impl_gazebo_capacity_change_request()` runs immediately after `commit_reply()` is available and before semantic preflight. It handles active-gazebo replacement caused by capacity (`заменить/не подходит/тесно` + new guest count), clears the old `service_variant`, preserves known date/time/duration, and checks suitable free variants before any AI/free-dates fallback can answer.
+
+## 2026-06-03 Priority 1 glue boundary and DB pool guard
+
+- `app/services/message_handler.py` remains the public compatibility/wrapper layer for dialog entrypoints and old monkeypatch/call sites. The large side-effectful orchestration slice now lives in `app/services/dialog/message_handler_flow_glue.py`; `handle_incoming()` delegates to `_impl_handle_incoming()`, while wrappers and callback wiring remain available from `message_handler.py`.
+- The current boundary is considered verified, not merely extracted. Targeted regression is green across `fresh+services`, `post_booking+payments`, `cancel+reschedule`, `prices+time+upsell+media`, plus `dialog_context_suite.py` 19/19, `dialog_edge_suite.py` 15/15 and `dialog_stress_suite.py` 13/13. New refactor work should start from this fixed boundary instead of continuing the previous unfinished state.
+- Side-effect ownership stays unchanged: DB writes, assistant message persistence, payment/YCLIENTS operations, Telegram handler routing and background loops are still outside pure helper modules. Flow modules such as `new_booking_flow.py` own pure/state-machine helper decisions; glue/handler owns runtime effects.
+- `app/db/connection.py` now protects the lazy global `ThreadedConnectionPool` with a process-local `Lock`. Checkout returns both the connection and the pool object that produced it, so release always returns the connection to the same pool. Checkout also retries transient `psycopg2.pool.PoolError` such as short pool exhaustion. This closes a startup race observed when YCLIENTS sync, payment sync and message retention loops start together.
+
+## 2026-06-03 fresh/new-booking helper boundary
+
+- `app/services/dialog/new_booking_flow.py` now owns more of the pure fresh/new-booking decision surface: additional-booking detection, explicit new-booking detection, generic new-request detection, reuse of `last_discussed_service_type`, fresh form construction, immediate fresh-start reply text and AI fresh-start patch filtering.
+- `message_handler.py` intentionally keeps thin `_...` wrappers around these helpers. This preserves existing imports/call sites and lets the handler inject local dependencies (`service_type_patch`, cancel/reschedule detectors, date/time parsers, `load_services_map`) without moving DB, payment, YCLIENTS or assistant-commit side effects into the flow module.
+- This is a behavior-preserving Phase 3 slice: `NewBookingFlowCallbacks` / `NewBookingFlowResult` remain the boundary for stale/fresh orchestration, while `handle_incoming()` still owns persistence and routing order. The handler shrank from about `5936` to `5837` lines in this pass.
+
+## 2026-06-03 bathhouse extended duration and active-form info guards
+
+- `app/services/bathhouse_pricing.py` is the shared bathhouse package/price helper. For requested durations above 7 hours it maps the YCLIENTS package to the 7-hour variant for the requested weekday, while keeping the requested duration for local state and pricing.
+- Bathhouse pricing is now centralized for user-facing price replies and payment base-price calculation: total = 7-hour package price for the weekday + `1 500 ₽` for each extra hour after 7.
+- `availability_service.check_availability()` allows bathhouse durations above 7 hours. It still validates the YCLIENTS start time against the selected 7-hour service package, then checks local busy intervals against the actual requested start/end period.
+- `dialog/availability_flow.py`, `dialog/bathhouse_flow.py` and `message_handler.py` share the same package prompt for bathhouse date-only cases: do not promise free bathhouse availability until both time and duration/period are known.
+- Open-ended "until morning" default duration is intentionally scoped to gazebo flow. Bathhouse requires an explicit period or duration; a bare `поменять время` clears the old bathhouse time/duration and asks for a new period.
+- Active bathhouse info questions short-circuit before AI/service-exists shortcuts. Alcohol/ напитки get a deterministic safety answer; complaints about "separate booking" acknowledge that the current draft is already a bathhouse with pool and then repeat the current form question. The separate-booking wording remains valid only when the client tries to add bathhouse to a gazebo booking.
+
 ## 2026-06-02 info-flow, payment TTL and unpaid-hold correction
 
 - `app/services/dialog/info_flow.py` is the Phase 3 extraction from `message_handler.py`. It owns deterministic/common info detection and replies, active-booking reference info, info-during-form composition, `reply_already_asks()` and "append next question after info" decisions. `message_handler.py` keeps wrappers and callback builders so existing call sites remain stable.

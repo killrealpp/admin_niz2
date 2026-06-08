@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 from app.services.availability_service import load_services_map
+from app.services.bathhouse_pricing import bathhouse_variant_for_duration
 from app.services.dialog.formatting import duration_minutes_value, format_date_ru, format_rub
 
 
@@ -353,6 +354,14 @@ def selected_variant_config(form_data: dict[str, Any]) -> dict[str, Any]:
     for variant in config.get("variants") or []:
         title = str(variant.get("title") or "").lower().replace("ё", "е")
         if title and title in variant_name:
+            return variant
+    if variants and service_type == "bathhouse":
+        variant = bathhouse_variant_for_duration(
+            config,
+            date_value=form_data.get("date"),
+            duration_value=form_data.get("duration"),
+        )
+        if variant:
             return variant
     if variants and service_type != "gazebo":
         duration_minutes = duration_minutes_value(form_data.get("duration"))

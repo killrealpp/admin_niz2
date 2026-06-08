@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
+
+from app.services.dialog.formatting import format_date_ru
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,301 @@ class NewBookingFlowResult:
     started_new_booking_from_ai: bool = False
     patch: dict[str, Any] | None = None
     expected_key_before: str | None = None
+
+
+def wants_additional_booking(
+    text: str,
+    *,
+    wants_cancel_booking: Callable[[str], bool],
+    wants_reschedule: Callable[[str], bool],
+    wants_swap_bookings: Callable[[str], bool],
+    service_type_patch: Callable[[str], dict[str, Any]],
+) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if wants_cancel_booking(text) or wants_reschedule(text) or wants_swap_bookings(text):
+        return False
+    if not any(marker in normalized for marker in ("еще", "ещё", "добав", "добв", "также", "тоже", "брон", "заброни", "хочу", "нужн")):
+        return False
+    if service_type_patch(normalized):
+        return True
+    return any(
+        marker in normalized
+        for marker in (
+            "еще одну",
+            "еще одна",
+            "ещё одну",
+            "ещё одна",
+            "еще надо",
+            "ещё надо",
+            "вторую брон",
+            "новую брон",
+            "добавить брон",
+            "добавь брон",
+            "добвить брон",
+            "добвь брон",
+            "отдельной брон",
+            "отдельную брон",
+            "отдельно брон",
+            "отдельной заяв",
+            "отдельную заяв",
+            "еще брон",
+            "ещё брон",
+        )
+    )
+
+
+def starts_new_booking_request(
+    text: str,
+    *,
+    asks_available_services: Callable[[str], bool],
+    service_type_patch: Callable[[str], dict[str, Any]],
+    looks_like_info_question: Callable[[str], bool],
+    explicit_numeric_dates: Callable[[str, datetime], list[Any]],
+    now_local: Callable[[], datetime],
+) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if asks_available_services(text):
+        return False
+    if not service_type_patch(normalized):
+        return False
+    has_booking_signal = any(
+        marker in normalized
+        for marker in (
+            "нужн",
+            "хочу",
+            "хотел",
+            "хотела",
+            "хотим",
+            "давай",
+            "заброни",
+            "брон",
+            "заказ",
+            "оформ",
+            "можно",
+            "еще",
+            "ещё",
+            "добав",
+        )
+    )
+    if not has_booking_signal:
+        return False
+    if looks_like_info_question(text):
+        return any(
+            marker in normalized
+            for marker in ("нужн", "хочу", "заброни", "брон", "заказ", "оформ")
+        ) or bool(explicit_numeric_dates(text, now_local()))
+    return True
+
+
+def generic_new_booking_request(
+    text: str,
+    *,
+    wants_cancel_booking: Callable[[str], bool],
+    wants_reschedule: Callable[[str], bool],
+    wants_swap_bookings: Callable[[str], bool],
+) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if wants_cancel_booking(text) or wants_reschedule(text) or wants_swap_bookings(text):
+        return False
+    wants_separate_booking = any(
+        marker in normalized
+        for marker in (
+            "отдельной брон",
+            "отдельную брон",
+            "отдельно брон",
+            "отдельной заяв",
+            "отдельную заяв",
+            "добавить отдель",
+            "добавь отдель",
+            "добвить отдель",
+            "добвь отдель",
+        )
+    ) and any(
+        marker in normalized
+        for marker in ("хочу", "давай", "давайте", "оформ", "добав", "добв", "заброн", "брон", "начн")
+    )
+    return (
+        any(
+            marker in normalized
+            for marker in (
+                "новую заявку",
+                "новая заявка",
+                "новую брон",
+                "новая брон",
+                "следующую заявку",
+                "следующая заявка",
+                "следующую брон",
+                "следующая брон",
+                "следующуей заяв",
+            )
+        )
+        and any(marker in normalized for marker in ("начн", "оформ", "давай", "давайте", "хочу", "приступ"))
+    ) or any(
+        marker in normalized
+        for marker in (
+            "начнем новую",
+            "начнём новую",
+            "давайте начнем",
+            "давайте начнём",
+            "оформим новую",
+            "новую оформим",
+            "приступим к следующ",
+        )
+    ) or wants_separate_booking
+
+
+def context_service_for_generic_new_booking(
+    conversation: dict[str, Any],
+    text: str,
+    *,
+    generic_new_booking_request: Callable[[str], bool],
+    service_exists: Callable[[Any], bool],
+) -> str | None:
+    if not generic_new_booking_request(text):
+        return None
+    service_type = (conversation.get("form_data") or {}).get("last_discussed_service_type")
+    if service_exists(service_type):
+        return str(service_type)
+    return None
+
+
+def fresh_booking_form_data_for_text(
+    previous: dict[str, Any],
+    text: str,
+    *,
+    new_booking_form_data: Callable[[dict[str, Any]], dict[str, Any]],
+    service_type_patch: Callable[[str], dict[str, Any]],
+    generic_new_booking_request: Callable[[str], bool],
+    normalize_service_aliases: Callable[[dict[str, Any]], dict[str, Any]],
+    service_exists: Callable[[Any], bool],
+) -> dict[str, Any]:
+    fresh = new_booking_form_data(previous)
+    service_patch = service_type_patch(text)
+    if not service_patch and generic_new_booking_request(text):
+        service_type = previous.get("last_discussed_service_type")
+        if service_exists(service_type):
+            service_patch = {"service_type": str(service_type)}
+    if service_patch:
+        fresh.update(service_patch)
+        fresh = normalize_service_aliases(fresh)
+    if fresh.get("service_type") != "gazebo":
+        fresh["service_variant"] = None
+    return fresh
+
+
+def fresh_start_immediate_reply(
+    form_data: dict[str, Any],
+    text: str,
+    now: datetime,
+    *,
+    generic_new_booking_request: Callable[[str], bool],
+    asks_for_free_slots: Callable[[str], bool],
+    asks_nearest_free_dates: Callable[[str], bool],
+    has_specific_date_signal: Callable[[str, datetime], bool],
+    looks_like_same_date_reference_text: Callable[[str], bool],
+    time_period_patch: Callable[[str], dict[str, Any]],
+    looks_like_same_time_reference_text: Callable[[str], bool],
+    service_title: Callable[[Any], str | None],
+) -> tuple[str, str, str | None] | None:
+    if not form_data.get("service_type") and generic_new_booking_request(text):
+        return (
+            "Хорошо, начнём следующую заявку ✅\n\nЧто хотите забронировать: беседку, баню или дом?",
+            "service_type",
+            "service_type",
+        )
+    if not form_data.get("service_type"):
+        return None
+    if asks_for_free_slots(text) or asks_nearest_free_dates(text):
+        return None
+    if has_specific_date_signal(text, now) or looks_like_same_date_reference_text(text):
+        return None
+    if time_period_patch(text) or looks_like_same_time_reference_text(text):
+        return None
+    if any(form_data.get(key) for key in ("date", "time", "duration", "guests_count", "event_format", "upsell_items")):
+        return None
+    title = service_title(form_data.get("service_type")) or "услугу"
+    contact_note = ""
+    if form_data.get("client_name") and form_data.get("phone"):
+        contact_note = "\n\nИмя и телефон уже есть, повторно их спрашивать не буду."
+    elif form_data.get("phone"):
+        contact_note = "\n\nТелефон уже есть, повторно его спрашивать не буду."
+    return f"Хорошо, начнём новую заявку: {title.lower()} ✅{contact_note}\n\nНа какую дату планируете?", "date", "date"
+
+
+def fresh_booking_patch_from_ai(
+    *,
+    ai_result: Any,
+    patch: dict[str, Any],
+    text: str,
+    now: datetime,
+    filter_new_booking_patch_to_current_message: Callable[[dict[str, Any], str, datetime], dict[str, Any]],
+) -> dict[str, Any]:
+    fresh_patch = filter_new_booking_patch_to_current_message(patch, text, now)
+    ai_patch = dict(getattr(ai_result, "form_data_patch", None) or {})
+    changed_fields = set(getattr(ai_result, "changed_fields", None) or [])
+    for key in ("service_type", "service_variant", "preferences"):
+        if key in ai_patch:
+            fresh_patch[key] = ai_patch[key]
+    for key in ("date", "time", "duration", "guests_count", "event_format", "upsell_items", "phone"):
+        if key in ai_patch and key in changed_fields:
+            fresh_patch[key] = ai_patch[key]
+    return fresh_patch
+
+
+def multi_gazebo_booking_patch(
+    text: str,
+    now: datetime,
+    *,
+    service_type_patch: Callable[[str], dict[str, Any]],
+    explicit_numeric_dates: Callable[[str, datetime], list[str]],
+) -> dict[str, Any]:
+    normalized = text.lower().replace("ё", "е")
+    if (service_type_patch(normalized) or {}).get("service_type") != "gazebo":
+        return {}
+    if not (
+        re.search(r"\b2\s*(?:бесед|брон|заяв)", normalized)
+        or re.search(r"\bдве\s+(?:бесед|брон|заяв)", normalized)
+        or re.search(r"\bдва\s+(?:бесед|брон|заяв)", normalized)
+    ):
+        return {}
+    dates = explicit_numeric_dates(text, now)
+    patch: dict[str, Any] = {
+        "service_type": "gazebo",
+        "pending_additional_bookings": [
+            {"service_type": "gazebo", "date": value}
+            for value in dates[1:]
+        ],
+        "multi_booking_mode": "sequential",
+    }
+    if dates:
+        patch["date"] = dates[0]
+    return patch
+
+
+def multi_gazebo_booking_reply(text: str, form_data: dict[str, Any]) -> str:
+    lines: list[str] = []
+    normalized = text.lower().replace("ё", "е")
+    if "мангал" in normalized or "угл" in normalized:
+        lines.append("Мангал у беседок есть. Уголь можно добавить к заявке, чтобы не везти с собой.")
+        lines.append("")
+    pending = form_data.get("pending_additional_bookings") or []
+    if form_data.get("date"):
+        first = format_date_ru(form_data.get("date"))
+        if pending:
+            second_dates = ", ".join(format_date_ru(item.get("date")) for item in pending if item.get("date"))
+            lines.append(
+                f"Две беседки можно оформить, но заявки заполняем по очереди: начинаем с {first}, "
+                f"а {second_dates} держу как следующую отдельную бронь."
+            )
+        else:
+            lines.append("Две беседки можно оформить, но заявки заполняем по очереди, чтобы не смешать даты и время.")
+        lines.append("")
+        lines.append(f"По первой беседке на {first}: во сколько хотите приехать?")
+    else:
+        lines.append("Две беседки можно оформить, но заявки заполняем по очереди, чтобы не смешать даты и время.")
+        lines.append("")
+        lines.append("Начнём с первой беседки. На какую дату её поставить?")
+    return "\n".join(lines)
 
 
 def handle_stale_new_booking_flow(

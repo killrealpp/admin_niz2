@@ -47,6 +47,22 @@ class Settings(BaseSettings):
 
     telegram_bot_token: str = Field(..., alias="TELEGRAM_BOT_TOKEN")
     telegram_webhook_url: str = Field("", alias="TELEGRAM_WEBHOOK_URL")
+    client_channels: str = Field("telegram", alias="CLIENT_CHANNELS")
+    max_bot_token: str = Field("", alias="MAX_BOT_TOKEN")
+    max_api_base_url: str = Field(
+        "https://platform-api.max.ru", alias="MAX_API_BASE_URL"
+    )
+    max_webhook_enabled: bool = Field(False, alias="MAX_WEBHOOK_ENABLED")
+    max_webhook_host: str = Field("0.0.0.0", alias="MAX_WEBHOOK_HOST")
+    max_webhook_port: int = Field(8089, alias="MAX_WEBHOOK_PORT")
+    max_webhook_path: str = Field("/webhooks/max", alias="MAX_WEBHOOK_PATH")
+    max_webhook_url: str = Field("", alias="MAX_WEBHOOK_URL")
+    max_webhook_secret: str = Field("", alias="MAX_WEBHOOK_SECRET")
+    max_webhook_max_body_bytes: int = Field(
+        32768, alias="MAX_WEBHOOK_MAX_BODY_BYTES"
+    )
+    max_mode: str = Field("webhook", alias="MAX_MODE")
+    max_send_related_media: bool = Field(True, alias="MAX_SEND_RELATED_MEDIA")
 
     ai_provider: str = Field("openrouter", alias="AI_PROVIDER")
     openai_api_key: str = Field("", alias="OPENAI_API_KEY")
@@ -131,6 +147,11 @@ class Settings(BaseSettings):
             "http_trust_env": self.http_trust_env,
             "voice_transcription_enabled": self.voice_transcription_enabled,
             "telegram_configured": bool(self.telegram_bot_token),
+            "client_channels": self.client_channels,
+            "max_configured": bool(self.max_bot_token),
+            "max_mode": self.max_mode,
+            "max_webhook_enabled": self.max_webhook_enabled,
+            "max_send_related_media": self.max_send_related_media,
             "openrouter_configured": bool(self.openrouter_api_key),
             "yclients_configured": bool(self.yclients_partner_token),
             "payment_provider": self.payment_provider,

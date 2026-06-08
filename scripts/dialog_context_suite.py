@@ -730,7 +730,10 @@ def context_live_135_paid_gazebo_then_bathhouse_same_number(now: datetime) -> Co
         and form.get("date") == "2026-06-30"
         and state.get("current_step") == "time"
         and "на какую дату" not in lowered_bath
-        and "во сколько" in lowered_bath
+        and "период" in lowered_bath
+        and "пакетами от 3 до 7 часов" in lowered_bath
+        and "3 часа" in lowered_bath
+        and "7 часов" in lowered_bath
         and "беседка №4" in lowered_info
         and "есть разные варианты" not in lowered_info
         and "по бане продолжим" in lowered_info

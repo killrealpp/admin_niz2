@@ -7,6 +7,7 @@ from typing import Any
 
 from app.services.availability_service import load_services_map
 from app.services.booking_form_service import next_question
+from app.services.dialog.bathhouse_flow import bathhouse_period_options_reply
 from app.services.dialog.formatting import format_date_ru, format_time_duration_range
 from app.services.dialog.gazebo_options import (
     auto_select_single_available_gazebo,
@@ -72,6 +73,9 @@ def availability_reply(message: str, slots: list[str], form_data: dict[str, Any]
     next_key, question = next_question(form_data)
     if _duration_validation_message(message):
         return message, "duration"
+    bathhouse_period = bathhouse_period_options_reply(form_data)
+    if bathhouse_period:
+        return bathhouse_period
     title = (load_services_map().get(form_data.get("service_type")) or {}).get("title") or "объект"
     date_text = format_date_ru(form_data.get("date"))
     if slots:
@@ -417,6 +421,11 @@ def direct_free_dates_lookup(
         form_data.pop("last_suggested_free_dates", None)
     if form_data.get("service_type") != "gazebo":
         form_data["service_variant"] = None
+
+    bathhouse_period = bathhouse_period_options_reply(form_data)
+    if bathhouse_period:
+        reply, next_key = bathhouse_period
+        return reply, "waiting_user", next_key, next_key, form_data
 
     if callbacks.asks_nearest_free_dates(text):
         if not patch.get("date"):

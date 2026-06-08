@@ -2,9 +2,9 @@
 
 Назначение файла: хранить понятную карту диалоговых сценариев, которые уже успешно проверены автотестами или live-like suites. Каждый новый живой сбой должен превращаться в строку здесь и, по возможности, в regression test.
 
-Последняя полная проверка: 2026-06-01.
+Последняя полная проверка: 2026-06-03.
 Последняя полная диагностика: 2026-06-01.
-Последний сценарный прогон: 2026-06-01.
+Последний сценарный прогон: 2026-06-03.
 Последний paraphrase-профиль: 2026-05-29.
 Последний live-13:07 профиль: 2026-05-29.
 Последний live-14:29 профиль: 2026-05-29.
@@ -12,6 +12,7 @@
 Последний live-30.05 профиль: 2026-05-30.
 Последний pre-live fallback/proxy профиль: 2026-05-31.
 Последний live-01.06 профиль: 2026-06-01.
+Последний bathhouse/gazebo live-регресс профиль: 2026-06-04.
 
 ## Ветвления Сценариев
 
@@ -20,7 +21,7 @@
 | Ветка | Чеклист | Последний авто-статус | Что внутри |
 |---|---|---:|---|
 | Standard | [[testing/scenarios/standard]] | OK | Базовая заявка, допы, confirmation, hold/payment, post-booking info. |
-| Context/Live | [[testing/scenarios/context-live]] | OK, 19/19 + live-135/live-1953/live-14:29/live-30.05/live-01.06/live-19:09 regressions | Контекст даты/гостей/услуги, live-135/live-1953/live-14:29/live-30.05/live-01.06/live-19:09, paid/expired hold нюансы, две брони, same-date references, confirmation-no и лимит бани. |
+| Context/Live | [[testing/scenarios/context-live]] | OK, 19/19 + live-135/live-1953/live-14:29/live-30.05/live-01.06/live-19:09/bathhouse-03.06 regressions | Контекст даты/гостей/услуги, live-135/live-1953/live-14:29/live-30.05/live-01.06/live-19:09, paid/expired hold нюансы, две брони, same-date references, confirmation-no и лимит бани. |
 | Edge | [[testing/scenarios/edge]] | OK, 15/15 | Перебивания анкеты, confirmation, cancel-flow, reschedule-flow, post-booking edge cases. |
 | Stress | [[testing/scenarios/stress]] | OK, 13/13 | Опечатки, сленг, живые отказы, выборочная отмена, паузы, фото. |
 | Broad Regression | [[testing/scenarios/broad-regression]] | OK | Широкие зоны `local_regression_suite.py`: payments, holds, pricing, media, waitlist, handoff. |
@@ -37,6 +38,8 @@
 | `scripts/dialog_context_suite.py` | OK, 19/19 | Бот держит контекст между сообщениями: дата, гости, выбранный объект, confirmation-state, вторая бронь после оплаты, лимит бани 15 гостей, live-19:09 current-booking summary и guest-count внутри вопроса о подборе беседки. |
 | `scripts/dialog_edge_suite.py` | OK, 15/15 | Нестандартные перебивания анкеты, confirmation, confirmation-abort, cancel-flow, reschedule-flow, post-booking и info-вопросы без анкеты не ломают состояние. |
 | `scripts/dialog_stress_suite.py` | OK, 13/13 | Живые разговорные формулировки, опечатки, отказы, переносы, вопросы по базе и выборочные отмены работают. |
+| `scripts/local_regression_suite.py --group services --group prices --group time` | OK | Bathhouse UX follow-up: цены пакетов в date-only prompt, прямой ответ `бассейн вместе идет`, отказ бани на 500 гостей без ложной недоступности и follow-up `что подходит на 500 человек` через manual/admin сценарий. |
+| `scripts/local_regression_suite.py --group time --group gazebo --group services` | OK | Live-04.06 пакет: `с 12 дня до 8 вечера` парсится как 8 часов до 20:00, `на 15-17 человек` не становится временем, банный prompt понятнее, а замена Беседки №6 под 30 гостей предлагает подходящие свободные варианты вместо `75 дней`. |
 | `scripts/dialog_regression_smoke.py` | OK | Legacy smoke ищет свободный подходящий слот, создаёт stub fake-payment без внешней YooKassa-ссылки и защищает, что номер беседки не превращается в количество гостей. |
 | `scripts/dialog_regression_smoke.py` + `dialog_context_suite.py` + `dialog_edge_suite.py` + `dialog_stress_suite.py` | OK | Сценарный прогон от стандартных до нестандартных случаев прошёл без failed-сценариев. |
 | `scripts/local_regression_suite.py --group services --group gazebo --group upsell --group post_booking --group payments` | OK | Paraphrase-пакет live-1953/live-135: разные формулировки имени, гостей, отказа от допов и post-booking бани проходят без наследования старого контекста. |
@@ -61,6 +64,7 @@
 | Safe operational smoke 2026-06-01 | OK | `test_db.py`, `validate_yclients_map.py`, `yookassa_webhook_hardening_smoke.py`, `yclients_smoke.py` прошли; `yookassa_smoke.py` не запускался, чтобы не создавать реальную внешнюю оплату. |
 | Live-01.06 guest/upsell/post-booking continuation | OK | `compileall`; `dialog_context_suite.py` 17/17; `local_regression_suite.py --group upsell`; `local_regression_suite.py --group post_booking`; `dialog_edge_suite.py` 14/14; `dialog_stress_suite.py` 13/13; `lint_best2info.py` OK. |
 | Live-01.06 19:09 post-booking/photo/confirmation package | OK | `compileall`; `dialog_context_suite.py` 19/19; `dialog_edge_suite.py` 15/15; `local_regression_suite.py --group post_booking --group media --group fresh`; `dialog_stress_suite.py` 13/13; Graphify updated. |
+| Bathhouse-03.06 duration/info package | OK | `compileall`; `lint_best2info.py`; `validate_yclients_map.py`; `local_regression_suite.py --group services --group prices --group time`; `dialog_context_suite.py` 19/19; `dialog_edge_suite.py` 15/15; `dialog_stress_suite.py` 13/13; post-test `clear_db.py` + YCLIENTS sync fresh. |
 
 ## Успешные Live/Context Сценарии
 
@@ -68,6 +72,12 @@
 |---|---|---:|---|
 | Оплаченная беседка -> `можно еще что нибудь забронировать?` | `local_regression_suite.py`, `dialog_context_suite.py` | OK | Post-booking info не возвращает старый `awaiting_confirmation`. |
 | Оплаченная беседка -> `давайте еще баню на то же число что и беседка` | `local_regression_suite.py`, `dialog_context_suite.py` | OK | Новая бронь бани берёт дату активной беседки, но не переносит старые гости/формат/допы/вариант. |
+| Баня с выбранной датой -> `а на сколько я могу приехать в баню, когда у вас свободно?` | `local_regression_suite.py` | OK | Бот не обещает свободность по одной дате, объясняет пакеты 3-7 часов и `+1 500 ₽/час` после 7 часов, просит время и длительность/период. |
+| `мы приеду с 12 дня до 8 вечера` | `local_regression_suite.py` | OK | Период сохраняется как `12:00-20:00` на 8 часов, а не как ночной интервал до 08:00 следующего дня. |
+| Active bathhouse -> `я хочу поменять время` без нового времени | `local_regression_suite.py` | OK | Старые `time/duration` очищаются, бот просит новый период и не использует прежний слот `18:00-01:00`. |
+| Active bathhouse -> `можно пить/выпить?` | `local_regression_suite.py` | OK | Бот отвечает про аккуратные напитки/алкоголь с собой, без стекла у бассейна, и не пишет про отдельную бронь. |
+| Active bathhouse complaint про `отдельно бронируется` | `local_regression_suite.py` | OK | Бот признаёт контекст: `баню уже оформляем; это баня с бассейном`, затем повторяет текущий вопрос анкеты. |
+| Баня 8/9/10 часов | `local_regression_suite.py` | OK | YCLIENTS service_id берётся от 7ч пакета нужного дня недели, hold хранит фактическую длительность, цена = 7ч пакет + extra hours. |
 | Draft бани после оплаченной беседки -> `число такое же как у беседки` | `local_regression_suite.py` | OK | Same-date reference не превращается в info-ответ про активную беседку; дата копируется в текущую баню, следующий шаг — время. |
 | Draft бани -> `а вообще норм беседка?` | `local_regression_suite.py`, `dialog_context_suite.py` | OK | Бот отвечает по активной беседке и возвращается к вопросу текущей бани. |
 | Оплаченная беседка -> `а она уже активна, я вносил предоплату?` | `local_regression_suite.py` | OK | Вопрос об оплате идёт в deterministic payment-status reply и не берёт текст из старого expired hold. |
@@ -89,6 +99,7 @@
 | `а если бы нас было 10 какие беседки подошли бы?` после контекста на 20 гостей | `local_regression_suite.py` | OK | Hypothetical capacity question обновляет расчёт под 10 гостей и не отвечает старым числом 20; batch-парафразы `а если нас 10`, `для 10 человек`, `если будет 10 человек` проходят тем же flow. |
 | `а какой у меня выбор есть?` после даты | `dialog_context_suite.py` | OK | Бот помнит дату и просит гостей, а не спрашивает дату заново. |
 | `нас будет 30 человек, какая беседка подойдет` | `dialog_context_suite.py` | OK | Бот сохраняет 30 гостей, показывает подходящие беседки и не задаёт повторно вопрос о количестве гостей. |
+| Активная `Беседка №6` -> `могу заменить 6 беседку, нас человек 30 придет, 6 не подойдет` | `local_regression_suite.py` | OK | Бот очищает старую маленькую беседку, сохраняет дату/время/длительность, проверяет подходящие свободные варианты и не уходит в поиск на 75 дней. |
 | Жалоба `ты же даже не спросил сколько человек` | `dialog_context_suite.py` | OK | Recovery очищает ошибочно выбранную беседку/гостей и возвращает шаг гостей. |
 | `нужно 2 беседки на 02.06 и 19.06` | `dialog_context_suite.py` | OK | Две беседки оформляются последовательно, вторая дата хранится отдельно. |
 | Вторая дата из очереди во время первой заявки | `dialog_context_suite.py` | OK | Дата второй брони не перезаписывает первую заявку. |

@@ -1,5 +1,84 @@
 # Current Known Issues
 
+## 2026-06-07 local Python DNS blocks Telegram/MAX paired smoke
+
+- Status: open operational blocker for local manual paired smoke.
+- Symptoms: after the MAX runtime parity implementation, a local `main.py` runner reached Telegram/MAX ready once. Later Telegram polling hit a network disconnect; the runtime supervision bug that could leave a half-live process was fixed. A fresh runner then exited correctly because Python/aiohttp could not resolve `api.telegram.org` (`socket.gaierror 11001`). Minimal Python `socket.getaddrinfo()` also failed for `api.telegram.org` and `platform-api.max.ru`, while `kifloquomirab.beget.app` still resolved.
+- Diagnostics: `Resolve-DnsName api.telegram.org` returned an A/AAAA record after `ipconfig /flushdns`, but Python `socket.getaddrinfo()` and `scripts/telegram_status.py` still failed. `scripts/max_status.py` had been green earlier in the same run, but after the DNS issue Python resolution also failed for `platform-api.max.ru` in the minimal resolver check.
+- Impact: no current local `main.py` runner is active, so Telegram and MAX cannot be manually paired-smoked from this machine until local DNS/network resolution is stable again. This does not mean the MAX adapter/runtime code failed; compile/runtime smokes are green.
+- Workaround/next step: fix local DNS/network path first (router DNS `192.168.1.1`, VPN/Outline/Tailscale route, Windows DNS cache, or system resolver), then rerun `scripts/telegram_status.py`, `scripts/max_status.py`, and restart local `main.py` with safe env overrides for `CLIENT_CHANNELS=telegram,max`.
+
+## 2026-06-05 MAX live parity gaps after local smoke
+
+- Status: mostly fixed in code on 2026-06-05; keep under observation for live MAX voice/audio payload shape.
+- Symptoms: during local MAX smoke, the user observed lower MAX UX quality than Telegram. Telegram and MAX were expected to be two working client entry/exit points, but the first local launch had only `scripts/max_dev_live_polling.py` running; Telegram `main.py` was not running until started separately. MAX replies worked through the shared dialog path, but MAX typing was not shown and MAX voice/audio is not implemented.
+- Facts observed:
+  - MAX live polling processed `bot_started` and text `message_created` events. DB has `channel='max'` user/conversation and 16 MAX dialog messages from the smoke.
+  - `main.py` is Telegram-only (`main.py -> app.bot.telegram_bot.run_bot()`); local dual-channel testing currently requires running Telegram `main.py` and MAX dev polling as two separate processes.
+  - `MaxChannelClient.send_typing()` is a no-op, while a direct safe live `POST /chats/9386682/actions` with `{"action": "typing_on"}` returned `{"success": true}` for the current MAX dialog.
+  - `max_router.normalize_max_update()` ignores `message_created` updates without text, so MAX voice/audio/attachment-only messages do not enter the transcription or dialog path.
+  - Telegram voice exists through `telegram_bot.on_voice()` + `transcribe_telegram_voice()`, but that service currently downloads files through Telegram Bot API only.
+  - Telegram `/start` is a direct static `message.answer()` and does not persist as a normal DB/dialog message, while MAX `bot_started` is converted to `/start` and processed through the shared dialog path. First-touch state can therefore differ by channel.
+  - Telegram text/media calls pass `reply_to_message` and `source_message` options; MAX live polling passes no equivalent options, so replies/media are not threaded the same way.
+  - The local MAX live runner defaults to `send_media=False`; MAX media delivery exists in `MaxChannelClient`, but local live testing will not send related media unless the runner is started with `--send-media`.
+  - Telegram bot is created with HTML parse mode defaults, while MAX live polling does not pass parse/format options to outbound text; formatting may differ if shared replies contain markup.
+- Recheck 2026-06-05:
+  - `scripts/max_status.py`, `scripts/telegram_status.py`, `scripts/live_health_report.py`, `compileall app scripts`, `scripts/max_inbound_normalization_smoke.py`, `scripts/channel_contract_smoke.py` and `scripts/channel_notifications_smoke.py` are green.
+  - Graphify query was not enough to compare cross-channel behavior because it mostly returned the MAX dev polling runner; direct code inspection identified the parity gaps above.
+- Fix 2026-06-05:
+  - `MaxApiClient.send_chat_action()` and `MaxChannelClient.send_typing()` implement MAX typing through `POST /chats/{chatId}/actions`.
+  - `START_WELCOME_TEXT` is shared by Telegram `/start` and MAX `bot_started`; MAX sends it directly and does not create a dialog questionnaire from `/start`.
+  - `transcribe_audio_bytes()` is shared by Telegram and MAX. MAX attachment-only messages are no longer silently ignored: audio/voice attempts full-message fetch, bounded download and transcription; unsupported or failed paths send a clear fallback.
+  - `main.py` can run `CLIENT_CHANNELS=telegram,max` through `app/bot/runtime.py` with local polling guards; `scripts/max_dev_live_polling.py` reuses the same loop.
+  - MAX parity smokes and targeted regressions are green; short live startup smoke reached Telegram polling and MAX polling `ready`.
+- Remaining risk:
+  - Full live MAX voice quality is not proven until a real voice message sample confirms the official payload exposes a downloadable audio URL in one of the supported shapes. If the shape differs, the current behavior should be non-silent fallback plus raw payload/log evidence for the next adapter patch.
+- Impact after fix: MAX should no longer be worse on the known parity axes for local text/start/typing/runtime. The remaining uncertainty is live voice/audio payload compatibility and any messenger-side UX differences outside the adapter's control.
+- Desired follow-up:
+  - Run a manual MAX voice live smoke and confirm the payload shape has a downloadable audio URL or capture the raw shape for a narrow adapter patch.
+  - Run paired Telegram/MAX manual smoke for `/start`, ordinary text, voice fallback/transcription, media and payment-link text while local `main.py` is started with `CLIENT_CHANNELS=telegram,max`.
+  - Keep Telegram behavior unchanged and keep admin notifications in Telegram for MVP.
+
+## 2026-06-04 same-reference unavailable second service switched back to source service
+
+- Status: closed by the 2026-06-04 reference/unavailable flow slice.
+- Symptoms: in a paid gazebo -> new bathhouse scenario, the client could say `и в то же время что беседка`; if the copied bathhouse slot was unavailable, AI/service mention could overwrite the active bathhouse draft with `service_type=gazebo`. The reply then explained unavailability for «Беседка», and `last_unavailable.service_type` was also `gazebo`.
+- Cause: `same_booking_reference_patch()` correctly copied time/duration from the active gazebo booking, but `preserve_current_service_for_reference()` only used the stricter `looks_like_prior_booking_reference_text()` detector. Phrases like `в то же время что беседка` were recognized by the same-time reference patch, but not by the service-preservation guard, so AI `service_type=gazebo` survived into availability.
+- Fix: reference/unavailable helpers moved to `app/services/dialog/reference_flow.py`; `preserve_current_service_for_reference()` now treats `means_same_date()` / `means_same_time()` as reference signals too, while leaving explicit new-service requests alone. The coordinator still commits through `_commit_assistant_response()`.
+- Covered by: new `services	second service same reference unavailable keeps current service`, plus targeted `post_booking/services/gazebo/dates/time`, context 19/19 and stress 13/13 after the slice.
+
+## 2026-06-04 live bathhouse/gazebo period and replacement wording
+
+- Status: closed by the 2026-06-04 live dialog fix.
+- Symptoms: bathhouse package text after a known date was technically correct but too dense for clients; `с 12 дня до 8 вечера` could be read as `12:00-08:00 next day`; active gazebo wording like `могу заменить 6 беседку, нас просто человек 30 придет, и 6 беседка не подойдет` could skip the obvious capacity replacement and answer with "no free dates for 75 days".
+- Causes: `time_period_patch()` stripped PM/day markers before period matching, and the optional `ч` unit could consume the first letter of `человек`, bypassing the people-range guard. Gazebo capacity mismatch existed, but this "replace current gazebo because capacity is too small" phrasing needed a deterministic route before semantic AI/free-date fallback. Bathhouse package copy needed clearer client-facing structure.
+- Fix: time period parsing keeps local PM/day context and treats `ч` as an hour unit only as a standalone word; `на 15-17 человек` stays guest-count, not time. `bathhouse_period_options_reply()` now uses a clearer package table with examples. `_impl_gazebo_capacity_change_request()` handles current-gazebo replacement before semantic preflight, clears the old variant, saves the new guest count and checks suitable variants on the existing date/time/duration.
+- Covered by: `people range is not parsed as time`, `afternoon time words parse as PM`, `bathhouse date-only reply explains packages`, `gazebo variant change for large group offers suitable`; targeted `local_regression_suite.py --group time --group gazebo --group services` OK after the guard fix.
+
+## 2026-06-03 DB pool startup race in background loops
+
+- Status: closed by the 2026-06-03 Priority 1 stabilization pass.
+- Symptoms: after correctly launching one local `main.py`, polling/YCLIENTS/payment loops started, but `message_retention_runner` logged `psycopg2.pool.PoolError: trying to put unkeyed connection` while returning a DB connection from `summarize_and_delete_old_messages_once()`.
+- Cause: multiple background loops can touch DB at startup while the module-level `ThreadedConnectionPool` is still lazily initializing. A connection could be checked out from one pool object and released through another if initialization raced; checkout also treated `pool.PoolError("connection pool exhausted")` as fatal instead of retrying a short burst.
+- Fix: `app/db/connection.py` now guards lazy pool init with a `Lock`, carries the exact pool object from checkout to release, and retries transient `pool.PoolError` in checkout. The fix is infrastructure-only: no schema, Telegram behavior, YCLIENTS API or payment API changes.
+- Covered by: `compileall app/db/connection.py`, retention `asyncio.to_thread(summarize_and_delete_old_messages_once)` smoke, 16 concurrent DB checkout smoke through 8 workers, full Priority 1 baseline/regression (`compileall app scripts`, `lint_best2info.py`, `validate_yclients_map.py`, all targeted dialog suites).
+
+## 2026-06-03 live bathhouse UX follow-up after manual smoke
+
+- Status: closed by the 2026-06-03 bathhouse live UX follow-up implementation.
+- Symptoms: the bathhouse date-only/package prompt lists durations and `+1 500 ₽/hour` after 7 hours, but does not show the actual package prices / per-hour orientation, so the client still has to ask how much one bathhouse hour costs; active bathhouse question `бассейн вместе идет?` is routed to generic capacity copy instead of a direct yes/no answer; after `500` guests the bot correctly rejects bathhouse capacity but then appends unavailable-date alternatives, producing a false `На 15 июля свободных вариантов для «Баня» не нашла`; follow-up `а что подходит на 500 человек?` repeats generic bathhouse copy and asks guests again instead of answering the large-company question.
+- Likely causes: `bathhouse_period_options_reply()` only describes package durations, `_capacity_info_reply()` handles bathhouse + guests/company wording before a specific pool-included answer, and `_bathhouse_capacity_mismatch_reply()` calls `alternative_services_for_unavailable_date()` even though the problem is capacity/manual handoff, not bathhouse availability. The follow-up large-number question needs a deterministic answer that uses the already-known rejected guest count.
+- Desired behavior: package prompts should show prices clearly, e.g. weekday/weekend package table or compact `3ч 6 300/7 950 ₽ ... 7ч 14 700/18 550 ₽; после 7ч +1 500 ₽/час`; `бассейн вместе идет?` during active bathhouse booking should answer `Да, это баня с бассейном` and return to the current question; guest counts above 15 for bathhouse should stop at capacity/manual clarification and offer suitable formats without saying the bathhouse is unavailable; for 500 guests the bot should say there is no standard auto-booked object of that size, largest standard options are much smaller, and suggest manual/admin handling instead of asking guests again.
+- Fix: `bathhouse_period_options_reply()` now includes package prices and hourly orientation; active bathhouse info-flow answers pool-included questions before generic capacity copy; bathhouse capacity mismatch no longer calls unavailable-date alternatives and stores `last_capacity_rejection`; huge-group follow-up returns a manual/admin answer for 500 guests without asking guests again.
+- Covered by: `bathhouse date-only reply explains packages`, `bathhouse pool included info during form`, `bathhouse blocks 500 without unavailable alternatives`, `bathhouse 500 follow-up manual admin`; targeted `local_regression_suite.py --group services --group prices --group time`, context 19/19, edge 15/15, stress 13/13.
+
+## 2026-06-03 bathhouse dialog regressions
+
+- Status: closed by the 2026-06-03 bathhouse regression pass.
+- Symptoms: with a known bathhouse date but no time/duration, the bot could say the bathhouse was free instead of explaining available duration packages; `я хочу поменять время` without a new time could reuse the old `18:00` + `7 часов`; active bathhouse info questions about alcohol or "why separate booking?" could be answered as if the bathhouse was a separate service from itself; 8+ hour bathhouse requests were not consistently represented as actual long local periods with 7-hour YCLIENTS packages.
+- Fix: added shared bathhouse pricing/package helpers, package-aware availability/variant/YCLIENTS/payment selection, a bathhouse period-options prompt, active bathhouse deterministic alcohol/complaint replies, and scoped open-ended default duration to gazebo.
+- Covered by: `bathhouse date-only reply explains packages`, `bathhouse change time without value asks new period`, `bathhouse alcohol info during form`, `bathhouse separate booking complaint recovers`, `bathhouse allows extended duration`, `bathhouse extended period checks actual overlap`, `bathhouse extended price hold and service id`, plus context 19/19, edge 15/15 and stress 13/13.
+
 ## 2026-06-02 live knowledge/time/reserve/payment package
 
 - Status: closed by the 2026-06-02 completion pass.
@@ -18,6 +97,17 @@
 
 - Status: not reproduced during Phase 2 verification. `scripts/test_db.py`, context/edge/stress suites and grouped `fresh/services/post_booking/payments` regression were green on 2026-06-02 after the Phase 2 slice.
 - Keep the previous timeout note below for history: if PostgreSQL timeouts return, treat them as an external verification blocker and do not start the next refactor phase until a DB-dependent regression baseline is green again.
+- 2026-06-05 recurrence during MAX token check: `scripts/yclients_sync_status.py --strict`, `scripts/live_health_report.py` and `scripts/db_status.py` with pool disabled/short timeout all failed with `timeout expired` to `luecahalemas.beget.app:5432`. `Test-NetConnection` still reported `TcpTestSucceeded=True`, so TCP reachability exists but PostgreSQL handshake from the app does not complete. Treat as a current verification/launch blocker until DB-dependent checks are green again.
+- Additional 2026-06-05 diagnosis: a raw socket can connect to both `luecahalemas.beget.app:5432` and direct IP `95.214.62.243:5432`, but after sending the standard PostgreSQL SSLRequest the server returns no byte (`S`/`N`) before timeout. This happens before DB auth and before certificate validation, so changing the app password or root certificate is unlikely to fix this specific symptom.
+- 2026-06-05 recheck: unchanged. `Test-NetConnection` still succeeds, raw SSLRequest to hostname and direct IP still times out, and `scripts/db_status.py` with temporary pool disabled/short timeout still fails with `psycopg2.OperationalError ... timeout expired`.
+- 2026-06-05 after Beget top-up: unchanged. TCP connect to `luecahalemas.beget.app:5432` is open, but PostgreSQL SSLRequest to both hostname and direct IP `95.214.62.243:5432` still gets no response before timeout, and `scripts/db_status.py` still fails after 3 attempts with `timeout expired`.
+- 2026-06-05 repeat recheck: unchanged. Temporary `DB_SSLMODE=disable` was also tested and still timed out, so the failure is not limited to SSL negotiation/certificate verification; the PostgreSQL startup path itself is not responding from this environment.
+- 2026-06-05 additional recheck: unchanged. DNS is still `95.214.62.243`, TCP 5432 is open, raw SSLRequest gets no response from hostname/direct IP, and `scripts/db_status.py` still times out after 3 attempts.
+- 2026-06-05 latest recheck: unchanged. DNS/TCP remain reachable, but raw PostgreSQL SSLRequest still gets no response and `scripts/db_status.py` still fails after 3 attempts with `timeout expired`.
+- 2026-06-05 new DB target: local `.env` had `DB_HOST=kifloquomirab.beget.app:5432`; this was corrected to host without port because `DB_PORT=5432` is separate. The new host resolves to `159.194.235.48` and TCP 5432 is open, but raw PostgreSQL SSLRequest and both `DB_SSLMODE=verify-full` / temporary `DB_SSLMODE=disable` app connects still time out. `scripts/init_db.py` therefore could not apply `app/db/migrations/001_init.sql`; tables are not created yet.
+- 2026-06-05 certificate/access diagnosis: local `~/.postgresql/root.crt` did not match official Beget `cloud-ca.crt`, so it was backed up and replaced with the official CA. Retest still times out before TLS/certificate validation, and `DB_SSLMODE=require` / `disable` had the same timeout. Current blocker is therefore most likely Beget external access/allowlist/proxy, not the certificate file itself. Current external IP for allowlist: `46.28.66.18`.
+- 2026-06-05 allowlist/route follow-up: user says Beget has `0.0.0.0/0`. Local diagnostics show connections to the new DB target using source `10.0.85.2` on `outline-tap0`, and the detected public IP changed to `37.221.211.187`. If Beget really applies `0.0.0.0/0`, this should still pass; if the rule was not applied/accepted or the access entry is not the one used by this DB, the VPN/tunnel exit can explain the persistent timeout. The `c-kifloquomirab.beget.app` variant does not resolve, and direct-IP `DB_HOST=159.194.235.48` also times out.
+- 2026-06-05 resolved: re-downloading the official Beget CA into `~/.postgresql/root.crt` made PostgreSQL SSLRequest return `S` and allowed `DB_SSLMODE=verify-full` to connect. `scripts/init_db.py` applied the schema, `sync_yclients_records.py --once` loaded `137` records, strict YCLIENTS status is fresh, live health is `ok`, and hygiene is clean. This blocker is closed unless the timeout returns.
 
 ## 2026-06-02 PostgreSQL timeout blocks Phase 1 regression verification
 

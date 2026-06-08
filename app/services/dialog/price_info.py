@@ -8,6 +8,7 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.services.availability_service import load_services_map
+from app.services.bathhouse_pricing import bathhouse_price_components
 from app.services.booking_form_service import next_question
 from app.services.dialog.formatting import format_date_ru, format_duration, format_rub
 
@@ -118,7 +119,8 @@ def service_price_table_reply(service_type: str | None) -> str | None:
             "- 4 часа: 8 400 ₽ в будни / 10 600 ₽ в пятницу-воскресенье\n"
             "- 5 часов: 10 500 ₽ в будни / 13 250 ₽ в пятницу-воскресенье\n"
             "- 6 часов: 12 600 ₽ в будни / 15 900 ₽ в пятницу-воскресенье\n"
-            "- 7 часов: 14 700 ₽ в будни / 18 550 ₽ в пятницу-воскресенье"
+            "- 7 часов: 14 700 ₽ в будни / 18 550 ₽ в пятницу-воскресенье\n"
+            "После 7 часов каждый следующий час +1 500 ₽."
         )
     if service_type == "house":
         return (
@@ -150,8 +152,8 @@ def duration_price_rule_reply(text: str, form_data: dict[str, Any]) -> str | Non
         )
     if service_type == "bathhouse":
         return (
-            "Баня не считается как произвольная почасовая доплата.\n\n"
-            "В базе заведены фиксированные пакеты 3, 4, 5, 6 или 7 часов, а цена зависит от выбранного пакета и дня недели."
+            "По бане доступны базовые пакеты 3, 4, 5, 6 или 7 часов.\n\n"
+            "Если нужно дольше 7 часов, считаю 7-часовой пакет по дню недели + 1 500 ₽ за каждый следующий час."
         )
     if service_type == "house":
         return (
@@ -183,46 +185,26 @@ def bathhouse_extended_price_reply(text: str, form_data: dict[str, Any]) -> str 
         return None
 
     services = load_services_map()
-    variants = (services.get("bathhouse") or {}).get("variants") or []
-    weekday = None
+    config = services.get("bathhouse") or {}
     date_value = form_data.get("date")
-    if date_value:
-        try:
-            weekday = datetime.fromisoformat(str(date_value)).weekday()
-        except ValueError:
-            weekday = None
+    components = bathhouse_price_components(config, date_value=date_value, duration_value=requested_hours)
+    if components and date_value:
+        date_text = format_date_ru(date_value)
+        return (
+            f"Баня на {requested_hours} часов на {date_text}: считаю как 7-часовой пакет "
+            f"{format_rub(components['base_price'])} ₽ + {components['extra_hours']} × 1 500 ₽ = "
+            f"{format_rub(components['total_price'])} ₽."
+        )
 
-    seven_hour_variants = [
-        variant
-        for variant in variants
-        if int(variant.get("duration_minutes") or 0) == 420
-    ]
-    if weekday is not None:
-        matching = [
-            variant
-            for variant in seven_hour_variants
-            if weekday in (variant.get("weekdays") or [])
-        ]
-        if matching:
-            base_price = int(matching[0]["price"])
-            extra_hours = requested_hours - 7
-            total = base_price + extra_hours * 1500
-            date_text = format_date_ru(date_value)
-            return (
-                f"Баня на {requested_hours} часов на {date_text}: считаю как 7-часовой пакет "
-                f"{format_rub(base_price)} ₽ + {extra_hours} × 1 500 ₽ = {format_rub(total)} ₽."
-            )
-
-    weekday_base = next((int(item["price"]) for item in seven_hour_variants if 0 in (item.get("weekdays") or [])), None)
-    weekend_base = next((int(item["price"]) for item in seven_hour_variants if 4 in (item.get("weekdays") or [])), None)
-    extra_hours = requested_hours - 7
-    if weekday_base and weekend_base:
-        weekday_total = weekday_base + extra_hours * 1500
-        weekend_total = weekend_base + extra_hours * 1500
+    weekday_components = bathhouse_price_components(config, date_value="2026-06-15", duration_value=requested_hours)
+    weekend_components = bathhouse_price_components(config, date_value="2026-06-19", duration_value=requested_hours)
+    extra_hours = max(0, int(requested_hours) - 7)
+    if weekday_components and weekend_components:
         return (
             f"Баня на {requested_hours} часов считается как цена 7-часового пакета + "
             f"{extra_hours} × 1 500 ₽.\n\n"
-            f"Ориентир: {format_rub(weekday_total)} ₽ в будни / {format_rub(weekend_total)} ₽ в пятницу-воскресенье."
+            f"Ориентир: {format_rub(weekday_components['total_price'])} ₽ в будни / "
+            f"{format_rub(weekend_components['total_price'])} ₽ в пятницу-воскресенье."
         )
     return None
 
@@ -307,6 +289,26 @@ def price_reply_if_known(
     duration_text = f" на {format_duration(duration)}" if duration and not title_has_duration else ""
     effective_price = price
     price_text = f"По текущей карте услуг {title.lower()} {date_text}{duration_text} стоит {format_rub(price)} ₽."
+    if form_data.get("service_type") == "bathhouse":
+        components = bathhouse_price_components(
+            load_services_map().get("bathhouse") or {},
+            date_value=form_data.get("date"),
+            duration_value=form_data.get("duration") or variant.get("duration_minutes"),
+        )
+        if components:
+            effective_price = components["total_price"]
+            if components["extra_hours"]:
+                price_text = (
+                    f"Баня {date_text}{duration_text}: 7-часовой пакет "
+                    f"{format_rub(components['base_price'])} ₽ + "
+                    f"{components['extra_hours']} × 1 500 ₽ = "
+                    f"{format_rub(components['total_price'])} ₽."
+                )
+            else:
+                price_text = (
+                    f"По текущей карте услуг {title.lower()} {date_text}{duration_text} "
+                    f"стоит {format_rub(components['total_price'])} ₽."
+                )
     if form_data.get("service_type") == "gazebo" and form_data.get("date"):
         try:
             weekday = datetime.fromisoformat(str(form_data.get("date"))).weekday()

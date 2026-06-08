@@ -13,6 +13,7 @@ from app.core.config import get_settings
 from app.core.config import PROJECT_ROOT
 from app.db.repositories import slot_holds_repo, yclients_records_repo
 from app.integrations.yclients_client import YClientsClient, YClientsError
+from app.services.bathhouse_pricing import BATHHOUSE_MAX_PACKAGE_MINUTES, bathhouse_package_minutes
 
 SERVICES_MAP_PATH = PROJECT_ROOT / "config" / "services_map.yaml"
 AVAILABILITY_CACHE_TTL_SECONDS = 15
@@ -148,6 +149,40 @@ def _check_local_availability(
             f"На эту дату для «{title}» уже есть предварительная заявка, поэтому день пока закрыт.",
             [],
         )
+    if (
+        service_type == "bathhouse"
+        and service_config.get("block_full_day_on_any_booking")
+        and requested_time
+        and requested_minutes
+    ):
+        start_at = datetime.combine(slot_date, requested_time, tzinfo=tz)
+        if start_at < day_start:
+            start_at += timedelta(days=1)
+        end_at = start_at + timedelta(minutes=requested_minutes)
+        overlapping_records = _filter_intervals_by_variant(
+            _filter_ignored_intervals(
+                yclients_records_repo.list_busy_intervals_for_service(
+                    conn,
+                    service_type=service_type,
+                    start_at=start_at,
+                    end_at=end_at,
+                ),
+                ignored_source_record_ids,
+            ),
+            variant_filter,
+        )
+        if overlapping_records:
+            return AvailabilityResult(
+                True,
+                f"На выбранный период для «{title}» уже есть бронь.",
+                [],
+            )
+        return AvailabilityResult(
+            True,
+            f"Период для «{title}» свободен по локальному календарю.",
+            [f"{title}: {_format_period(start_at, end_at)}"],
+        )
+
     if service_config.get("block_full_day_on_any_booking"):
         overnight_records = _filter_intervals_by_variant(
             _filter_ignored_intervals(
@@ -539,6 +574,9 @@ def _select_variants(
     weekday = slot_date.weekday()
     guests_count = form_data.get("guests_count")
     duration = _duration_minutes(form_data.get("duration"))
+    compare_duration = duration
+    if service_config.get("knowledge_anchor") == "bathhouse":
+        compare_duration = bathhouse_package_minutes(duration)
 
     filtered: list[dict[str, Any]] = []
     for variant in variants:
@@ -549,7 +587,7 @@ def _select_variants(
         if guests_count and capacity_max and int(guests_count) > int(capacity_max):
             continue
         duration_minutes = variant.get("duration_minutes")
-        if duration and duration_minutes and int(duration) != int(duration_minutes):
+        if compare_duration and duration_minutes and int(compare_duration) != int(duration_minutes):
             continue
         filtered.append(variant)
     candidates = filtered or variants
@@ -596,6 +634,8 @@ def _fixed_duration_issue(
     )
     if not allowed:
         allowed = sorted({int(variant["duration_minutes"]) for variant in variants})
+    if service_config.get("knowledge_anchor") == "bathhouse" and int(duration) > BATHHOUSE_MAX_PACKAGE_MINUTES:
+        return None
     if int(duration) in allowed:
         return None
     return (
@@ -648,13 +688,16 @@ def _format_duration_for_reply(minutes: int) -> str:
 def _duration_minutes(value: Any) -> int | None:
     if value in (None, ""):
         return None
-    if isinstance(value, int):
-        return value * 60 if value <= 24 else value
-    text = str(value).lower()
-    digits = "".join(ch for ch in text if ch.isdigit())
-    if not digits:
+    if isinstance(value, bool):
         return None
-    number = int(digits)
+    if isinstance(value, (int, float)):
+        number = float(value)
+        return int(number * 60) if number <= 24 else int(number)
+    text = str(value).lower().replace(",", ".")
+    match = re.search(r"(\d+(?:\.\d+)?)", text)
+    if not match:
+        return None
+    number = float(match.group(1))
     if "мин" in text:
-        return number
-    return number * 60
+        return int(number)
+    return int(number * 60)

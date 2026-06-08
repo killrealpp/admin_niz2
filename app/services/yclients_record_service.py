@@ -11,6 +11,7 @@ from app.db.repositories import bookings_repo, yclients_records_repo
 from app.integrations.yclients_client import YClientsError
 from app.integrations.yclients_client import YClientsClient
 from app.services.availability_service import clear_availability_cache, load_services_map
+from app.services.bathhouse_pricing import bathhouse_package_minutes
 
 
 def create_yclients_record_for_booking(
@@ -214,6 +215,9 @@ def _resolve_yclients_ids(booking: dict[str, Any]) -> tuple[str, str]:
     config = load_services_map().get(service_type) or {}
     variants = config.get("variants") or []
     duration = booking.get("duration_minutes")
+    compare_duration = int(duration) if duration else None
+    if service_type == "bathhouse":
+        compare_duration = bathhouse_package_minutes(compare_duration)
     booking_date = booking.get("booking_date")
     weekday = booking_date.weekday() if hasattr(booking_date, "weekday") else None
 
@@ -228,7 +232,7 @@ def _resolve_yclients_ids(booking: dict[str, Any]) -> tuple[str, str]:
         weekdays = variant.get("weekdays")
         if weekdays and weekday is not None and weekday not in weekdays:
             continue
-        if duration and variant.get("duration_minutes") and int(variant["duration_minutes"]) != int(duration):
+        if compare_duration and variant.get("duration_minutes") and int(variant["duration_minutes"]) != int(compare_duration):
             continue
         candidates.append(variant)
     if not candidates and (hold_service_id or hold_staff_id):

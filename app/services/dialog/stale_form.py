@@ -1,11 +1,32 @@
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
 from app.services.availability_service import load_services_map
 from app.services.booking_form_service import initial_form_data, next_question
 from app.services.dialog.formatting import format_date_ru, format_time_duration_range
+
+
+@dataclass(frozen=True)
+class StaleFormTextCallbacks:
+    confirmation_yes: Callable[[str], bool]
+    confirmation_no: Callable[[str], bool]
+    service_type_patch: Callable[[str], dict[str, Any]]
+    now_local: Callable[[], datetime]
+    has_specific_date_signal: Callable[[str, datetime], bool]
+    relative_date_patch: Callable[[str, datetime], dict[str, Any]]
+    time_period_patch: Callable[[str], dict[str, Any]]
+    has_explicit_duration_signal: Callable[[str], bool]
+    guests_count_patch: Callable[[str, str], dict[str, Any]]
+    wants_cancel_booking: Callable[[str], bool]
+    wants_reschedule: Callable[[str], bool]
+    wants_swap_bookings: Callable[[str], bool]
+    asks_for_free_slots: Callable[[str], bool]
+    starts_new_booking_request: Callable[[str], bool]
 
 
 def new_booking_form_data(previous: dict[str, Any]) -> dict[str, Any]:
@@ -85,3 +106,87 @@ def stale_form_summary(form_data: dict[str, Any]) -> str:
     if form_data.get("phone"):
         lines.append(f"- Телефон: {form_data.get('phone')}")
     return "\n".join(lines) if lines else "- Данные ещё не заполнены"
+
+
+def wants_continue_stale_form(text: str, callbacks: StaleFormTextCallbacks) -> bool:
+    normalized = text.lower().replace("ё", "е").strip()
+    return callbacks.confirmation_yes(text) or any(
+        marker in normalized
+        for marker in ("продолж", "стар", "с этой", "эту заявку", "давай", "давайте")
+    )
+
+
+def wants_new_form_after_stale(text: str, callbacks: StaleFormTextCallbacks) -> bool:
+    normalized = text.lower().replace("ё", "е").strip()
+    compact = re.sub(r"[^\w]+", " ", normalized).strip()
+    starts_with_no = bool(re.match(r"^(?:нет|не)\b", compact))
+    return (
+        callbacks.confirmation_no(text)
+        or any(marker in normalized for marker in ("нов", "сначала", "заново", "другую заявку", "другая заявка"))
+        or (starts_with_no and stale_message_has_new_booking_details(text, callbacks))
+    )
+
+
+def stale_message_has_new_booking_details(text: str, callbacks: StaleFormTextCallbacks) -> bool:
+    if not callbacks.service_type_patch(text):
+        return False
+    now = callbacks.now_local()
+    return bool(
+        callbacks.has_specific_date_signal(text, now)
+        or callbacks.relative_date_patch(text, now)
+        or callbacks.time_period_patch(text)
+        or callbacks.has_explicit_duration_signal(text)
+        or callbacks.guests_count_patch(text, "guests_count")
+    )
+
+
+def stale_message_starts_new_context(text: str, callbacks: StaleFormTextCallbacks) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if callbacks.wants_cancel_booking(text) or callbacks.wants_reschedule(text) or callbacks.wants_swap_bookings(text):
+        return False
+    if wants_new_form_after_stale(text, callbacks):
+        return True
+    service_patch = callbacks.service_type_patch(text)
+    if not service_patch:
+        return False
+    if stale_message_has_new_booking_details(text, callbacks) and any(
+        marker in normalized
+        for marker in ("хочу", "хотел", "хотела", "хотим", "нужн", "заброн", "брон", "оформ")
+    ):
+        return True
+    if callbacks.asks_for_free_slots(text) or callbacks.starts_new_booking_request(text):
+        return True
+    return any(marker in normalized for marker in ("какие", "когда", "свобод", "хочу", "нужн", "заброн", "брон"))
+
+
+def explicit_new_booking_with_details(text: str, callbacks: StaleFormTextCallbacks) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if not stale_message_has_new_booking_details(text, callbacks):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "я бы хотел",
+            "я бы хотела",
+            "хотел бы",
+            "хотела бы",
+            "я хочу",
+            "хочу оформить",
+            "хочу заброн",
+            "мне нужна",
+            "мне нужен",
+            "мне нужно",
+        )
+    )
+
+
+def continue_stale_form_reply(
+    form_data: dict[str, Any],
+    confirmation_reply_text: Callable[[dict[str, Any]], str],
+) -> tuple[str, str | None]:
+    cleaned = dict(form_data)
+    cleaned.pop("stale_form_flow", None)
+    next_key, question = next_question(cleaned)
+    if next_key is None:
+        return confirmation_reply_text(cleaned), "confirmation"
+    return f"Хорошо, продолжаем эту заявку ✅\n\n{question}", next_key

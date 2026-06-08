@@ -74,6 +74,13 @@ class Check:
     details: str = ""
 
 
+@dataclass(frozen=True)
+class RegressionCase:
+    group: str
+    name: str
+    factory: Callable[[datetime], Check]
+
+
 def install_regression_suite_lock(owner: str) -> None:
     global _INSTALLED_LOCK_FD
     if _INSTALLED_LOCK_FD is not None:
@@ -1778,6 +1785,85 @@ def _test_gazebo_variant_change_not_parsed_as_time(now: datetime) -> Check:
         message_handler.check_availability = original_availability
 
 
+def _test_gazebo_variant_change_for_large_group_offers_suitable(now: datetime) -> Check:
+    suffix = "gazebo_variant_change_large_group"
+    form = _base_form(
+        service_type="gazebo",
+        service_variant="Беседка №6",
+        date="2026-06-29",
+        time="12:00",
+        duration=8,
+        guests_count=10,
+        event_format=None,
+        client_name=None,
+        phone=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="event_format",
+            next_step="event_format",
+            form_data=form,
+        )
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_availability = message_handler.check_availability
+    seen: list[dict[str, Any]] = []
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        raise AssertionError("capacity replacement must be handled before AI")
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        checked_form = dict(kwargs.get("form_data") or {})
+        seen.append(checked_form)
+        return AvailabilityResult(
+            True,
+            "ok",
+            [
+                "Беседка №1: с 12:00 до 20:00",
+                "Беседка №8: с 12:00 до 20:00",
+                "Беседка №3: с 12:00 до 20:00",
+            ],
+        )
+
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.check_availability = fake_availability
+    try:
+        reply = _send(suffix, "ну хорошо, могу заменить 6 беседку, нас просто человек 30 придет, и 6 беседка не подойдет", now)
+        state = _latest_state(suffix)
+        form_after = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            seen
+            and seen[0].get("service_variant") is None
+            and seen[0].get("date") == "2026-06-29"
+            and seen[0].get("time") == "12:00"
+            and seen[0].get("duration") == 8
+            and form_after.get("service_variant") is None
+            and form_after.get("guests_count") == 30
+            and form_after.get("date") == "2026-06-29"
+            and form_after.get("time") == "12:00"
+            and form_after.get("duration") == 8
+            and "беседка №6 рассчитана до 15 человек" in lowered
+            and "беседка №1" in lowered
+            and "беседка №8" not in lowered
+            and "75 дней" not in lowered
+            and "не нашла" not in lowered
+            and state.get("current_step") == "service_variant"
+        )
+        return Check("gazebo variant change for large group offers suitable", ok, f"{reply} | seen={seen} | {state}")
+    finally:
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.check_availability = original_availability
+
+
 def _test_guest_count_reference_not_parsed_as_time(now: datetime) -> Check:
     suffix = "guest_reference_not_time"
     created = _create_reserved_conversation(
@@ -2758,7 +2844,7 @@ def _test_gazebo_open_ended_duration_overrides_ai_guess() -> Check:
     return Check("gazebo open-ended duration overrides AI guess", ok, str(updated))
 
 
-def _test_bathhouse_open_ended_duration_until_morning() -> Check:
+def _test_bathhouse_open_ended_duration_does_not_default_until_morning() -> Check:
     guessed = _base_form(
         service_type="bathhouse",
         service_variant=None,
@@ -2771,32 +2857,78 @@ def _test_bathhouse_open_ended_duration_until_morning() -> Check:
         guessed,
         force=message_handler._gazebo_open_ended_duration_requested("с 12 а там посмотрим может до утра задержимся"),
     )
-    ok = updated.get("duration") == 20
-    return Check("bathhouse open-ended duration until morning", ok, str(updated))
+    ok = updated.get("duration") == "3 часа"
+    return Check("bathhouse open-ended duration does not default until morning", ok, str(updated))
 
 
-def _test_bathhouse_rejects_non_fixed_duration(now: datetime) -> Check:
-    with get_connection() as conn:
-        result = message_handler.check_availability(
-            conn,
-            form_data=_base_form(
-                service_type="bathhouse",
-                service_variant=None,
-                date="2026-06-30",
-                time="09:00",
-                duration=12,
-                guests_count=10,
-            ),
-            now=now,
-        )
-    lowered = result.message.lower().replace("ё", "е")
-    ok = (
-        result.ok
-        and not result.slots
-        and "фиксирован" in lowered
-        and "3, 4, 5, 6 или 7 часов" in lowered
-    )
-    return Check("bathhouse rejects non-fixed duration", ok, result.message)
+def _test_bathhouse_allows_extended_duration(now: datetime) -> Check:
+    original_loader = availability_service._load_yclients_book_times
+    original_has_sync = availability_service._has_successful_sync
+    original_busy = availability_service.yclients_records_repo.list_busy_intervals_for_service
+    availability_service.clear_availability_cache()
+    availability_service._load_yclients_book_times = lambda **_kwargs: ["09:00"]
+    availability_service._has_successful_sync = lambda _conn: True
+    availability_service.yclients_records_repo.list_busy_intervals_for_service = lambda *_args, **_kwargs: []
+    try:
+        with get_connection() as conn:
+            result = message_handler.check_availability(
+                conn,
+                form_data=_base_form(
+                    service_type="bathhouse",
+                    service_variant=None,
+                    date="2026-06-30",
+                    time="09:00",
+                    duration=12,
+                    guests_count=10,
+                ),
+                now=now,
+            )
+        lowered = result.message.lower().replace("ё", "е")
+        ok = result.ok and result.slots and "свобод" in lowered and "21:00" in result.slots[0]
+        return Check("bathhouse allows extended duration", ok, f"{result.message} | {result.slots}")
+    finally:
+        availability_service._load_yclients_book_times = original_loader
+        availability_service._has_successful_sync = original_has_sync
+        availability_service.yclients_records_repo.list_busy_intervals_for_service = original_busy
+        availability_service.clear_availability_cache()
+
+
+def _test_bathhouse_extended_period_checks_actual_overlap(now: datetime) -> Check:
+    original_loader = availability_service._load_yclients_book_times
+    original_has_sync = availability_service._has_successful_sync
+    original_busy = availability_service.yclients_records_repo.list_busy_intervals_for_service
+    availability_service.clear_availability_cache()
+    availability_service._load_yclients_book_times = lambda **_kwargs: ["18:00"]
+    availability_service._has_successful_sync = lambda _conn: True
+
+    def fake_busy(*_args: Any, **kwargs: Any) -> list[dict[str, Any]]:
+        start_at = kwargs["start_at"]
+        conflict_start = start_at + timedelta(hours=8)
+        conflict_end = conflict_start + timedelta(hours=1)
+        if conflict_start < kwargs["end_at"] and conflict_end > start_at:
+            return [{"start_at": conflict_start, "end_at": conflict_end, "yclients_staff_id": "3653144"}]
+        return []
+
+    availability_service.yclients_records_repo.list_busy_intervals_for_service = fake_busy
+    try:
+        with get_connection() as conn:
+            eight = message_handler.check_availability(
+                conn,
+                form_data=_base_form(service_type="bathhouse", date="2026-06-30", time="18:00", duration=8),
+                now=now,
+            )
+            ten = message_handler.check_availability(
+                conn,
+                form_data=_base_form(service_type="bathhouse", date="2026-06-30", time="18:00", duration=10),
+                now=now,
+            )
+        ok = bool(eight.slots) and not ten.slots and "бронь" in ten.message.lower()
+        return Check("bathhouse extended period checks actual overlap", ok, f"8h={eight.slots} | 10h={ten.message}")
+    finally:
+        availability_service._load_yclients_book_times = original_loader
+        availability_service._has_successful_sync = original_has_sync
+        availability_service.yclients_records_repo.list_busy_intervals_for_service = original_busy
+        availability_service.clear_availability_cache()
 
 
 def _test_fixed_service_rejects_missing_yclients_book_time(now: datetime) -> Check:
@@ -2858,6 +2990,250 @@ def _test_fixed_service_yclients_unavailable_does_not_claim_free(now: datetime) 
     finally:
         availability_service._load_yclients_book_times = original_loader
         availability_service.clear_availability_cache()
+
+
+def _test_bathhouse_date_only_reply_explains_packages(now: datetime) -> Check:
+    suffix = "bathhouse_date_only_packages"
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-06-30",
+        time=None,
+        duration=None,
+        guests_count=6,
+        event_format=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="time",
+            next_step="time",
+            form_data=form,
+        )
+    original_availability = message_handler.check_availability
+    message_handler.check_availability = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("date-only bathhouse must not check availability"))
+    try:
+        reply = _send(suffix, "а на сколько я могу приехать в баню, когда у вас свободно?", now)
+        state = _latest_state(suffix)
+        form_after = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "от 3 до 7 часов" in lowered
+            and "6 300" in lowered
+            and "7 950" in lowered
+            and "14 700" in lowered
+            and "18 550" in lowered
+            and "1 500" in lowered
+            and "с 18:00 до 01:00" in lowered
+            and "с 12:00 на 5 часов" in lowered
+            and "свободна ✅" not in lowered
+            and form_after.get("service_type") == "bathhouse"
+            and not form_after.get("time")
+            and not form_after.get("duration")
+            and state.get("current_step") == "time"
+        )
+        return Check("bathhouse date-only reply explains packages", ok, f"{reply} | {state}")
+    finally:
+        message_handler.check_availability = original_availability
+
+
+def _test_bathhouse_change_time_without_value_asks_new_period(now: datetime) -> Check:
+    suffix = "bathhouse_change_time_no_value"
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-06-30",
+        time="18:00",
+        duration=7,
+        guests_count=6,
+        event_format=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="event_format",
+            next_step="event_format",
+            form_data=form,
+        )
+    original_availability = message_handler.check_availability
+    message_handler.check_availability = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("time-change without value must not reuse old slot"))
+    try:
+        reply = _send(suffix, "я хочу поменять время", now)
+        state = _latest_state(suffix)
+        form_after = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "от 3 до 7 часов" in lowered
+            and "с 18:00 до 01:00" in lowered
+            and not form_after.get("time")
+            and not form_after.get("duration")
+            and state.get("current_step") == "time"
+            and "18:00 до 01:00 свобод" not in lowered
+        )
+        return Check("bathhouse change time without value asks new period", ok, f"{reply} | {state}")
+    finally:
+        message_handler.check_availability = original_availability
+
+
+def _test_bathhouse_alcohol_info_during_form(now: datetime) -> Check:
+    suffix = "bathhouse_alcohol_info"
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-06-30",
+        time="18:00",
+        duration=6,
+        guests_count=6,
+        event_format=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="event_format",
+            next_step="event_format",
+            form_data=form,
+        )
+    reply = _send(suffix, "да просто выпить хотим, у вас в бане можно пить?", now)
+    state = _latest_state(suffix)
+    form_after = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "можно аккуратно" in lowered
+        and "без стекла" in lowered
+        and "поряд" in lowered
+        and "отдельной брон" not in lowered
+        and form_after.get("service_type") == "bathhouse"
+        and state.get("current_step") == "event_format"
+    )
+    return Check("bathhouse alcohol info during form", ok, f"{reply} | {state}")
+
+
+def _test_bathhouse_pool_included_info_during_form(now: datetime) -> Check:
+    suffix = "bathhouse_pool_included_info"
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-06-30",
+        time=None,
+        duration=6,
+        guests_count=6,
+        event_format=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="time",
+            next_step="time",
+            form_data=form,
+        )
+    reply = _send(suffix, "а бассейн вместе идет?", now)
+    state = _latest_state(suffix)
+    form_after = state.get("form_data") or {}
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "да, это баня с бассейном" in lowered
+        and "бассейн входит в бронь" in lowered
+        and "во сколько хотите приехать" in lowered
+        and "для 6 человек" not in lowered
+        and form_after.get("service_type") == "bathhouse"
+        and state.get("current_step") == "time"
+    )
+    return Check("bathhouse pool included info during form", ok, f"{reply} | {state}")
+
+
+def _test_bathhouse_separate_booking_complaint_recovers(now: datetime) -> Check:
+    suffix = "bathhouse_separate_complaint"
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-06-30",
+        time="18:00",
+        duration=6,
+        guests_count=6,
+        event_format=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="event_format",
+            next_step="event_format",
+            form_data=form,
+        )
+    reply = _send(suffix, "так а че ты мне говоришь что баня с бассейном отдельно бронируется", now)
+    state = _latest_state(suffix)
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "вы правы" in lowered
+        and "баню уже оформляем" in lowered
+        and "баня с бассейном" in lowered
+        and "какой формат отдыха" in lowered
+        and state.get("current_step") == "event_format"
+    )
+    return Check("bathhouse separate booking complaint recovers", ok, f"{reply} | {state}")
+
+
+def _test_bathhouse_extended_price_hold_and_service_id(now: datetime) -> Check:
+    suffix = "bathhouse_extended_hold"
+    weekday_form = _base_form(service_type="bathhouse", date="2026-06-30", time="18:00", duration=10)
+    weekend_form = _base_form(service_type="bathhouse", date="2026-07-03", time="18:00", duration=8)
+    weekday_variant_ids = [
+        message_handler._selected_variant_config({**weekday_form, "duration": duration}).get("yclients_service_id")
+        for duration in (8, 9, 10)
+    ]
+    weekend_variant = message_handler._selected_variant_config(weekend_form)
+    prices = [
+        payment_service._base_price_for_item(
+            {
+                "service_type": "bathhouse",
+                "slot_date": date(2026, 6, 30),
+                "duration_minutes": duration * 60,
+                "yclients_service_id": "18490341",
+                "yclients_staff_id": "3653144",
+            }
+        )
+        for duration in (8, 9, 10)
+    ]
+    created = _create_reserved_conversation(suffix, now, weekday_form)
+    actual_now = datetime.now(ZoneInfo(get_settings().app_timezone))
+    with get_connection() as conn:
+        hold = message_handler._create_hold(conn, created["conversation"], created["user"], weekday_form, actual_now)
+    ok = (
+        weekday_variant_ids == ["18490341", "18490341", "18490341"]
+        and weekend_variant.get("yclients_service_id") == "18490354"
+        and prices == [Decimal("16200.00"), Decimal("17700.00"), Decimal("19200.00")]
+        and hold.get("duration_minutes") == 600
+        and hold.get("yclients_service_id") == "18490341"
+    )
+    return Check(
+        "bathhouse extended price hold and service id",
+        ok,
+        f"weekday_ids={weekday_variant_ids} weekend={weekend_variant} prices={prices} hold={hold}",
+    )
 
 
 def _test_first_upsell_no_gets_soft_push() -> Check:
@@ -4106,6 +4482,91 @@ def _test_bathhouse_blocks_large_group(now: datetime) -> Check:
     return Check("bathhouse blocks large group", ok, f"{reply} | {state}")
 
 
+def _test_bathhouse_blocks_500_without_unavailable_alternatives(now: datetime) -> Check:
+    suffix = "bathhouse_blocks_500"
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-07-15",
+        time="18:00",
+        duration=6,
+        guests_count=None,
+        event_format=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="guests_count",
+            next_step="guests_count",
+            form_data=form,
+        )
+    original_availability = message_handler.check_availability
+    message_handler.check_availability = lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("capacity rejection must not check availability"))
+    try:
+        reply = _send(suffix, "500 гостей", now)
+        state = _latest_state(suffix)
+        form_data = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "для бани 500 гостей" in lowered
+            and "слишком большая компания" in lowered
+            and "до 15 человек" in lowered
+            and "стандартного авто-варианта нет" in lowered
+            and "администратор" in lowered
+            and "свободных вариантов для" not in lowered
+            and "не нашла" not in lowered
+            and form_data.get("guests_count") in (None, "")
+            and form_data.get("last_rejected_guest_count") == 500
+        )
+        return Check("bathhouse blocks 500 without unavailable alternatives", ok, f"{reply} | {state}")
+    finally:
+        message_handler.check_availability = original_availability
+
+
+def _test_bathhouse_500_followup_manual_admin(now: datetime) -> Check:
+    suffix = "bathhouse_500_followup"
+    form = _base_form(
+        service_type="bathhouse",
+        service_variant=None,
+        date="2026-07-15",
+        time="18:00",
+        duration=6,
+        guests_count=None,
+        event_format=None,
+        upsell_items=[],
+    )
+    created = _create_reserved_conversation(suffix, now, form)
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="guests_count",
+            next_step="guests_count",
+            form_data=form,
+        )
+    first = _send(suffix, "500 гостей", now)
+    reply = _send(suffix, "а что подходит на 500 человек?", now + timedelta(seconds=5))
+    state = _latest_state(suffix)
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "сколько примерно гостей" not in lowered
+        and "стандартные объекты не рассчитаны" in lowered
+        and "стандартного авто-варианта нет" in lowered
+        and "администратор" in lowered
+        and "свободных вариантов для" not in lowered
+        and "не нашла" not in lowered
+        and "подходит ✅" not in lowered
+    )
+    return Check("bathhouse 500 follow-up manual admin", ok, f"{first} | {reply} | {state}")
+
+
 def _test_contextual_day_number_keeps_discussed_month(now: datetime) -> Check:
     patch = {"date": "2026-05-30", "service_type": "gazebo"}
     form_data = {
@@ -5241,6 +5702,84 @@ def _test_second_service_same_time_reference_on_time_step(now: datetime) -> Chec
         message_handler.create_missing_yclients_records = original_create_missing
 
 
+def _test_second_service_same_reference_unavailable_keeps_current_service(now: datetime) -> Check:
+    suffix = "second_service_same_ref_unavailable"
+    _create_paid_booking_for_action(
+        suffix,
+        now,
+        service_type="gazebo",
+        booking_date=date(2026, 6, 30),
+        yclients_service_id="18201065",
+        provider_record_id="local_second_service_same_ref_unavailable_gazebo",
+        phone="+79990000026",
+    )
+    original_classifier = message_handler.classify_post_booking_message
+    original_call_ai = message_handler.call_ai
+    original_generate = message_handler.generate_process_reply
+    original_availability = message_handler.check_availability
+    original_create_missing = message_handler.create_missing_yclients_records
+
+    def fake_classifier(**_: Any) -> PostBookingResponse:
+        return PostBookingResponse(
+            intent="new_booking_request",
+            reply_to_user="Конечно, можно добавить ещё одну бронь.",
+        )
+
+    def fake_call_ai(**kwargs: Any) -> AIResponse:
+        text = str(kwargs.get("text") or "").lower()
+        if "бан" in text:
+            return AIResponse(
+                intent="booking_request",
+                action="ask_next_question",
+                current_step="date",
+                changed_fields=["service_type"],
+                form_data_patch={"service_type": "bathhouse"},
+            )
+        return AIResponse(
+            intent="booking_request",
+            action="ask_next_question",
+            current_step="time",
+            changed_fields=["service_type"],
+            form_data_patch={"service_type": "gazebo"},
+        )
+
+    def fake_availability(*_args: Any, **_kwargs: Any) -> AvailabilityResult:
+        form_data = _kwargs.get("form_data") or {}
+        if form_data.get("service_type") == "bathhouse":
+            return AvailabilityResult(True, "На это время баня занята.", [])
+        return AvailabilityResult(True, "Свободных вариантов нет.", [])
+
+    message_handler.classify_post_booking_message = fake_classifier
+    message_handler.call_ai = fake_call_ai
+    message_handler.generate_process_reply = lambda **kwargs: str(kwargs.get("required_meaning") or "")
+    message_handler.check_availability = fake_availability
+    message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
+    try:
+        first = _send(suffix, "хочу еще баню тем же днем что и беседка", now)
+        second = _send(suffix, "и в то же время что беседка", now + timedelta(seconds=30))
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        last_unavailable = form.get("last_unavailable") or {}
+        lowered = second.lower().replace("ё", "е")
+        ok = (
+            form.get("service_type") == "bathhouse"
+            and last_unavailable.get("service_type") == "bathhouse"
+            and last_unavailable.get("date") == "2026-06-30"
+            and last_unavailable.get("time") == "18:00"
+            and last_unavailable.get("duration") == 6
+            and state.get("current_step") == "awaiting_new_date"
+            and "бан" in lowered
+            and "беседка №" not in second
+        )
+        return Check("second service same reference unavailable keeps current service", ok, f"{first} | {second} | {state}")
+    finally:
+        message_handler.classify_post_booking_message = original_classifier
+        message_handler.call_ai = original_call_ai
+        message_handler.generate_process_reply = original_generate
+        message_handler.check_availability = original_availability
+        message_handler.create_missing_yclients_records = original_create_missing
+
+
 def _test_second_service_same_date_keeps_current_service(now: datetime) -> Check:
     suffix = "second_service_same_date"
     created = _create_paid_booking_for_action(
@@ -5437,7 +5976,8 @@ def _test_live_135_paid_gazebo_then_bathhouse_same_number(now: datetime) -> Chec
             and bath_form.get("date") == "2026-06-30"
             and bath_state.get("current_step") == "time"
             and "на какую дату" not in lowered_bath
-            and "во сколько" in lowered_bath
+            and "для проверки свободности" in lowered_bath
+            and "от 3 до 7 часов" in lowered_bath
             and info_form.get("service_type") == "bathhouse"
             and info_state.get("current_step") == "time"
             and "беседка №4" in lowered_info
@@ -7506,18 +8046,25 @@ def _test_stale_explicit_new_bath_request_skips_choice(now: datetime) -> Check:
         )
         state = _latest_state(suffix)
         form = state.get("form_data") or {}
+        last_unavailable = form.get("last_unavailable") or {}
         lowered = reply.lower().replace("ё", "е")
+        processed_new_request = (
+            form.get("date") == "2026-06-30"
+            or last_unavailable.get("date") == "2026-06-30"
+        ) and (
+            form.get("time") == "09:00"
+            or last_unavailable.get("time") == "09:00"
+        )
         ok = (
             "продолжаем эту заявку" not in lowered
             and "начнем новую анкету" not in lowered
             and form.get("service_type") == "bathhouse"
-            and form.get("date") == "2026-06-30"
-            and form.get("time") == "09:00"
+            and processed_new_request
             and form.get("guests_count") is None
             and form.get("event_format") is None
             and form.get("upsell_items") in (None, [])
-            and state.get("current_step") == "duration"
-            and "фиксирован" in lowered
+            and state.get("current_step") in {"duration", "awaiting_new_date"}
+            and ("фиксирован" in lowered or "свободных вариантов" in lowered or "точную свободность" in lowered)
         )
         return Check("stale explicit new bath request skips choice", ok, f"{reply} | {state}")
     finally:
@@ -7612,18 +8159,25 @@ def _test_stale_no_with_new_bath_request_processes_same_message(now: datetime) -
         )
         state = _latest_state(suffix)
         form = state.get("form_data") or {}
+        last_unavailable = form.get("last_unavailable") or {}
         lowered = reply.lower().replace("ё", "е")
+        processed_new_request = (
+            form.get("date") == "2026-06-30"
+            or last_unavailable.get("date") == "2026-06-30"
+        ) and (
+            form.get("time") == "09:00"
+            or last_unavailable.get("time") == "09:00"
+        )
         ok = (
             "уточните" not in lowered
             and not form.get("stale_form_flow")
             and form.get("service_type") == "bathhouse"
-            and form.get("date") == "2026-06-30"
-            and form.get("time") == "09:00"
+            and processed_new_request
             and form.get("guests_count") is None
             and form.get("event_format") is None
             and form.get("upsell_items") in (None, [])
-            and state.get("current_step") == "duration"
-            and "фиксирован" in lowered
+            and state.get("current_step") in {"duration", "awaiting_new_date"}
+            and ("фиксирован" in lowered or "свободных вариантов" in lowered or "точную свободность" in lowered)
         )
         return Check("stale no plus new bath request processes same message", ok, f"{reply} | {state}")
     finally:
@@ -8142,13 +8696,16 @@ def _test_afternoon_time_words_parse_pm() -> Check:
     three_pm = message_handler._single_time_patch("в 3 часа дня", "time")
     typo_pm = message_handler._single_time_patch("к 3 чиса дня", "time")
     period = message_handler._time_period_patch("с 3 часа дня до 11 ночи")
+    noon_to_evening = message_handler._time_period_patch("мы приеду с 12 дня до 8 вечера")
     ok = (
         three_pm.get("time") == "15:00"
         and typo_pm.get("time") == "15:00"
         and period.get("time") == "15:00"
         and period.get("duration") == 8
+        and noon_to_evening.get("time") == "12:00"
+        and noon_to_evening.get("duration") == 8
     )
-    return Check("afternoon time words parse as PM", ok, f"{three_pm} | {typo_pm} | {period}")
+    return Check("afternoon time words parse as PM", ok, f"{three_pm} | {typo_pm} | {period} | {noon_to_evening}")
 
 
 def _test_duration_string_normalization_and_loose_period() -> Check:
@@ -8404,6 +8961,1050 @@ def _test_reserved_yes_reuses_existing_payment_link(now: datetime) -> Check:
         message_handler.create_payment_link_for_holds = original_payment
 
 
+REGRESSION_CASES: tuple[RegressionCase, ...] = (
+    RegressionCase(
+        "fresh",
+        "second booking resets slot fields",
+        _test_second_booking_does_not_inherit_old_slot,
+    ),
+    RegressionCase(
+        "fresh",
+        "new service while awaiting date resets old slot",
+        _test_new_service_from_waiting_date_resets_old_slot,
+    ),
+    RegressionCase(
+        "fresh",
+        "plain new service request resets old form",
+        _test_plain_new_service_request_resets_old_form,
+    ),
+    RegressionCase(
+        "fresh",
+        "service correction with zhe resets old form",
+        _test_service_correction_with_zhe_resets_old_form,
+    ),
+    RegressionCase(
+        "fresh",
+        "next application while hold starts blank not ice",
+        _test_next_application_while_hold_starts_blank_not_ice,
+    ),
+    RegressionCase(
+        "payments",
+        "reserved yes retries payment link",
+        _test_reserved_yes_retries_payment_link,
+    ),
+    RegressionCase(
+        "payments",
+        "paid status refreshes on any post-booking message",
+        _test_paid_status_refreshes_on_any_message,
+    ),
+    RegressionCase(
+        "payments",
+        "expired hold notifies and resets draft",
+        _test_expired_hold_notifies_and_resets,
+    ),
+    RegressionCase(
+        "payments",
+        "reserved yes reuses existing payment link",
+        _test_reserved_yes_reuses_existing_payment_link,
+    ),
+    RegressionCase(
+        "payments",
+        "paid booking payment question is deterministic",
+        _test_paid_booking_payment_question_is_deterministic,
+    ),
+    RegressionCase(
+        "payments",
+        "paid notification includes booking summary",
+        lambda _now: _test_paid_notification_includes_booking_summary(),
+    ),
+    RegressionCase(
+        "payments",
+        "payment delay does not start reschedule",
+        _test_payment_delay_does_not_start_reschedule,
+    ),
+    RegressionCase(
+        "payments",
+        "fake payment request does not mark paid",
+        _test_fake_payment_request_does_not_mark_paid,
+    ),
+    RegressionCase(
+        "payments",
+        "resume same expired hold does not ask date",
+        _test_resume_same_expired_hold_does_not_ask_date,
+    ),
+    RegressionCase(
+        "payments",
+        "concurrent active hold conflict",
+        _test_concurrent_active_hold_conflict,
+    ),
+    RegressionCase(
+        "payments",
+        "payment intent retry no duplicate link",
+        _test_payment_intent_retry_no_duplicate_link,
+    ),
+    RegressionCase(
+        "payments",
+        "payment reply uses 30 minute ttl and refund note",
+        lambda _now: _test_payment_reply_uses_30_minute_ttl_and_refund_note(),
+    ),
+    RegressionCase(
+        "payments",
+        "unpaid reserved date correction recreates hold and link",
+        _test_unpaid_reserved_date_correction_recreates_hold_and_link,
+    ),
+    RegressionCase(
+        "post_booking",
+        "confirmation info question stays informative",
+        _test_confirmation_info_answer_without_extra_ai,
+    ),
+    RegressionCase(
+        "post_booking",
+        "message retention 48h summarizes and deletes raw",
+        lambda _now: _test_message_retention_48h_summarizes_and_deletes(),
+    ),
+    RegressionCase(
+        "post_booking",
+        "post-booking info fallback when AI unavailable",
+        _test_post_booking_info_fallback_when_ai_unavailable,
+    ),
+    RegressionCase(
+        "post_booking",
+        "booking summary uses draft when no active booking",
+        _test_booking_summary_uses_draft_when_no_active_booking,
+    ),
+    RegressionCase(
+        "services",
+        "unconfigured service does not claim availability",
+        _test_unconfigured_service_does_not_claim_free,
+    ),
+    RegressionCase(
+        "services",
+        "summer gazebo is a gazebo alias",
+        _test_summer_gazebo_alias_uses_gazebo,
+    ),
+    RegressionCase(
+        "services",
+        "gazebo+bathhouse starts with gazebo booking",
+        _test_gazebo_bathhouse_alias_starts_with_gazebo,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse+gazebo starts with bathhouse booking",
+        _test_bathhouse_gazebo_order_starts_with_bathhouse,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse blocks large group",
+        _test_bathhouse_blocks_large_group,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse blocks 500 without unavailable alternatives",
+        _test_bathhouse_blocks_500_without_unavailable_alternatives,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse 500 follow-up manual admin",
+        _test_bathhouse_500_followup_manual_admin,
+    ),
+    RegressionCase(
+        "services",
+        "start available services lists all primary options",
+        _test_start_available_services_lists_all_primary_options,
+    ),
+    RegressionCase(
+        "dates",
+        "deterministic relative date beats stale AI",
+        _test_deterministic_date_beats_stale_ai,
+    ),
+    RegressionCase(
+        "dates",
+        "contextual day number keeps discussed month",
+        _test_contextual_day_number_keeps_discussed_month,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo recommendations use only available variants",
+        lambda _now: _test_gazebo_recommendations_use_only_available(),
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo budget preference filters cheapest",
+        lambda _now: _test_gazebo_budget_preference_filters_cheapest(),
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo budget preference during choice",
+        _test_gazebo_budget_preference_during_choice,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo budget without date asks one question",
+        _test_gazebo_budget_without_date_asks_one_question,
+    ),
+    RegressionCase(
+        "gazebo",
+        "mixed gazebo selection info saves variant",
+        _test_mixed_gazebo_selection_info_saves_variant,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo capacity filter rejects tight options",
+        lambda _now: _test_gazebo_capacity_filter_rejects_tight_options(),
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo date reply asks guests before choice",
+        lambda _now: _test_gazebo_date_reply_asks_guests_before_choice(),
+    ),
+    RegressionCase(
+        "gazebo",
+        "forced gazebo variant asks guests before time",
+        _test_forced_gazebo_variant_asks_guests_before_time,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo capacity question sets guests and skips repeat",
+        _test_gazebo_capacity_question_sets_guests_and_skips_repeat,
+    ),
+    RegressionCase(
+        "gazebo",
+        "hypothetical guest count updates capacity question",
+        lambda _now: _test_hypothetical_guest_count_updates_capacity_question(),
+    ),
+    RegressionCase(
+        "gazebo",
+        "live gazebo 20 guests keeps capacity context",
+        _test_live_gazebo_twenty_guests_keeps_capacity_context,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo date+guests first message checks availability",
+        _test_gazebo_date_and_guests_first_message_checks_availability,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo no capacity on date offers nearest suitable",
+        _test_gazebo_no_capacity_on_date_offers_nearest_before_requested,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo small slots on date offers nearest suitable",
+        _test_gazebo_small_slots_on_date_offers_nearest_suitable,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo variant change is not parsed as time",
+        _test_gazebo_variant_change_not_parsed_as_time,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo variant change for large group offers suitable",
+        _test_gazebo_variant_change_for_large_group_offers_suitable,
+    ),
+    RegressionCase(
+        "time",
+        "guest count reference is not parsed as time",
+        _test_guest_count_reference_not_parsed_as_time,
+    ),
+    RegressionCase(
+        "gazebo",
+        "next free dates filter gazebos by guests",
+        _test_next_free_dates_filter_gazebos_by_guests,
+    ),
+    RegressionCase(
+        "dates",
+        "new free dates request resets old unavailable",
+        _test_new_free_dates_request_resets_old_unavailable,
+    ),
+    RegressionCase(
+        "dates",
+        "gazebo free dates request switches service",
+        _test_gazebo_free_dates_request_switches_service,
+    ),
+    RegressionCase(
+        "gazebo",
+        "large gazebo group prioritizes gazebo 1",
+        lambda _now: _test_large_gazebo_group_prioritizes_no1(),
+    ),
+    RegressionCase(
+        "gazebo",
+        "switch back to gazebo preserves date guests variant",
+        _test_switch_back_to_gazebo_preserves_context,
+    ),
+    RegressionCase(
+        "services",
+        "house unavailable offers same-date alternatives",
+        _test_house_unavailable_offers_same_date_alternatives,
+    ),
+    RegressionCase(
+        "time",
+        "gazebo start time defaults until morning",
+        _test_gazebo_start_time_defaults_until_morning,
+    ),
+    RegressionCase(
+        "time",
+        "gazebo explicit period with longer question keeps end time",
+        _test_gazebo_explicit_period_with_longer_question_keeps_end_time,
+    ),
+    RegressionCase(
+        "time",
+        "people range is not parsed as time",
+        lambda _now: _test_people_range_is_not_time(),
+    ),
+    RegressionCase(
+        "time",
+        "afternoon time words parse as PM",
+        lambda _now: _test_afternoon_time_words_parse_pm(),
+    ),
+    RegressionCase(
+        "time",
+        "duration strings normalize and loose period parses",
+        lambda _now: _test_duration_string_normalization_and_loose_period(),
+    ),
+    RegressionCase(
+        "time",
+        "gazebo open-ended duration overrides AI guess",
+        lambda _now: _test_gazebo_open_ended_duration_overrides_ai_guess(),
+    ),
+    RegressionCase(
+        "time",
+        "bathhouse open-ended duration does not default until morning",
+        lambda _now: _test_bathhouse_open_ended_duration_does_not_default_until_morning(),
+    ),
+    RegressionCase(
+        "time",
+        "bathhouse allows extended duration",
+        _test_bathhouse_allows_extended_duration,
+    ),
+    RegressionCase(
+        "time",
+        "bathhouse extended period checks actual overlap",
+        _test_bathhouse_extended_period_checks_actual_overlap,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse date-only reply explains packages",
+        _test_bathhouse_date_only_reply_explains_packages,
+    ),
+    RegressionCase(
+        "time",
+        "bathhouse change time without value asks new period",
+        _test_bathhouse_change_time_without_value_asks_new_period,
+    ),
+    RegressionCase(
+        "prices",
+        "bathhouse alcohol info during form",
+        _test_bathhouse_alcohol_info_during_form,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse pool included info during form",
+        _test_bathhouse_pool_included_info_during_form,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse separate booking complaint recovers",
+        _test_bathhouse_separate_booking_complaint_recovers,
+    ),
+    RegressionCase(
+        "prices",
+        "bathhouse extended price hold and service id",
+        _test_bathhouse_extended_price_hold_and_service_id,
+    ),
+    RegressionCase(
+        "services",
+        "fixed service rejects missing yclients book time",
+        _test_fixed_service_rejects_missing_yclients_book_time,
+    ),
+    RegressionCase(
+        "services",
+        "fixed service yclients unavailable does not claim free",
+        _test_fixed_service_yclients_unavailable_does_not_claim_free,
+    ),
+    RegressionCase(
+        "media",
+        "media waits for date and guests",
+        lambda _now: _test_media_waits_for_date_and_guests(),
+    ),
+    RegressionCase(
+        "media",
+        "explicit photo request ignores availability text",
+        lambda _now: _test_explicit_photo_request_ignores_availability_text(),
+    ),
+    RegressionCase(
+        "media",
+        "explicit photo request bypasses ai",
+        _test_explicit_photo_request_bypasses_ai,
+    ),
+    RegressionCase(
+        "media",
+        "explicit service photo ignores old gazebo state",
+        _test_explicit_service_photo_request_ignores_old_gazebo_state,
+    ),
+    RegressionCase(
+        "media",
+        "general gazebo photo request sends gazebo media",
+        _test_general_gazebo_photo_request_after_booking,
+    ),
+    RegressionCase(
+        "prices",
+        "price question during form not booking summary",
+        _test_price_question_during_form_not_booking_summary,
+    ),
+    RegressionCase(
+        "gazebo",
+        "single available gazebo is auto selected",
+        lambda _now: _test_single_available_gazebo_is_auto_selected(),
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo variant is not guessed",
+        lambda _now: _test_gazebo_variant_is_not_guessed(),
+    ),
+    RegressionCase(
+        "post_booking",
+        "booking summary counts all bookings",
+        _test_booking_summary_counts_all_bookings,
+    ),
+    RegressionCase(
+        "post_booking",
+        "new conversation sees old user booking",
+        _test_new_conversation_sees_old_user_booking,
+    ),
+    RegressionCase(
+        "post_booking",
+        "new conversation sees old summary",
+        _test_new_conversation_sees_old_summary,
+    ),
+    RegressionCase(
+        "post_booking",
+        "customer templates do not mention admin",
+        _test_customer_templates_do_not_mention_admin,
+    ),
+    RegressionCase(
+        "post_booking",
+        "admin notification includes booking object",
+        _test_admin_notification_includes_booking_object,
+    ),
+    RegressionCase(
+        "post_booking",
+        "short yes confirms",
+        lambda _now: _test_short_yes_confirms(),
+    ),
+    RegressionCase(
+        "post_booking",
+        "soft yes confirms awaiting confirmation",
+        _test_soft_yes_confirms_from_confirmation,
+    ),
+    RegressionCase(
+        "post_booking",
+        "confirmation no is not upsell correction",
+        _test_confirmation_no_is_not_upsell_correction,
+    ),
+    RegressionCase(
+        "post_booking",
+        "name correction replaces value after na",
+        lambda _now: _test_name_correction_replaces_value_after_na(),
+    ),
+    RegressionCase(
+        "post_booking",
+        "name correction paraphrases keep clean value",
+        lambda _now: _test_name_correction_paraphrases_keep_clean_value(),
+    ),
+    RegressionCase(
+        "fresh",
+        "invalid phone reply is client safe",
+        _test_invalid_phone_reply_is_client_safe,
+    ),
+    RegressionCase(
+        "dates",
+        "bare weekday asks clarification",
+        _test_bare_weekday_requires_confirmation,
+    ),
+    RegressionCase(
+        "dates",
+        "weekday confirmation yes uses saved candidate",
+        _test_weekday_confirmation_yes_uses_saved_candidate,
+    ),
+    RegressionCase(
+        "upsell",
+        "first upsell no gets soft push",
+        lambda _now: _test_first_upsell_no_gets_soft_push(),
+    ),
+    RegressionCase(
+        "upsell",
+        "first upsell flow before phone gets soft push",
+        _test_first_upsell_flow_before_phone,
+    ),
+    RegressionCase(
+        "upsell",
+        "soft upsell accept after push adds basic set",
+        _test_soft_upsell_accept_after_push,
+    ),
+    RegressionCase(
+        "upsell",
+        "first mangal set selection from price list",
+        _test_first_mangal_set_selection_from_price_list,
+    ),
+    RegressionCase(
+        "upsell",
+        "informal upsell no uses two-touch flow",
+        _test_informal_upsell_no_two_touch,
+    ),
+    RegressionCase(
+        "upsell",
+        "nu net upsell no uses two-touch flow",
+        _test_nu_net_upsell_no_two_touch,
+    ),
+    RegressionCase(
+        "upsell",
+        "bare ne first upsell gets soft push",
+        _test_bare_ne_first_upsell_gets_soft_push,
+    ),
+    RegressionCase(
+        "upsell",
+        "on-site upsell refusal keeps no extras",
+        _test_on_site_upsell_refusal_keeps_no_extras,
+    ),
+    RegressionCase(
+        "upsell",
+        "on-site upsell refusal paraphrases",
+        lambda _now: _test_on_site_upsell_refusal_paraphrases(),
+    ),
+    RegressionCase(
+        "payments",
+        "phone completion yes creates hold not second confirmation",
+        _test_phone_completion_yes_creates_hold_not_second_confirmation,
+    ),
+    RegressionCase(
+        "upsell",
+        "event format typo moves to upsell",
+        _test_event_format_typo_moves_to_upsell,
+    ),
+    RegressionCase(
+        "upsell",
+        "addon price during upsell does not repeat event format",
+        _test_addon_price_during_upsell_does_not_repeat_event_format,
+    ),
+    RegressionCase(
+        "upsell",
+        "state keeps time duration event after upsell",
+        _test_state_keeps_time_duration_event_after_upsell,
+    ),
+    RegressionCase(
+        "upsell",
+        "positive addon survives later negative",
+        _test_kalik_addon_survives_to_confirmation,
+    ),
+    RegressionCase(
+        "upsell",
+        "live hookah upsell phrases",
+        lambda _now: _test_live_hookah_upsell_phrases(),
+    ),
+    RegressionCase(
+        "upsell",
+        "AI said added with empty state is rebuilt",
+        _test_state_text_guard_rebuilds_ai_added_without_state,
+    ),
+    RegressionCase(
+        "upsell",
+        "addon prices plural question replies immediately",
+        _test_addon_prices_plural_question_replies_immediately,
+    ),
+    RegressionCase(
+        "upsell",
+        "prefilled first upsell no still gets soft push",
+        _test_prefilled_first_upsell_no_still_gets_soft_push,
+    ),
+    RegressionCase(
+        "time",
+        "duration 24 formats as hours",
+        lambda _now: _test_duration_24_formats_as_hours(),
+    ),
+    RegressionCase(
+        "upsell",
+        "positive upsell asks for more then continues",
+        _test_positive_upsell_asks_for_more_then_continues,
+    ),
+    RegressionCase(
+        "upsell",
+        "mixed addon price and selection saves items",
+        _test_mixed_addon_price_and_selection_saves_items,
+    ),
+    RegressionCase(
+        "upsell",
+        "late kalik price adds addon to confirmation",
+        _test_late_kalik_price_adds_addon_to_confirmation,
+    ),
+    RegressionCase(
+        "upsell",
+        "generic ok after upsell info does not accept items",
+        _test_generic_ok_after_upsell_info_does_not_accept_items,
+    ),
+    RegressionCase(
+        "upsell",
+        "upsell parking info returns to empty addons",
+        _test_upsell_parking_info_returns_to_empty_addons,
+    ),
+    RegressionCase(
+        "upsell",
+        "upsell parking info keeps selected addon",
+        _test_upsell_parking_info_keeps_selected_addon,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo quality question during confirmation stays in confirmation",
+        _test_gazebo_quality_question_during_confirmation,
+    ),
+    RegressionCase(
+        "payments",
+        "paid finalize busy interval uses hold variant",
+        _test_paid_finalize_busy_interval_uses_hold_variant,
+    ),
+    RegressionCase(
+        "waitlist",
+        "free dates lookup after no availability",
+        _test_free_dates_lookup_after_no_availability,
+    ),
+    RegressionCase(
+        "waitlist",
+        "waitlist decline does not handoff",
+        _test_waitlist_decline_does_not_handoff,
+    ),
+    RegressionCase(
+        "waitlist",
+        "waitlist notifies only relevant requests",
+        _test_waitlist_notifies_only_relevant_requests,
+    ),
+    RegressionCase(
+        "handoff",
+        "location question does not handoff",
+        lambda _now: _test_location_question_does_not_handoff(),
+    ),
+    RegressionCase(
+        "handoff",
+        "emotional event format does not handoff",
+        _test_emotional_event_format_does_not_handoff,
+    ),
+    RegressionCase(
+        "media",
+        "gazebo media selection",
+        lambda _now: _test_gazebo_media_selection(),
+    ),
+    RegressionCase(
+        "post_booking",
+        "post booking summary always uses db",
+        _test_post_booking_summary_always_uses_db,
+    ),
+    RegressionCase(
+        "post_booking",
+        "booking summary does not merge shared phone",
+        _test_booking_summary_does_not_merge_shared_phone,
+    ),
+    RegressionCase(
+        "post_booking",
+        "available services uses active booking not stale form",
+        _test_available_services_uses_active_booking_not_stale_form,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule selects service after list",
+        _test_reschedule_selects_service_after_list,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule uses target date not source date",
+        _test_reschedule_uses_target_date_not_source_date,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule typo pernesti uses target date",
+        _test_reschedule_typo_pernesti_uses_target_date,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule keeps initial date after selection",
+        _test_reschedule_keeps_initial_date_after_selection,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule can change gazebo variant",
+        _test_reschedule_can_change_gazebo_variant,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule flow answers options instead of loop",
+        _test_reschedule_flow_answers_options_instead_of_loop,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule flow answers info question",
+        _test_reschedule_flow_answers_info_question,
+    ),
+    RegressionCase(
+        "reschedule",
+        "multi reschedule same date for all bookings",
+        _test_multi_reschedule_same_date_for_all_bookings,
+    ),
+    RegressionCase(
+        "cancel",
+        "paid cancel asks confirmation",
+        _test_paid_cancel_asks_confirmation,
+    ),
+    RegressionCase(
+        "cancel",
+        "paid cancel typo dya confirms",
+        _test_paid_cancel_typo_dya_confirms,
+    ),
+    RegressionCase(
+        "cancel",
+        "ack after cancel does not say booking fixed",
+        _test_ack_after_cancel_does_not_say_booking_fixed,
+    ),
+    RegressionCase(
+        "cancel",
+        "paid cancel refund window text and admin refund log",
+        _test_paid_cancel_refund_window_text,
+    ),
+    RegressionCase(
+        "cancel",
+        "cancel refund boundary 6 7 8 days",
+        _test_cancel_refund_boundaries,
+    ),
+    RegressionCase(
+        "cancel",
+        "refund required notifies admin",
+        _test_refund_required_notifies_admin,
+    ),
+    RegressionCase(
+        "post_booking",
+        "AI semantic preflight for active routes",
+        _test_ai_semantic_preflight_for_active_routes,
+    ),
+    RegressionCase(
+        "cancel",
+        "paid cancel all asks single confirmation",
+        _test_paid_cancel_all_asks_single_confirmation,
+    ),
+    RegressionCase(
+        "cancel",
+        "multi booking cancel refund only paid refundable",
+        _test_multi_cancel_refund_only_paid_refundable,
+    ),
+    RegressionCase(
+        "cancel",
+        "paid bathhouse cancel without hold",
+        _test_paid_bathhouse_cancel_without_hold,
+    ),
+    RegressionCase(
+        "cancel",
+        "ai change_type cancel starts flow",
+        _test_ai_change_type_cancel_starts_flow,
+    ),
+    RegressionCase(
+        "reschedule",
+        "ai change_type reschedule starts flow",
+        _test_ai_change_type_reschedule_starts_flow,
+    ),
+    RegressionCase(
+        "reschedule",
+        "paid reschedule asks confirmation",
+        _test_paid_reschedule_asks_confirmation,
+    ),
+    RegressionCase(
+        "fresh",
+        "generic second booking keeps only contact",
+        _test_generic_second_booking_keeps_only_contact,
+    ),
+    RegressionCase(
+        "fresh",
+        "abort current draft keeps contact",
+        _test_abort_current_draft_keeps_contact,
+    ),
+    RegressionCase(
+        "fresh",
+        "abort current draft from upsell refusal",
+        _test_abort_current_draft_from_upsell_refusal,
+    ),
+    RegressionCase(
+        "prices",
+        "info during bath form keeps service context",
+        _test_info_during_bath_form_keeps_service_context,
+    ),
+    RegressionCase(
+        "fresh",
+        "later pause during form does not repeat question",
+        _test_later_pause_during_form_does_not_repeat_question,
+    ),
+    RegressionCase(
+        "services",
+        "second service same time keeps current service",
+        _test_second_service_same_time_keeps_current_service,
+    ),
+    RegressionCase(
+        "services",
+        "second service same time reference on time step",
+        _test_second_service_same_time_reference_on_time_step,
+    ),
+    RegressionCase(
+        "services",
+        "second service same reference unavailable keeps current service",
+        _test_second_service_same_reference_unavailable_keeps_current_service,
+    ),
+    RegressionCase(
+        "services",
+        "second service same date keeps current service",
+        _test_second_service_same_date_keeps_current_service,
+    ),
+    RegressionCase(
+        "services",
+        "second service same number wording keeps current service",
+        _test_second_service_same_number_wording_keeps_current_service,
+    ),
+    RegressionCase(
+        "services",
+        "live 135 paid gazebo then bathhouse keeps context",
+        _test_live_135_paid_gazebo_then_bathhouse_same_number,
+    ),
+    RegressionCase(
+        "services",
+        "new bath request does not cancel paid gazebo",
+        _test_new_bath_request_does_not_cancel_paid_gazebo,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse post-booking info then generic new request",
+        _test_bathhouse_post_booking_info_then_generic_new_request,
+    ),
+    RegressionCase(
+        "services",
+        "gazebo info then separate booking ignores old bath draft",
+        _test_gazebo_info_then_separate_booking_from_old_bath_draft,
+    ),
+    RegressionCase(
+        "services",
+        "bathhouse post-booking paraphrases start clean",
+        _test_bathhouse_post_booking_paraphrases_start_clean,
+    ),
+    RegressionCase(
+        "prices",
+        "price replies use service map",
+        lambda _now: _test_price_replies_use_service_map(),
+    ),
+    RegressionCase(
+        "prices",
+        "price question with budet is not children info",
+        lambda _now: _test_price_question_with_budet_not_children_info(),
+    ),
+    RegressionCase(
+        "prices",
+        "AI semantic price question without price keywords",
+        _test_ai_semantic_price_question_without_price_keywords,
+    ),
+    RegressionCase(
+        "gazebo",
+        "truncated people word extracts guests",
+        lambda _now: _test_truncated_people_word_extracts_guests(),
+    ),
+    RegressionCase(
+        "fresh",
+        "friends hangout event format not birthday",
+        lambda _now: _test_friends_hangout_event_format_not_birthday(),
+    ),
+    RegressionCase(
+        "prices",
+        "addon price question does not add item",
+        lambda _now: _test_addon_price_question_does_not_add_item(),
+    ),
+    RegressionCase(
+        "prices",
+        "generic upsell price question uses addon prices",
+        lambda _now: _test_generic_upsell_price_question_uses_addon_prices(),
+    ),
+    RegressionCase(
+        "prices",
+        "prepayment price question not addons",
+        lambda _now: _test_prepayment_price_question_not_addons(),
+    ),
+    RegressionCase(
+        "prices",
+        "gazebo weekday discount reply",
+        lambda _now: _test_gazebo_weekday_discount_reply(),
+    ),
+    RegressionCase(
+        "prices",
+        "best2info retrieval for client questions",
+        lambda _now: _test_best2info_retrieval_for_client_questions(),
+    ),
+    RegressionCase(
+        "prices",
+        "gazebo duration price rule is not house price",
+        lambda _now: _test_gazebo_duration_price_rule(),
+    ),
+    RegressionCase(
+        "prices",
+        "brooms are forbidden",
+        lambda _now: _test_brooms_are_forbidden(),
+    ),
+    RegressionCase(
+        "prices",
+        "brooms info without form does not ask booking",
+        lambda _now: _test_brooms_info_without_form_does_not_ask_booking(),
+    ),
+    RegressionCase(
+        "prices",
+        "kids pets parking info without form does not start booking",
+        _test_kids_pets_parking_info_without_form_does_not_start_booking,
+    ),
+    RegressionCase(
+        "prices",
+        "children and parking info uses runtime knowledge",
+        lambda _now: _test_children_parking_info_during_form_uses_runtime_knowledge(),
+    ),
+    RegressionCase(
+        "prices",
+        "gazebo until morning info keeps time step",
+        _test_gazebo_until_morning_info_keeps_time_step,
+    ),
+    RegressionCase(
+        "prices",
+        "mosquito question during confirmation",
+        lambda _now: _test_mosquito_question_during_confirmation(),
+    ),
+    RegressionCase(
+        "prices",
+        "mosquito question after booking bypasses AI",
+        _test_mosquito_question_after_booking_bypasses_ai,
+    ),
+    RegressionCase(
+        "prices",
+        "bathhouse ten hour price formula",
+        lambda _now: _test_bathhouse_ten_hour_price_formula(),
+    ),
+    RegressionCase(
+        "prices",
+        "coal price is known",
+        lambda _now: _test_coal_price_is_known(),
+    ),
+    RegressionCase(
+        "time",
+        "bare duration answer",
+        lambda _now: _test_bare_duration_answer(),
+    ),
+    RegressionCase(
+        "time",
+        "evening time choice uses early option",
+        lambda _now: _test_evening_time_choice_uses_early_option(),
+    ),
+    RegressionCase(
+        "time",
+        "until midnight uses existing start",
+        lambda _now: _test_until_midnight_uses_existing_start(),
+    ),
+    RegressionCase(
+        "time",
+        "confirmation time correction rechecks",
+        _test_confirmation_time_correction_rechecks,
+    ),
+    RegressionCase(
+        "gazebo",
+        "gazebo selected variant capacity uses known free list",
+        _test_gazebo_selected_variant_capacity_uses_known_free_list,
+    ),
+    RegressionCase(
+        "fresh",
+        "stale form after two hours asks choice",
+        _test_stale_form_after_two_hours_asks_choice,
+    ),
+    RegressionCase(
+        "fresh",
+        "stale explicit new bath request skips choice",
+        _test_stale_explicit_new_bath_request_skips_choice,
+    ),
+    RegressionCase(
+        "fresh",
+        "stale davaite continues",
+        _test_stale_davaite_continues,
+    ),
+    RegressionCase(
+        "fresh",
+        "stale no plus new bath request processes same message",
+        _test_stale_no_with_new_bath_request_processes_same_message,
+    ),
+    RegressionCase(
+        "fresh",
+        "stale free dates request starts fresh lookup",
+        _test_stale_free_dates_request_starts_fresh_lookup,
+    ),
+    RegressionCase(
+        "fresh",
+        "old form new free dates skips stale choice",
+        _test_old_form_new_free_dates_skips_stale_choice,
+    ),
+    RegressionCase(
+        "fresh",
+        "ai event_format is not invented",
+        _test_ai_event_format_is_not_invented,
+    ),
+    RegressionCase(
+        "upsell",
+        "basic upsell is saved to yclients comment",
+        lambda _now: _test_basic_upsell_is_saved_to_yclients_comment(),
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule preferences recalculate options",
+        _test_reschedule_preferences_recalculate_options,
+    ),
+    RegressionCase(
+        "reschedule",
+        "reschedule da da confirms and clears flow",
+        _test_reschedule_da_da_confirms_and_clears_flow,
+    ),
+    RegressionCase(
+        "reminder",
+        "booking reminder yes and no",
+        _test_booking_reminder_yes_and_no,
+    ),
+)
+
+
+def _build_cases_by_name(cases: tuple[RegressionCase, ...]) -> dict[str, RegressionCase]:
+    known_groups = set(TEST_GROUPS)
+    unknown_groups = sorted({case.group for case in cases if case.group not in known_groups})
+    if unknown_groups:
+        raise RuntimeError(f"Unknown regression case groups: {', '.join(unknown_groups)}")
+
+    cases_by_name: dict[str, RegressionCase] = {}
+    duplicate_names: list[str] = []
+    for case in cases:
+        if case.name in cases_by_name and case.name not in duplicate_names:
+            duplicate_names.append(case.name)
+        cases_by_name[case.name] = case
+    if duplicate_names:
+        raise RuntimeError(f"Duplicate regression case names: {', '.join(sorted(duplicate_names))}")
+    return cases_by_name
+
+
+CASES_BY_NAME = _build_cases_by_name(REGRESSION_CASES)
+
+
+def _cases_for_listing() -> list[RegressionCase]:
+    return [case for group in TEST_GROUPS for case in REGRESSION_CASES if case.group == group]
+
+
+def _selected_regression_cases(
+    selected_groups: set[str],
+    selected_case_names: list[str],
+) -> list[RegressionCase]:
+    if selected_case_names:
+        return [CASES_BY_NAME[name] for name in selected_case_names]
+    if selected_groups:
+        return [case for case in REGRESSION_CASES if case.group in selected_groups]
+    return list(REGRESSION_CASES)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run deterministic local booking-bot regressions.")
     parser.add_argument(
@@ -8412,10 +10013,44 @@ def main() -> None:
         choices=TEST_GROUPS,
         help="Run only one regression group. Can be passed more than once.",
     )
+    parser.add_argument(
+        "--case",
+        action="append",
+        choices=sorted(CASES_BY_NAME),
+        help="Run one named regression case. Can be passed more than once.",
+    )
+    parser.add_argument(
+        "--list-cases",
+        action="store_true",
+        help="List named regression cases and exit without touching the DB.",
+    )
+    parser.add_argument(
+        "--fake-ai",
+        action="store_true",
+        help="Use deterministic fake AI responses. This is the default.",
+    )
+    parser.add_argument(
+        "--real-ai",
+        action="store_true",
+        help="Allow the real AI provider. Fake AI is used unless this flag is passed.",
+    )
     args = parser.parse_args()
+    if args.fake_ai and args.real_ai:
+        parser.error("--fake-ai and --real-ai cannot be used together")
+    if args.case and args.group:
+        parser.error("--case cannot be combined with --group")
+    if args.list_cases:
+        for case in _cases_for_listing():
+            print(f"{case.group}\t{case.name}", flush=True)
+        return
+
     install_regression_suite_lock("local_regression_suite")
     selected_groups = set(args.group or [])
-    if selected_groups:
+    selected_case_names = list(dict.fromkeys(args.case or []))
+    selected_cases = _selected_regression_cases(selected_groups, selected_case_names)
+    if selected_case_names:
+        print(f"Running regression cases: {', '.join(selected_case_names)}", flush=True)
+    elif selected_groups:
         print(f"Running regression groups: {', '.join(sorted(selected_groups))}", flush=True)
     else:
         print("Running all regression groups", flush=True)
@@ -8425,213 +10060,25 @@ def main() -> None:
     original_create_missing = message_handler.create_missing_yclients_records
     original_call_ai_for_suite = message_handler.call_ai
     message_handler.create_missing_yclients_records = lambda *_args, **_kwargs: {"checked": 0, "created": 0, "failed": 0}
-    if not os.environ.get("BEST2_REGRESSION_REAL_AI"):
+    if not args.real_ai:
         message_handler.call_ai = lambda **_kwargs: AIResponse(intent="other", action="ask_next_question")
+    else:
+        print("Using real AI provider for regression fallbacks", flush=True)
     _cleanup()
 
     checks: list[Check] = []
 
-    def run(group: str, factory: Callable[[], Check]) -> None:
-        if selected_groups and group not in selected_groups:
-            return
+    def run_case(case: RegressionCase) -> None:
         started_at = perf_counter()
-        check = factory()
+        check = case.factory(now)
         elapsed = perf_counter() - started_at
         checks.append(check)
         marker = "OK" if check.ok else "FAIL"
         print(f"{marker} [{elapsed:.1f}s]: {check.name}: {check.details}", flush=True)
 
     try:
-        run("fresh", lambda: _test_second_booking_does_not_inherit_old_slot(now))
-        run("fresh", lambda: _test_new_service_from_waiting_date_resets_old_slot(now))
-        run("fresh", lambda: _test_plain_new_service_request_resets_old_form(now))
-        run("fresh", lambda: _test_service_correction_with_zhe_resets_old_form(now))
-        run("fresh", lambda: _test_next_application_while_hold_starts_blank_not_ice(now))
-        run("payments", lambda: _test_reserved_yes_retries_payment_link(now))
-        run("payments", lambda: _test_paid_status_refreshes_on_any_message(now))
-        run("payments", lambda: _test_expired_hold_notifies_and_resets(now))
-        run("payments", lambda: _test_reserved_yes_reuses_existing_payment_link(now))
-        run("payments", lambda: _test_paid_booking_payment_question_is_deterministic(now))
-        run("payments", _test_paid_notification_includes_booking_summary)
-        run("payments", lambda: _test_payment_delay_does_not_start_reschedule(now))
-        run("payments", lambda: _test_fake_payment_request_does_not_mark_paid(now))
-        run("payments", lambda: _test_resume_same_expired_hold_does_not_ask_date(now))
-        run("payments", lambda: _test_concurrent_active_hold_conflict(now))
-        run("payments", lambda: _test_payment_intent_retry_no_duplicate_link(now))
-        run("payments", _test_payment_reply_uses_30_minute_ttl_and_refund_note)
-        run("payments", lambda: _test_unpaid_reserved_date_correction_recreates_hold_and_link(now))
-        run("post_booking", lambda: _test_confirmation_info_answer_without_extra_ai(now))
-        run("post_booking", _test_message_retention_48h_summarizes_and_deletes)
-        run("post_booking", lambda: _test_post_booking_info_fallback_when_ai_unavailable(now))
-        run("post_booking", lambda: _test_booking_summary_uses_draft_when_no_active_booking(now))
-        run("services", lambda: _test_unconfigured_service_does_not_claim_free(now))
-        run("services", lambda: _test_summer_gazebo_alias_uses_gazebo(now))
-        run("services", lambda: _test_gazebo_bathhouse_alias_starts_with_gazebo(now))
-        run("services", lambda: _test_bathhouse_gazebo_order_starts_with_bathhouse(now))
-        run("services", lambda: _test_bathhouse_blocks_large_group(now))
-        run("services", lambda: _test_start_available_services_lists_all_primary_options(now))
-        run("dates", lambda: _test_deterministic_date_beats_stale_ai(now))
-        run("dates", lambda: _test_contextual_day_number_keeps_discussed_month(now))
-        run("gazebo", _test_gazebo_recommendations_use_only_available)
-        run("gazebo", _test_gazebo_budget_preference_filters_cheapest)
-        run("gazebo", lambda: _test_gazebo_budget_preference_during_choice(now))
-        run("gazebo", lambda: _test_gazebo_budget_without_date_asks_one_question(now))
-        run("gazebo", lambda: _test_mixed_gazebo_selection_info_saves_variant(now))
-        run("gazebo", _test_gazebo_capacity_filter_rejects_tight_options)
-        run("gazebo", _test_gazebo_date_reply_asks_guests_before_choice)
-        run("gazebo", lambda: _test_forced_gazebo_variant_asks_guests_before_time(now))
-        run("gazebo", lambda: _test_gazebo_capacity_question_sets_guests_and_skips_repeat(now))
-        run("gazebo", _test_hypothetical_guest_count_updates_capacity_question)
-        run("gazebo", lambda: _test_live_gazebo_twenty_guests_keeps_capacity_context(now))
-        run("gazebo", lambda: _test_gazebo_date_and_guests_first_message_checks_availability(now))
-        run("gazebo", lambda: _test_gazebo_no_capacity_on_date_offers_nearest_before_requested(now))
-        run("gazebo", lambda: _test_gazebo_small_slots_on_date_offers_nearest_suitable(now))
-        run("gazebo", lambda: _test_gazebo_variant_change_not_parsed_as_time(now))
-        run("time", lambda: _test_guest_count_reference_not_parsed_as_time(now))
-        run("gazebo", lambda: _test_next_free_dates_filter_gazebos_by_guests(now))
-        run("dates", lambda: _test_new_free_dates_request_resets_old_unavailable(now))
-        run("dates", lambda: _test_gazebo_free_dates_request_switches_service(now))
-        run("gazebo", _test_large_gazebo_group_prioritizes_no1)
-        run("gazebo", lambda: _test_switch_back_to_gazebo_preserves_context(now))
-        run("services", lambda: _test_house_unavailable_offers_same_date_alternatives(now))
-        run("time", lambda: _test_gazebo_start_time_defaults_until_morning(now))
-        run("time", lambda: _test_gazebo_explicit_period_with_longer_question_keeps_end_time(now))
-        run("time", _test_people_range_is_not_time)
-        run("time", _test_afternoon_time_words_parse_pm)
-        run("time", _test_duration_string_normalization_and_loose_period)
-        run("time", _test_gazebo_open_ended_duration_overrides_ai_guess)
-        run("time", _test_bathhouse_open_ended_duration_until_morning)
-        run("time", lambda: _test_bathhouse_rejects_non_fixed_duration(now))
-        run("services", lambda: _test_fixed_service_rejects_missing_yclients_book_time(now))
-        run("services", lambda: _test_fixed_service_yclients_unavailable_does_not_claim_free(now))
-        run("media", _test_media_waits_for_date_and_guests)
-        run("media", _test_explicit_photo_request_ignores_availability_text)
-        run("media", lambda: _test_explicit_photo_request_bypasses_ai(now))
-        run("media", lambda: _test_explicit_service_photo_request_ignores_old_gazebo_state(now))
-        run("media", lambda: _test_general_gazebo_photo_request_after_booking(now))
-        run("prices", lambda: _test_price_question_during_form_not_booking_summary(now))
-        run("gazebo", _test_single_available_gazebo_is_auto_selected)
-        run("gazebo", _test_gazebo_variant_is_not_guessed)
-        run("post_booking", lambda: _test_booking_summary_counts_all_bookings(now))
-        run("post_booking", lambda: _test_new_conversation_sees_old_user_booking(now))
-        run("post_booking", lambda: _test_new_conversation_sees_old_summary(now))
-        run("post_booking", lambda: _test_customer_templates_do_not_mention_admin(now))
-        run("post_booking", lambda: _test_admin_notification_includes_booking_object(now))
-        run("post_booking", _test_short_yes_confirms)
-        run("post_booking", lambda: _test_soft_yes_confirms_from_confirmation(now))
-        run("post_booking", lambda: _test_confirmation_no_is_not_upsell_correction(now))
-        run("post_booking", _test_name_correction_replaces_value_after_na)
-        run("post_booking", _test_name_correction_paraphrases_keep_clean_value)
-        run("fresh", lambda: _test_invalid_phone_reply_is_client_safe(now))
-        run("dates", lambda: _test_bare_weekday_requires_confirmation(now))
-        run("dates", lambda: _test_weekday_confirmation_yes_uses_saved_candidate(now))
-        run("upsell", _test_first_upsell_no_gets_soft_push)
-        run("upsell", lambda: _test_first_upsell_flow_before_phone(now))
-        run("upsell", lambda: _test_soft_upsell_accept_after_push(now))
-        run("upsell", lambda: _test_first_mangal_set_selection_from_price_list(now))
-        run("upsell", lambda: _test_informal_upsell_no_two_touch(now))
-        run("upsell", lambda: _test_nu_net_upsell_no_two_touch(now))
-        run("upsell", lambda: _test_bare_ne_first_upsell_gets_soft_push(now))
-        run("upsell", lambda: _test_on_site_upsell_refusal_keeps_no_extras(now))
-        run("upsell", _test_on_site_upsell_refusal_paraphrases)
-        run("payments", lambda: _test_phone_completion_yes_creates_hold_not_second_confirmation(now))
-        run("upsell", lambda: _test_event_format_typo_moves_to_upsell(now))
-        run("upsell", lambda: _test_addon_price_during_upsell_does_not_repeat_event_format(now))
-        run("upsell", lambda: _test_state_keeps_time_duration_event_after_upsell(now))
-        run("upsell", lambda: _test_kalik_addon_survives_to_confirmation(now))
-        run("upsell", _test_live_hookah_upsell_phrases)
-        run("upsell", lambda: _test_state_text_guard_rebuilds_ai_added_without_state(now))
-        run("upsell", lambda: _test_addon_prices_plural_question_replies_immediately(now))
-        run("upsell", lambda: _test_prefilled_first_upsell_no_still_gets_soft_push(now))
-        run("time", _test_duration_24_formats_as_hours)
-        run("upsell", lambda: _test_positive_upsell_asks_for_more_then_continues(now))
-        run("upsell", lambda: _test_mixed_addon_price_and_selection_saves_items(now))
-        run("upsell", lambda: _test_late_kalik_price_adds_addon_to_confirmation(now))
-        run("upsell", lambda: _test_generic_ok_after_upsell_info_does_not_accept_items(now))
-        run("upsell", lambda: _test_upsell_parking_info_returns_to_empty_addons(now))
-        run("upsell", lambda: _test_upsell_parking_info_keeps_selected_addon(now))
-        run("gazebo", lambda: _test_gazebo_quality_question_during_confirmation(now))
-        run("payments", lambda: _test_paid_finalize_busy_interval_uses_hold_variant(now))
-        run("waitlist", lambda: _test_free_dates_lookup_after_no_availability(now))
-        run("waitlist", lambda: _test_waitlist_decline_does_not_handoff(now))
-        run("waitlist", lambda: _test_waitlist_notifies_only_relevant_requests(now))
-        run("handoff", _test_location_question_does_not_handoff)
-        run("handoff", lambda: _test_emotional_event_format_does_not_handoff(now))
-        run("media", _test_gazebo_media_selection)
-        run("post_booking", lambda: _test_post_booking_summary_always_uses_db(now))
-        run("post_booking", lambda: _test_booking_summary_does_not_merge_shared_phone(now))
-        run("post_booking", lambda: _test_available_services_uses_active_booking_not_stale_form(now))
-        run("reschedule", lambda: _test_reschedule_selects_service_after_list(now))
-        run("reschedule", lambda: _test_reschedule_uses_target_date_not_source_date(now))
-        run("reschedule", lambda: _test_reschedule_typo_pernesti_uses_target_date(now))
-        run("reschedule", lambda: _test_reschedule_keeps_initial_date_after_selection(now))
-        run("reschedule", lambda: _test_reschedule_can_change_gazebo_variant(now))
-        run("reschedule", lambda: _test_reschedule_flow_answers_options_instead_of_loop(now))
-        run("reschedule", lambda: _test_reschedule_flow_answers_info_question(now))
-        run("reschedule", lambda: _test_multi_reschedule_same_date_for_all_bookings(now))
-        run("cancel", lambda: _test_paid_cancel_asks_confirmation(now))
-        run("cancel", lambda: _test_paid_cancel_typo_dya_confirms(now))
-        run("cancel", lambda: _test_ack_after_cancel_does_not_say_booking_fixed(now))
-        run("cancel", lambda: _test_paid_cancel_refund_window_text(now))
-        run("cancel", lambda: _test_cancel_refund_boundaries(now))
-        run("cancel", lambda: _test_refund_required_notifies_admin(now))
-        run("post_booking", lambda: _test_ai_semantic_preflight_for_active_routes(now))
-        run("cancel", lambda: _test_paid_cancel_all_asks_single_confirmation(now))
-        run("cancel", lambda: _test_multi_cancel_refund_only_paid_refundable(now))
-        run("cancel", lambda: _test_paid_bathhouse_cancel_without_hold(now))
-        run("cancel", lambda: _test_ai_change_type_cancel_starts_flow(now))
-        run("reschedule", lambda: _test_ai_change_type_reschedule_starts_flow(now))
-        run("reschedule", lambda: _test_paid_reschedule_asks_confirmation(now))
-        run("fresh", lambda: _test_generic_second_booking_keeps_only_contact(now))
-        run("fresh", lambda: _test_abort_current_draft_keeps_contact(now))
-        run("fresh", lambda: _test_abort_current_draft_from_upsell_refusal(now))
-        run("prices", lambda: _test_info_during_bath_form_keeps_service_context(now))
-        run("fresh", lambda: _test_later_pause_during_form_does_not_repeat_question(now))
-        run("services", lambda: _test_second_service_same_time_keeps_current_service(now))
-        run("services", lambda: _test_second_service_same_time_reference_on_time_step(now))
-        run("services", lambda: _test_second_service_same_date_keeps_current_service(now))
-        run("services", lambda: _test_second_service_same_number_wording_keeps_current_service(now))
-        run("services", lambda: _test_live_135_paid_gazebo_then_bathhouse_same_number(now))
-        run("services", lambda: _test_new_bath_request_does_not_cancel_paid_gazebo(now))
-        run("services", lambda: _test_bathhouse_post_booking_info_then_generic_new_request(now))
-        run("services", lambda: _test_gazebo_info_then_separate_booking_from_old_bath_draft(now))
-        run("services", lambda: _test_bathhouse_post_booking_paraphrases_start_clean(now))
-        run("prices", _test_price_replies_use_service_map)
-        run("prices", _test_price_question_with_budet_not_children_info)
-        run("prices", lambda: _test_ai_semantic_price_question_without_price_keywords(now))
-        run("gazebo", _test_truncated_people_word_extracts_guests)
-        run("fresh", _test_friends_hangout_event_format_not_birthday)
-        run("prices", _test_addon_price_question_does_not_add_item)
-        run("prices", _test_generic_upsell_price_question_uses_addon_prices)
-        run("prices", _test_prepayment_price_question_not_addons)
-        run("prices", _test_gazebo_weekday_discount_reply)
-        run("prices", _test_best2info_retrieval_for_client_questions)
-        run("prices", _test_gazebo_duration_price_rule)
-        run("prices", _test_brooms_are_forbidden)
-        run("prices", _test_brooms_info_without_form_does_not_ask_booking)
-        run("prices", lambda: _test_kids_pets_parking_info_without_form_does_not_start_booking(now))
-        run("prices", _test_children_parking_info_during_form_uses_runtime_knowledge)
-        run("prices", lambda: _test_gazebo_until_morning_info_keeps_time_step(now))
-        run("prices", _test_mosquito_question_during_confirmation)
-        run("prices", lambda: _test_mosquito_question_after_booking_bypasses_ai(now))
-        run("prices", _test_bathhouse_ten_hour_price_formula)
-        run("prices", _test_coal_price_is_known)
-        run("time", _test_bare_duration_answer)
-        run("time", _test_evening_time_choice_uses_early_option)
-        run("time", _test_until_midnight_uses_existing_start)
-        run("time", lambda: _test_confirmation_time_correction_rechecks(now))
-        run("gazebo", lambda: _test_gazebo_selected_variant_capacity_uses_known_free_list(now))
-        run("fresh", lambda: _test_stale_form_after_two_hours_asks_choice(now))
-        run("fresh", lambda: _test_stale_explicit_new_bath_request_skips_choice(now))
-        run("fresh", lambda: _test_stale_davaite_continues(now))
-        run("fresh", lambda: _test_stale_no_with_new_bath_request_processes_same_message(now))
-        run("fresh", lambda: _test_stale_free_dates_request_starts_fresh_lookup(now))
-        run("fresh", lambda: _test_old_form_new_free_dates_skips_stale_choice(now))
-        run("fresh", lambda: _test_ai_event_format_is_not_invented(now))
-        run("upsell", _test_basic_upsell_is_saved_to_yclients_comment)
-        run("reschedule", lambda: _test_reschedule_preferences_recalculate_options(now))
-        run("reschedule", lambda: _test_reschedule_da_da_confirms_and_clears_flow(now))
-        run("reminder", lambda: _test_booking_reminder_yes_and_no(now))
+        for case in selected_cases:
+            run_case(case)
     finally:
         message_handler.call_ai = original_call_ai_for_suite
         message_handler.create_missing_yclients_records = original_create_missing
@@ -8640,7 +10087,6 @@ def main() -> None:
     failed = [check for check in checks if not check.ok]
     if failed:
         raise SystemExit(1)
-
 
 if __name__ == "__main__":
     main()

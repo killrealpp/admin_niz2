@@ -251,6 +251,7 @@ def list_paid_unnotified(
             SELECT
                 p.*,
                 u.external_id AS user_external_id,
+                u.channel AS user_channel,
                 u.name AS user_name
             FROM payments p
             JOIN users u ON u.id = p.user_id

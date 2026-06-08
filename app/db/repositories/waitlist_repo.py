@@ -68,7 +68,7 @@ def list_active_due(
     with conn.cursor() as cur:
         cur.execute(
             """
-            SELECT wr.*, u.external_id AS user_external_id
+            SELECT wr.*, u.external_id AS user_external_id, u.channel AS user_channel
             FROM waitlist_requests wr
             JOIN users u ON u.id = wr.user_id
             WHERE wr.status = 'active'

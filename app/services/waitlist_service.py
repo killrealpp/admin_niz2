@@ -7,10 +7,13 @@ from zoneinfo import ZoneInfo
 
 from aiogram import Bot
 
+from app.bot.client_notification_router import ensure_client_notification_router
+from app.bot.notification_router import NotificationRouter
 from app.core.config import get_settings
 from app.core.constants import SENDER_USER
 from app.db.connection import get_connection
 from app.db.repositories import bookings_repo, messages_repo, waitlist_repo
+from app.services.client_notification_service import send_client_text_notification
 from app.services.availability_service import check_availability, load_services_map
 
 logger = logging.getLogger(__name__)
@@ -51,8 +54,9 @@ def remember_waitlist_request(
     )
 
 
-async def notify_waitlist_matches(bot: Bot) -> int:
+async def notify_waitlist_matches(notifier: NotificationRouter | Bot) -> int:
     settings = get_settings()
+    router = ensure_client_notification_router(notifier)
     now = datetime.now(ZoneInfo(settings.app_timezone))
     sent = 0
     with get_connection() as conn:
@@ -79,10 +83,15 @@ async def notify_waitlist_matches(bot: Bot) -> int:
             f"По вашему запросу на {service_title.lower()} {_date_ru(row['desired_date'])} снова есть свободный вариант.\n\n"
             "Напишите, пожалуйста, если ещё актуально, и я проверю слот перед оформлением."
         )
-        try:
-            await bot.send_message(chat_id=str(row["user_external_id"]), text=text)
-        except Exception:
-            logger.exception("Waitlist notification failed id=%s", row.get("id"))
+        delivery = await send_client_text_notification(
+            router,
+            row,
+            text,
+            notification_event="waitlist_match",
+            entity_type="waitlist_request",
+            entity_id=row.get("id"),
+        )
+        if not delivery.delivered:
             continue
         with get_connection() as conn:
             waitlist_repo.mark_notified(conn, waitlist_id=row["id"], now=now)

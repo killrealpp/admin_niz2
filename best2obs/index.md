@@ -1,5 +1,98 @@
 # best2 Project Memory
 
+## 2026-06-08 MAX production deploy blocker
+
+- DNS for `max.killrealp2.ru` is propagated to `45.147.179.48`; local and public resolvers agree.
+- Local code/preflight is ready for production MAX webhook dry-run: compile, MAX media/API/inbound smokes, Telegram/MAX status, DB health and hygiene are green after a safe YCLIENTS one-shot sync.
+- Local `.env` now has production MAX webhook settings for the domain: `MAX_WEBHOOK_URL=https://max.killrealp2.ru/webhooks/max`, `MAX_WEBHOOK_ENABLED=true`, `MAX_MODE=webhook`, plus a generated valid `MAX_WEBHOOK_SECRET`.
+- Server launch is blocked before deployment: SSH on `45.147.179.48:22` accepts TCP but does not send an SSH banner; HTTP `/` returns nginx `301` to HTTPS, while `/webhooks/max` and HTTPS requests time out. No MAX subscription registration was performed; subscriptions remain `0`.
+- Details: [[log]], [[bugs/2026-06-08-server-ssh-https-blocker]], [[operations/production-runbook]], [[operations/production-env-checklist]].
+
+## 2026-06-07 MAX runtime parity update
+
+- `main.py` can now run Telegram and MAX as peer client channels through `app/bot/runtime.py`. The runtime owns YCLIENTS sync, payment status sync, message retention and webhook servers once per process; `telegram_bot.py` can run as a Telegram-only channel runner without duplicating those loops.
+- Production MAX webhook runtime is wired but not launched: with `CLIENT_CHANNELS=telegram,max`, `MAX_MODE=webhook`, `MAX_WEBHOOK_ENABLED=true` and `MAX_WEBHOOK_SECRET`, runtime starts `max_webhook_runner` with the real MAX event processor. Registration remains manual; no subscription mutation happens at startup.
+- Current local manual-test runner is not active. A runner reached Telegram/MAX ready once, but was stopped after a Telegram network disconnect exposed a half-live multi-channel supervision bug; that bug is now fixed. A fresh runner attempt is blocked by local Python DNS (`socket.getaddrinfo` fails for `api.telegram.org` and `platform-api.max.ru`), so manual paired smoke waits on local network/DNS recovery.
+- Health after the implementation is green: YCLIENTS fresh (`records_seen=143`, `records_upserted=143`), live health `status=ok`, hygiene clean, MAX subscriptions `0`, Telegram webhook empty and pending updates `0`. Regression groups `media+fresh`, `services`, `post_booking` and `payments` passed.
+- Step 12 MAX Launch Gate is still open: full production requires public HTTPS `MAX_WEBHOOK_URL`, `MAX_WEBHOOK_SECRET`, reverse proxy HTTPS 443, confirmed running webhook runner, explicit permission for `scripts/register_max_webhook.py --apply`, expected update types `message_created`/`bot_started`, and an active MAX subscription.
+- Details: [[log]], [[architecture/backend]], [[architecture/api]], [[roadmap/max-telegram-parity-completion-plan]], [[roadmap/max-context-window-steps]].
+
+## 2026-06-05 MAX parity slice implemented
+
+- MAX is now closer to Telegram as a second client entry/exit point without forking `message_handler.py`: typing uses MAX chat actions, MAX `bot_started` sends the same static welcome as Telegram `/start`, MAX voice/audio attempts shared transcription and otherwise answers with a clear fallback, and `main.py` can start `telegram,max` through `CLIENT_CHANNELS`.
+- Safe local runtime: `CLIENT_CHANNELS=telegram,max`, `MAX_MODE=polling`, `MAX_WEBHOOK_ENABLED=false`, `MAX_SEND_RELATED_MEDIA=true`, with payments disabled for local smoke. Production webhook registration is still not done; `scripts/register_max_webhook.py` remains dry-run unless `--apply` is explicitly requested.
+- Checks were green: compileall, MAX/channel smokes, `services`, `media+fresh`, `post_booking`, `payments` regression groups, DB/YCLIENTS/TG/MAX health, dry-run registration helper and a short `main.py` startup smoke. `max_status.py` shows bot `id524706834883_bot` and active subscriptions `0`; Telegram status shows `@fnsmvsvmpvpovbot`, empty webhook, pending `0`.
+- Current local manual-test runner status: stopped on 2026-06-05 by operator request. The previous `main.py` runner PID `26216` and an additional `main.py` process PID `22868` are no longer running. Log remains at `runtime_logs/main_max_parity_live.out.log`.
+- Step 12 Launch Gate is still not fully closed because production MAX webhook data and active subscription are missing. Full launch still requires production `MAX_WEBHOOK_URL`, `MAX_WEBHOOK_SECRET`, reverse proxy HTTPS 443, running MAX webhook runner and explicit permission to run `scripts/register_max_webhook.py --apply`.
+- Remaining parity work is now tracked in [[roadmap/max-telegram-parity-completion-plan]]: manual local parity smoke, live MAX voice payload confirmation, runtime ownership cleanup, production webhook runtime and launch gate.
+- Details: [[log]], [[architecture/backend]], [[architecture/api]], [[bugs/current-known-issues]], [[roadmap/max-context-window-steps]].
+
+## 2026-06-04 MAX Step 11 runbook/env/checks prepared
+
+- Step 11 из [[roadmap/max-context-window-steps]] закрыт как operations/docs + safe-script срез: [[operations/production-env-checklist]] теперь фиксирует MAX production env target, а [[operations/production-runbook]] описывает reverse proxy/HTTPS `443`, ручную registration procedure, dry-run, rollback/unsubscribe и запрет long polling в production.
+- Добавлен `scripts/register_max_webhook.py` с dry-run по умолчанию; реальный `POST /subscriptions` или `DELETE /subscriptions` требует ручного `--apply` и в этом шаге не запускался. `scripts/max_status.py` остается read-only проверкой `GET /me` и `GET /subscriptions` без печати токена.
+- Launch gate не выполнялся: перед реальной регистрацией нужно отдельным scope подтвердить, что внутренний MAX webhook runner фактически стартует и reverse proxy ведет на живой endpoint. Детали: [[log]], [[architecture/api]].
+
+## 2026-06-04 MAX Step 10 post-MVP media/buttons completed
+
+- Step 10 из [[roadmap/max-context-window-steps]] закрыт в code-slice scope: MAX `send_media()` теперь использует `/uploads` + upload URL + attachment token, retry `attachment.not.ready`, а failure пишет `max_media_delivery_failed` и отправляет клиенту текстовый fallback. MAX auto/explicit photo routing снова подключен через общий `ChannelClient.send_media()`, без форка `message_handler.py`.
+- MAX payment link сохраняет обычный текст с URL и может добавлять inline keyboard `link` button в MAX adapter-е; Telegram text/media/payment path не менялся. Contact `request_contact` оставлен на later, потому что текущий scope не включал hash-validation.
+- Проверки зелёные: compile, `max_media_buttons_smoke.py`, MAX API/outbound/inbound/webhook smokes, channel smokes, `local_regression_suite.py --group media --group payments`; после DB-mutating regression выполнены cleanup, YCLIENTS sync fresh (`seen=128`) и hygiene clean. Детали: [[log]], [[architecture/backend]], [[architecture/api]].
+
+## 2026-06-03 Priority 1 local stabilization completed
+
+- Локальный baseline возвращён в управляемое состояние: DB OK, Telegram API живой (`@fnsmvsvmpvpovbot`, webhook пустой, pending `0`), YCLIENTS fresh после cleanup (`records_seen=127`), hygiene clean, runtime tables чистые (`users/conversations/messages/system_logs=0`). Финальный локальный `main.py` поднят hidden-фоном и жив после фонового цикла: launcher PID `8972`, child CPython PID `17436`. Детали: [[log]].
+- Glue-boundary `message_handler.py -> app/services/dialog/message_handler_flow_glue.py` теперь считается подтверждённым срезом: полный targeted regression зелёный (`fresh+services`, `post_booking+payments`, `cancel+reschedule`, `prices+time+upsell+media`, context 19/19, edge 15/15, stress 13/13). Новый refactor можно начинать только от этого зафиксированного состояния. Детали: [[log]], [[architecture/backend]].
+- Найден и закрыт минимальный инфраструктурный баг startup DB pool: `message_retention_runner` мог ловить `PoolError: trying to put unkeyed connection` из-за concurrent lazy-init pool между background loops. `app/db/connection.py` теперь синхронизирует init, возвращает connection в тот же pool object и ретраит transient pool exhaustion. Детали: [[bugs/current-known-issues]], [[architecture/backend]], [[log]].
+- Dirty tree по-прежнему не очищен/не закоммичен, но разложен по группам: production-код, tests/scripts, `best2info`, `best2obs`, `best2graph`, root `graphify-out/cache` generated-шум. Root cache не трогать без отдельной сверки; `best2graph/graphify-out` обновлён и query находит `message_handler.py`, `message_handler_flow_glue.py`, `new_booking_flow.py`.
+
+## 2026-06-03 current status after unfinished refactor chat
+
+- Текущая read-only проверка: production-код не менялся, но live polling не запущен - среди Python-процессов нет `main.py`, поэтому бот сейчас не принимает Telegram updates. Telegram API живой (`@fnsmvsvmpvpovbot`, webhook пустой, pending `0`), БД OK, YCLIENTS-cache stale (`age_seconds=1144`, `last_success_at=2026-06-03T18:54:42+03:00`, `records_seen=125`). Lightweight baseline зелёный: compile, `lint_best2info.py`, `validate_yclients_map.py`, `git diff --check` только CRLF warnings; `local_regression_suite.py --list-cases` показывает 199 cases.
+- Рабочее дерево ушло дальше последней Phase 3 записи: `message_handler.py` теперь делегирует много `_impl_*` wrappers в новый `app/services/dialog/message_handler_flow_glue.py`, включая `handle_incoming() -> _impl_handle_incoming()`. Это подтверждает перенос части `message_handler`, но большой glue-extraction срез ещё не описан как завершённый в архитектуре/логах и не подтверждён полным DB-mutating regression. Детали: [[log]].
+
+## 2026-06-03 live dialog availability / bot runtime status
+
+- По свежей проверке `scripts/inspect_last_dialog.py` в `best2` БД нет сохранённых диалогов (`users/conversations/messages=0`), поэтому крайний live-dialog нельзя восстановить из runtime-таблиц после последних cleanup-прогонов. `best3_*` таблицы не подходят как свежий источник: последний `best3` conversation от `2026-05-29`.
+- Операционно до проверки `main.py` не был запущен, а YCLIENTS-cache был stale (`age_seconds=1256`). Выполнен manual sync (`seen=125/upserted=125`) и запущен один локальный `main.py` hidden-фоном; фоновой sync обновился (`last_success_at=2026-06-03T18:30:33+03:00`, `records_seen=125`). Telegram API живой, webhook пустой, pending updates `0`. Детали: [[log]].
+
+## 2026-06-03 Phase 3 fresh/new-booking helper extraction
+
+- Начат следующий срез Фазы 3 из [[roadmap/project-hardening-master-plan]]: `app/services/dialog/new_booking_flow.py` теперь владеет pure helper-логикой fresh/new booking (`wants_additional_booking`, `starts_new_booking_request`, `generic_new_booking_request`, context service reuse, fresh form builder, immediate fresh-start reply и AI fresh patch builder). `message_handler.py` оставляет совместимые wrappers, callback wiring, persistence и все side effects; размер уменьшен примерно `5936 -> 5837` строк. Regression зелёный: `fresh`, `services`, `post_booking`, `payments`, context 19/19, edge 15/15, stress 13/13; после DB-mutating runs БД очищена, YCLIENTS fresh (`seen=121`), hygiene clean. Graphify incremental снова схлопнулся, поэтому карта восстановлена full extract: `1800 nodes`, `7458 edges`, `84 communities`; root generated-cache возвращён к pre-existing состоянию. Детали: [[log]], [[architecture/backend]].
+
+## 2026-06-03 Phase 2 single-case regression runner
+
+- Фаза 2 из [[roadmap/project-hardening-master-plan]] дозакрыта: `scripts/local_regression_suite.py` стал registry-driven runner для всех 199 существующих checks. `--group`, `--case "exact name"` и `--list-cases` используют единый `REGRESSION_CASES`; `--list-cases` не ставит lock и не трогает БД; fake AI default, real AI только через явный `--real-ai`. Registry защищён от duplicate case names и unknown groups, list order стабилен по `TEST_GROUPS`. Проверки зелёные: list-cases, named bathhouse/payment cases, representatives из `fresh/waitlist/reschedule/cancel`, groups `services`, `prices+time`, `payments+post_booking`; после DB-mutating run БД очищена, YCLIENTS fresh (`seen=120`), hygiene clean. Graphify восстановлен после incremental shrink до полноценной карты (`1846 nodes`, `7535 edges`, `84 communities`); root generated-cache возвращён к pre-existing состоянию. Детали: [[log]].
+
+## 2026-06-03 project hardening master plan
+
+- Создан подробный пошаговый мастер-план улучшения проекта: [[roadmap/project-hardening-master-plan]]. План закрывает минусы, перечисленные в чате: большой `message_handler.py`, тяжёлый `local_regression_suite.py`, дорогие AI-проверки, нестабильность DB/YCLIENTS/YooKassa, ручной production-runbook, источники правды, Graphify discipline и dirty-tree контроль. Production-код не менялся.
+
+## 2026-06-03 bathhouse single-scenario check
+
+- Отдельно проверены 4 сценария из последнего live-чата без реального LLM-провайдера: date-only packages/prices, `бассейн вместе идет?`, отказ бани на `500 гостей`, follow-up `что подходит на 500 человек?`. Все OK; после проверки БД очищена, YCLIENTS-кэш свежий (`seen=120`), hygiene clean. Детали: [[log]].
+
+## 2026-06-03 Graphify/cache cleanup after resume
+
+- Продолжение после обрыва: банный UX-пакет уже был закрыт, а проблема была в обслуживании Graphify. Incremental update временно схлопнул `best2graph` до doc-only карты, затем root `graphify update .` создал лишний шум в `graphify-out/cache`.
+- Корневой generated-cache очищен без отката production-кода: 2 tracked root-cache файла восстановлены к `HEAD`, 88 новых untracked root-cache хвостов удалены, 13 pre-existing untracked AST cache-файлов оставлены. Правильная карта в `best2graph/graphify-out/` живая: query находит `bathhouse_flow.py`, `info_flow.py`, `message_handler.py`; текущие числа `1842 nodes`, `7671 edges`, `86 communities`. После повторного targeted services+prices+time OK, DB очищена и YCLIENTS-кэш свежий (`seen=120`). Детали: [[log]].
+
+## 2026-06-03 bathhouse live UX follow-up fixed
+
+- Закрыт следующий банный UX-пакет: prompt пакетов показывает цены 3-7 часов и часовой ориентир; active `бассейн вместе идет?` отвечает прямо, что бассейн входит в бронь; баня на 500 гостей не уходит в ложную `баня не свободна`, а follow-up `что подходит на 500 человек?` ведёт в ручной/admin сценарий без повторного вопроса гостей.
+- Regression-покрытие добавлено в `scripts/local_regression_suite.py`: `bathhouse pool included info during form`, `bathhouse blocks 500 without unavailable alternatives`, `bathhouse 500 follow-up manual admin`, расширенный `bathhouse date-only reply explains packages`. Проверки зелёные: compile/lint/map, targeted services+prices+time, context 19/19, edge 15/15, stress 13/13; Graphify восстановлен полным кодовым сканом (`1842 nodes`, `7671 edges`, `86 communities`). Детали: [[log]], [[bugs/current-known-issues]], [[roadmap/dialog-regression-scenarios]], [[roadmap/pre-launch]].
+
+## 2026-06-03 bathhouse live UX follow-up plan
+
+- Production-код не менялся. Открыт следующий банный UX-пакет: prompt пакетов должен показывать цены/часовой ориентир, активный вопрос `бассейн вместе идет?` должен отвечать прямо `да, это баня с бассейном`, отказ на `500` гостей не должен говорить `баня не свободна`, а `что подходит на 500 человек?` должен вести в ручной/admin сценарий вместо повторного вопроса гостей.
+- Точки следующей правки: `bathhouse_period_options_reply`, `_capacity_info_reply`, `_bathhouse_capacity_mismatch_reply`, возможно отдельный deterministic helper для huge-group follow-up. Зафиксировано в [[bugs/current-known-issues]], [[roadmap/dialog-regression-scenarios]], [[roadmap/pre-launch]], [[log]].
+
+## 2026-06-03 bathhouse dialog regressions
+
+- Закрыт live-пакет по бане: date-only вопросы теперь объясняют пакеты 3-7 часов и `+1 500 ₽/час` после 7 часов без обещания свободности; `поменять время` без нового времени очищает старый период; active bathhouse info отвечает про алкоголь и complaint без фразы `баня оформляется отдельной бронью`.
+- 8+ часов для бани поддержаны автоматически: YCLIENTS получает 7ч service_id нужного дня недели, локальные hold/booking/availability хранят фактическую длительность, цена считается через общий helper `7ч пакет + extra hours`.
+- Проверки зелёные: compile/lint/map, targeted `local_regression_suite.py --group services --group prices --group time`, context 19/19, edge 15/15, stress 13/13; после DB-mutating проверок выполнены `clear_db.py` + `sync_yclients_records.py --once` (`seen=120`); Graphify обновлён (`741 nodes`, `3558 edges`). Детали: [[log]], [[architecture/backend]], [[bugs/current-known-issues]], [[testing/dialog-test-matrix]].
+
 ## 2026-06-02 info-flow Phase 3 and reserve/payment fixes
 
 - Завершён Phase 3 [[roadmap/large-file-decomposition-plan]]: info routing/helpers вынесены в `app/services/dialog/info_flow.py`, `message_handler.py` оставляет wrappers/callbacks и ownership side effects. Параллельно закрыт пакет live-правок по знаниям/ценам, времени, 30-минутному резерву и unpaid-hold correction. Детали: [[log]], [[architecture/backend]], [[bugs/current-known-issues]].
@@ -150,7 +243,12 @@
 - [[architecture/database]] - таблицы PostgreSQL и назначение данных.
 - [[architecture/auth]] - секреты, внешние токены и модель доступа.
 - [[architecture/api]] - внешние API и интеграции.
+- [[operations/production-env-checklist]] - production `.env` значения и признаки готовности без записи секретов.
+- [[operations/production-runbook]] - запуск, остановка и диагностика production `best2` под `systemd`.
 - [[roadmap/pre-launch]] - проверки и задачи перед релизом.
+- [[roadmap/release-context-window-steps]] - релизный маршрут, разбитый на шаги по одному контекстному окну для новых чатов.
+- [[roadmap/max-channel-entry-exit-plan]] - план добавления MAX через новые transport entry/exit points без копирования диалоговой логики.
+- [[roadmap/max-context-window-steps]] - операционный маршрут внедрения MAX по одному шагу на новый чат/контекстное окно.
 - [[roadmap/dialog-regression-scenarios]] - живые и автоматические сценарии, которые защищают диалог от повторяющихся ошибок.
 - [[roadmap/message-handler-refactor]] - план безопасного уменьшения `message_handler.py` без потери контекстной логики.
 - [[roadmap/large-file-decomposition-plan]] - будущий план разгрузки `message_handler.py`, `local_regression_suite.py` и соседних крупных сервисов.
@@ -169,6 +267,7 @@
 - [[decisions/2026-05-26-use-llm-wiki]] - решение вести `best2obs` как LLM Wiki.
 - [[decisions/2026-05-27-dialog-state-policy]] - правило: AI понимает смысл, backend валидирует состояние и переходы анкеты.
 - [[decisions/2026-06-01-best2info-graph-and-prepayment]] - graph-aware retrieval для `best2info` и явные режимы предоплаты.
+- [[decisions/2026-06-04-max-mvp-channel-decisions]] - MAX добавляется рядом с Telegram; admin notifications MVP остаются в Telegram.
 - [[daily/2026-05-26-scenario-check]] - отчет о самостоятельной проверке сценариев после последних правок.
 - [[daily/2026-05-27-project-review]] - обзор проекта senior Python-разработчиком: логика, сильные стороны, риски, что исправлять и удалять.
 

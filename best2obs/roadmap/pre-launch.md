@@ -1,5 +1,15 @@
 # Pre-launch Roadmap
 
+## 2026-06-03 project hardening master plan
+
+- Для следующего большого захода создан отдельный пошаговый план [[roadmap/project-hardening-master-plan]]. Рекомендуемый первый кодовый шаг после baseline/status: добавить single-scenario runner для `scripts/local_regression_suite.py` с fake AI по умолчанию, затем продолжать маленькие behavior-preserving разрезы `message_handler.py`.
+
+## 2026-06-03 before next bathhouse Telegram smoke
+
+- Статус: закрыто 2026-06-03. Live UX-пакет по бане из [[bugs/current-known-issues]] реализован: цены в prompt пакетов, прямой ответ `бассейн вместе идет`, корректный отказ на 500 гостей без ложной `баня не свободна`, и follow-up `что подходит на 500 человек`.
+- Проверки зелёные: `compileall app scripts`, `lint_best2info.py`, `validate_yclients_map.py`, `local_regression_suite.py --group services --group prices --group time`, `dialog_context_suite.py` 19/19, `dialog_edge_suite.py` 15/15, `dialog_stress_suite.py` 13/13, `git diff --check` только с обычными CRLF warnings.
+- Graphify обновлён через `.\best2graph\update_graph.ps1`: `557 nodes`, `2688 edges`, `36 communities`.
+
 ## 2026-06-01 before next Telegram smoke
 
 - Локальный `.env` временно переведен в тестовый режим `PREPAYMENT_MODE=fixed`, `PREPAYMENT_AMOUNT_RUB=1`, `PREPAYMENT_PERCENT=50`. Для production перед запуском переключить на `PREPAYMENT_MODE=percent`, оставить `PREPAYMENT_PERCENT=50`, проверить `.env` и перезапустить бот.

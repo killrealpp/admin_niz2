@@ -535,7 +535,7 @@ def guests_count_patch(text: str, expected_key: str | None) -> dict[str, int]:
     )
     if range_match:
         guests = max(int(range_match.group(1)), int(range_match.group(2)))
-        if 0 < guests <= 300:
+        if 0 < guests <= 999:
             return {"guests_count": guests}
     match = re.fullmatch(r"(?:нас\s*)?(\d{1,3})(?:\s*(?:человек\w*|челов\w*|гостей|гостя|гость|чел\w*))?", normalized)
     if not match:
@@ -543,11 +543,13 @@ def guests_count_patch(text: str, expected_key: str | None) -> dict[str, int]:
     if not match:
         match = re.search(r"\b(\d{1,3})\s*(?:человек\w*|челов\w*|гостей|гостя|гость|чел\w*)\b", normalized)
     if not match:
+        match = re.search(r"\b(?:человек\w*|челов\w*|гостей|гостя|гость|чел\w*)\s+(\d{1,3})\b", normalized)
+    if not match:
         match = re.search(r"\b(\d{1,3})\s*(?:взрослых|взрослые|взрослый)\b", normalized)
     if not match:
         return {}
     guests = int(match.group(1))
-    if guests <= 0 or guests > 300:
+    if guests <= 0 or guests > 999:
         return {}
     return {"guests_count": guests}
 

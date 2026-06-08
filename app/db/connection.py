@@ -1,6 +1,7 @@
 from contextlib import contextmanager
 import logging
 from pathlib import Path
+from threading import Lock
 import time
 from typing import Generator
 
@@ -15,6 +16,7 @@ from app.services.dialog.performance import trace_span
 
 logger = logging.getLogger(__name__)
 _connection_pool: pool.ThreadedConnectionPool | None = None
+_connection_pool_lock = Lock()
 
 
 def _connect_kwargs() -> dict:
@@ -55,7 +57,11 @@ def _get_pool() -> pool.ThreadedConnectionPool | None:
     settings = get_settings()
     if not settings.db_pool_enabled:
         return None
-    if _connection_pool is None:
+    if _connection_pool is not None:
+        return _connection_pool
+    with _connection_pool_lock:
+        if _connection_pool is not None:
+            return _connection_pool
         last_error: Exception | None = None
         for attempt in range(3):
             try:
@@ -79,10 +85,10 @@ def _get_pool() -> pool.ThreadedConnectionPool | None:
     return _connection_pool
 
 
-def _checkout_connection() -> tuple[PgConnection, bool]:
+def _checkout_connection() -> tuple[PgConnection, pool.ThreadedConnectionPool | None]:
     db_pool = _get_pool()
     if not db_pool:
-        return connect(), False
+        return connect(), None
     last_error: Exception | None = None
     for attempt in range(3):
         try:
@@ -91,8 +97,8 @@ def _checkout_connection() -> tuple[PgConnection, bool]:
                 if conn.closed:
                     db_pool.putconn(conn, close=True)
                     raise psycopg2.OperationalError("Database pool returned a closed connection")
-                return conn, True
-        except psycopg2.OperationalError as exc:
+                return conn, db_pool
+        except (psycopg2.OperationalError, pool.PoolError) as exc:
             last_error = exc
             logger.warning("Database pool checkout failed attempt=%s error=%s", attempt + 1, exc)
             if attempt == 2:
@@ -102,12 +108,8 @@ def _checkout_connection() -> tuple[PgConnection, bool]:
     raise last_error or RuntimeError("Database pool checkout failed")
 
 
-def _release_connection(conn: PgConnection, pooled: bool) -> None:
-    if not pooled:
-        conn.close()
-        return
-    db_pool = _get_pool()
-    if not db_pool:
+def _release_connection(conn: PgConnection, db_pool: pool.ThreadedConnectionPool | None) -> None:
+    if db_pool is None:
         conn.close()
         return
     db_pool.putconn(conn, close=bool(conn.closed))
@@ -115,7 +117,7 @@ def _release_connection(conn: PgConnection, pooled: bool) -> None:
 
 @contextmanager
 def get_connection() -> Generator[PgConnection, None, None]:
-    conn, pooled = _checkout_connection()
+    conn, db_pool = _checkout_connection()
     try:
         with trace_span("db.work"):
             yield conn
@@ -131,4 +133,4 @@ def get_connection() -> Generator[PgConnection, None, None]:
         raise
     finally:
         with trace_span("db.close"):
-            _release_connection(conn, pooled)
+            _release_connection(conn, db_pool)

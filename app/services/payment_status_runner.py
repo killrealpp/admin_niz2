@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from datetime import datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot
@@ -8,10 +9,17 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
 from aiogram.types import FSInputFile
 from aiogram.utils.media_group import MediaGroupBuilder
 
+from app.bot.client_notification_router import build_client_notification_router, ensure_client_notification_router
+from app.bot.notification_router import NotificationRouter
 from app.core.config import get_settings
+from app.core.constants import CHANNEL_TELEGRAM
 from app.db.connection import get_connection
 from app.db.repositories import bookings_repo, conversations_repo, messages_repo, payments_repo, slot_holds_repo, system_logs_repo
 from app.db.repositories import users_repo
+from app.services.client_notification_service import (
+    record_client_notification_failure,
+    send_client_text_notification,
+)
 from app.services.admin_telegram_service import notify_admin_about_new_bookings, notify_admin_text
 from app.services.availability_service import load_services_map
 from app.services.dialog.booking_texts import booking_line_short, payment_reply_text
@@ -23,6 +31,7 @@ logger = logging.getLogger(__name__)
 MEDIA_SEND_TIMEOUT_SECONDS = 45
 PAYMENT_LINK_RESEND_INTERVAL_MINUTES = 10
 PAYMENT_LINK_RESEND_MAX_NEW_LINKS = 2
+ClientNotifier = NotificationRouter | Bot
 
 
 async def run_payment_status_loop(bot: Bot | None = None) -> None:
@@ -48,14 +57,15 @@ async def run_payment_status_loop(bot: Bot | None = None) -> None:
                     result["canceled"],
                 )
             if bot:
+                client_notifier = build_client_notification_router(bot)
                 await notify_admin_about_ai_provider_issues(bot)
                 await notify_admin_about_refund_requests(bot)
                 await notify_admin_about_handoffs(bot)
                 await notify_admin_about_new_bookings(bot)
-                await resend_active_hold_payment_links_once(bot)
-                await notify_paid_payments_once(bot)
-                await notify_expired_holds_once(bot)
-                await notify_booking_reminders_once(bot)
+                await resend_active_hold_payment_links_once(client_notifier)
+                await notify_paid_payments_once(client_notifier, admin_bot=bot)
+                await notify_expired_holds_once(client_notifier)
+                await notify_booking_reminders_once(client_notifier)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -74,8 +84,9 @@ def _sync_once() -> dict[str, int]:
         }
 
 
-async def resend_active_hold_payment_links_once(bot: Bot) -> None:
+async def resend_active_hold_payment_links_once(notifier: ClientNotifier) -> None:
     settings = get_settings()
+    router = ensure_client_notification_router(notifier)
     now = datetime.now(ZoneInfo(settings.app_timezone))
     if settings.payment_provider.lower() != "yookassa":
         return
@@ -113,17 +124,19 @@ async def resend_active_hold_payment_links_once(bot: Bot) -> None:
             payments_repo.mark_superseded(conn, payment_id=int(payment["id"]), raw_payload=old_payload)
             conn.commit()
 
-        chat_id = str(user.get("external_id") or "")
-        if not chat_id:
-            continue
         text = (
             "Обновила ссылку на предоплату, резерв ещё активен ✅\n\n"
             f"{payment_reply_text(new_payment)}"
         )
-        try:
-            await bot.send_message(chat_id=chat_id, text=text)
-        except Exception:
-            logger.exception("Failed to send auto-resent payment link payment_id=%s chat_id=%s", new_payment.get("id"), chat_id)
+        delivery = await send_client_text_notification(
+            router,
+            _user_notification_row(user, conversation_id=payment["conversation_id"]),
+            text,
+            notification_event="payment_link_auto_resent",
+            entity_type="payment",
+            entity_id=new_payment.get("id"),
+        )
+        if not delivery.delivered:
             continue
         with get_connection() as conn:
             messages_repo.create(
@@ -176,23 +189,42 @@ def _payment_resend_decision(conn, payment: dict, now: datetime):
     return hold_ids, len(same_hold_payments), user, conversation
 
 
+def _admin_bot_from_notifier(notifier: ClientNotifier) -> Bot | None:
+    return notifier if isinstance(notifier, Bot) else None
+
+
+def _user_notification_row(user: dict[str, Any], *, conversation_id: int) -> dict[str, Any]:
+    return {
+        "conversation_id": conversation_id,
+        "user_channel": user.get("channel"),
+        "user_external_id": user.get("external_id"),
+    }
+
+
 def _payment_payload(payment: dict) -> dict:
     raw = payment.get("raw_payload") or {}
     return dict(raw) if isinstance(raw, dict) else {}
 
 
-async def notify_paid_payments_once(bot: Bot) -> None:
+async def notify_paid_payments_once(
+    notifier: ClientNotifier,
+    *,
+    admin_bot: Bot | None = None,
+) -> None:
+    router = ensure_client_notification_router(notifier)
+    admin_bot = admin_bot or _admin_bot_from_notifier(notifier)
     with get_connection() as conn:
         payments = payments_repo.list_paid_unnotified(conn, provider="yookassa")
 
     for payment in payments:
-        chat_id = str(payment.get("user_external_id") or "")
-        if not chat_id:
-            continue
         with get_connection() as conn:
             bookings = _payment_bookings(conn, payment)
         if not bookings:
-            await _notify_unfinalized_paid_payment(bot, payment, chat_id=chat_id)
+            await _notify_unfinalized_paid_payment(
+                router,
+                payment,
+                admin_bot=admin_bot,
+            )
             continue
         with get_connection() as conn:
             journal_ready = _payment_journal_ready(conn, payment)
@@ -202,30 +234,67 @@ async def notify_paid_payments_once(bot: Bot) -> None:
                 payment.get("id"),
             )
             await _notify_paid_payment_waiting_for_journal_once(
-                bot,
+                router,
                 payment,
-                chat_id=chat_id,
                 bookings=bookings,
+                admin_bot=admin_bot,
             )
             continue
         text = _paid_notification_text(payment, bookings)
         media_paths = media_for_bookings(bookings)
+        delivery = await send_client_text_notification(
+            router,
+            payment,
+            text,
+            notification_event="payment_paid_notification",
+            entity_type="payment",
+            entity_id=payment.get("id"),
+        )
+        if not delivery.delivered:
+            continue
         try:
-            await bot.send_message(chat_id=chat_id, text=text)
-            await _send_booking_media(bot, chat_id=chat_id, media_paths=media_paths)
+            if delivery.target and delivery.target.channel == CHANNEL_TELEGRAM:
+                media_bot = _admin_bot_from_notifier(notifier) or admin_bot
+                if media_paths and media_bot is None:
+                    record_client_notification_failure(
+                        payment,
+                        notification_event="payment_paid_media",
+                        entity_type="payment",
+                        entity_id=payment.get("id"),
+                        reason="telegram media delivery requires bot",
+                    )
+                    continue
+                await _send_booking_media(
+                    media_bot,
+                    chat_id=delivery.target.address,
+                    media_paths=media_paths,
+                )
         except (TelegramBadRequest, TelegramForbiddenError):
             logger.exception(
                 "Paid payment notification cannot be delivered payment_id=%s chat_id=%s",
                 payment.get("id"),
-                chat_id,
+                delivery.target.address if delivery.target else None,
             )
-            _mark_payment_notification_skipped(payment, "telegram_delivery_failed")
+            record_client_notification_failure(
+                payment,
+                notification_event="payment_paid_media",
+                entity_type="payment",
+                entity_id=payment.get("id"),
+                reason="telegram_media_delivery_failed",
+            )
             continue
         except Exception:
             logger.exception(
                 "Failed to notify paid payment payment_id=%s chat_id=%s",
                 payment.get("id"),
-                chat_id,
+                delivery.target.address if delivery.target else None,
+            )
+            record_client_notification_failure(
+                payment,
+                notification_event="payment_paid_media",
+                entity_type="payment",
+                entity_id=payment.get("id"),
+                reason="telegram_media_delivery_failed",
             )
             continue
         with get_connection() as conn:
@@ -246,34 +315,36 @@ async def notify_paid_payments_once(bot: Bot) -> None:
                 current_step="reserved",
                 next_step="payment_status",
             )
-        await notify_admin_text(
-            bot,
-            (
-                "Оплата по заявке получена.\n"
-                f"Платеж #{payment.get('id')}, сумма: {payment.get('amount')} ₽.\n"
-                "Если запись в YCLIENTS не создалась автоматически, проверьте карточку заявки."
-            ),
-        )
+        if admin_bot is not None:
+            await notify_admin_text(
+                admin_bot,
+                (
+                    "Оплата по заявке получена.\n"
+                    f"Платеж #{payment.get('id')}, сумма: {payment.get('amount')} ₽.\n"
+                    "Если запись в YCLIENTS не создалась автоматически, проверьте карточку заявки."
+                ),
+            )
 
 
-async def notify_expired_holds_once(bot: Bot) -> None:
+async def notify_expired_holds_once(notifier: ClientNotifier) -> None:
     settings = get_settings()
+    router = ensure_client_notification_router(notifier)
     now = datetime.now(ZoneInfo(settings.app_timezone))
     with get_connection() as conn:
         slot_holds_repo.expire_old(conn, now)
         holds = slot_holds_repo.list_expired_unnotified(conn, limit=50)
 
     for hold in holds:
-        chat_id = str(hold.get("user_external_id") or "")
-        if not chat_id:
-            with get_connection() as conn:
-                slot_holds_repo.mark_expired_notified(conn, hold_id=hold["id"], now=now)
-            continue
         text = _expired_hold_notification_text(hold)
-        try:
-            await bot.send_message(chat_id=chat_id, text=text)
-        except Exception:
-            logger.exception("Failed to notify expired hold hold_id=%s chat_id=%s", hold.get("id"), chat_id)
+        delivery = await send_client_text_notification(
+            router,
+            hold,
+            text,
+            notification_event="slot_hold_expired",
+            entity_type="slot_hold",
+            entity_id=hold.get("id"),
+        )
+        if not delivery.delivered:
             continue
         with get_connection() as conn:
             slot_holds_repo.mark_expired_notified(conn, hold_id=hold["id"], now=now)
@@ -286,8 +357,9 @@ async def notify_expired_holds_once(bot: Bot) -> None:
             )
 
 
-async def notify_booking_reminders_once(bot: Bot) -> None:
+async def notify_booking_reminders_once(notifier: ClientNotifier) -> None:
     settings = get_settings()
+    router = ensure_client_notification_router(notifier)
     now = datetime.now(ZoneInfo(settings.app_timezone))
     if now.hour < 10:
         return
@@ -296,16 +368,16 @@ async def notify_booking_reminders_once(bot: Bot) -> None:
         bookings = bookings_repo.list_due_reminders(conn, reminder_date=reminder_date, limit=50)
 
     for booking in bookings:
-        chat_id = str(booking.get("user_external_id") or "")
-        if not chat_id:
-            with get_connection() as conn:
-                bookings_repo.mark_reminder_sent(conn, booking_id=int(booking["id"]), now=now)
-            continue
         text = _booking_reminder_text(booking)
-        try:
-            await bot.send_message(chat_id=chat_id, text=text)
-        except Exception:
-            logger.exception("Failed to send booking reminder booking_id=%s chat_id=%s", booking.get("id"), chat_id)
+        delivery = await send_client_text_notification(
+            router,
+            booking,
+            text,
+            notification_event="booking_reminder",
+            entity_type="booking",
+            entity_id=booking.get("id"),
+        )
+        if not delivery.delivered:
             continue
         with get_connection() as conn:
             bookings_repo.mark_reminder_sent(conn, booking_id=int(booking["id"]), now=now)
@@ -396,28 +468,26 @@ def _format_duration_short(minutes) -> str:
     return f"{hours} {suffix}"
 
 
-async def _notify_unfinalized_paid_payment(bot: Bot, payment: dict, *, chat_id: str) -> None:
+async def _notify_unfinalized_paid_payment(
+    router: NotificationRouter,
+    payment: dict,
+    *,
+    admin_bot: Bot | None = None,
+) -> None:
     text = (
         "Оплата поступила ✅\n\n"
         "Резерв по этой ссылке уже не был активен, поэтому бронь не закрепилась автоматически. "
         "Мы проверим выбранное время и напишем вам по сохранённому номеру."
     )
-    try:
-        await bot.send_message(chat_id=chat_id, text=text)
-    except (TelegramBadRequest, TelegramForbiddenError):
-        logger.exception(
-            "Unfinalized paid payment notification cannot be delivered payment_id=%s chat_id=%s",
-            payment.get("id"),
-            chat_id,
-        )
-        _mark_payment_notification_skipped(payment, "telegram_delivery_failed_unfinalized")
-        return
-    except Exception:
-        logger.exception(
-            "Failed to notify unfinalized paid payment payment_id=%s chat_id=%s",
-            payment.get("id"),
-            chat_id,
-        )
+    delivery = await send_client_text_notification(
+        router,
+        payment,
+        text,
+        notification_event="payment_paid_without_booking",
+        entity_type="payment",
+        entity_id=payment.get("id"),
+    )
+    if not delivery.delivered:
         return
     with get_connection() as conn:
         payments_repo.mark_payment_notified(conn, payment_id=payment["id"])
@@ -429,32 +499,16 @@ async def _notify_unfinalized_paid_payment(bot: Bot, payment: dict, *, chat_id: 
             raw_payload={"event": "payment_paid_without_booking", "payment_id": payment["id"]},
         )
     hold_ids = _hold_ids_from_payment(payment)
-    await notify_admin_text(
-        bot,
-        (
-            "Оплата получена, но бронь не создалась автоматически.\n"
-            f"Платеж #{payment.get('id')}, сумма: {payment.get('amount')} ₽.\n"
-            f"Клиент: {payment.get('user_name') or chat_id}, Telegram ID: {chat_id}.\n"
-            f"Hold IDs: {', '.join(str(item) for item in hold_ids) or 'не найдены'}.\n"
-            "Проверьте слот и решите оплату вручную."
-        ),
-    )
-
-
-def _mark_payment_notification_skipped(payment: dict, reason: str) -> None:
-    with get_connection() as conn:
-        payments_repo.mark_payment_notified(conn, payment_id=payment["id"])
-        system_logs_repo.create(
-            conn,
-            level="warning",
-            event_type="payment_notification_skipped",
-            message=reason,
-            conversation_id=payment.get("conversation_id"),
-            payload={
-                "payment_id": payment.get("id"),
-                "provider_payment_id": payment.get("provider_payment_id"),
-                "user_external_id": payment.get("user_external_id"),
-            },
+    if admin_bot is not None:
+        await notify_admin_text(
+            admin_bot,
+            (
+                "Оплата получена, но бронь не создалась автоматически.\n"
+                f"Платеж #{payment.get('id')}, сумма: {payment.get('amount')} ₽.\n"
+                f"Клиент: {payment.get('user_name') or payment.get('user_external_id')}, Telegram ID: {payment.get('user_external_id')}.\n"
+                f"Hold IDs: {', '.join(str(item) for item in hold_ids) or 'не найдены'}.\n"
+                "Проверьте слот и решите оплату вручную."
+            ),
         )
 
 
@@ -557,11 +611,11 @@ def _payment_journal_ready(conn, payment: dict) -> bool:
 
 
 async def _notify_paid_payment_waiting_for_journal_once(
-    bot: Bot,
+    router: NotificationRouter,
     payment: dict,
     *,
-    chat_id: str,
     bookings: list[dict],
+    admin_bot: Bot | None = None,
 ) -> None:
     with get_connection() as conn:
         if _journal_pending_notification_sent(conn, payment):
@@ -571,21 +625,15 @@ async def _notify_paid_payment_waiting_for_journal_once(
         "Сейчас закрепляю запись в журнале. Обычно это занимает пару минут. "
         "Финальное подтверждение пришлю сюда, когда запись будет создана."
     )
-    try:
-        await bot.send_message(chat_id=chat_id, text=text)
-    except (TelegramBadRequest, TelegramForbiddenError):
-        logger.exception(
-            "Paid journal-pending notification cannot be delivered payment_id=%s chat_id=%s",
-            payment.get("id"),
-            chat_id,
-        )
-        return
-    except Exception:
-        logger.exception(
-            "Failed to send journal-pending paid notification payment_id=%s chat_id=%s",
-            payment.get("id"),
-            chat_id,
-        )
+    delivery = await send_client_text_notification(
+        router,
+        payment,
+        text,
+        notification_event="payment_paid_journal_pending",
+        entity_type="payment",
+        entity_id=payment.get("id"),
+    )
+    if not delivery.delivered:
         return
     with get_connection() as conn:
         messages_repo.create(
@@ -615,9 +663,9 @@ async def _notify_paid_payment_waiting_for_journal_once(
                 ],
             },
         )
-    if any(booking.get("yclients_create_error") for booking in bookings):
+    if admin_bot is not None and any(booking.get("yclients_create_error") for booking in bookings):
         await notify_admin_text(
-            bot,
+            admin_bot,
             (
                 "Оплата получена, но запись в YCLIENTS пока не создана.\n"
                 f"Платеж #{payment.get('id')}, сумма: {payment.get('amount')} ₽.\n"

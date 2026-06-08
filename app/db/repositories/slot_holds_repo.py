@@ -274,6 +274,7 @@ def list_expired_unnotified(conn: PgConnection, *, limit: int = 50) -> list[dict
             SELECT
                 sh.*,
                 u.external_id AS user_external_id,
+                u.channel AS user_channel,
                 u.name AS user_name
             FROM slot_holds sh
             JOIN users u ON u.id = sh.user_id

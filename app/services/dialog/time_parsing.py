@@ -31,11 +31,12 @@ def time_period_patch(text: str) -> dict[str, Any]:
     if choice:
         return choice
     normalized = original_text
-    normalized = normalized.replace("утра", "").replace("дня", "").replace("вечера", "").replace("вечер", "")
-    normalized = re.sub(r"\s*(?:час(?:а|ов)?|ч|чиса|чисов)\b", "", normalized)
     normalized = re.sub(r"\b(?:полночь|полночи|полноч)\b", "00", normalized)
     match = re.search(
-        r"(?:с|к|в)?\s*(\d{1,2})(?:[:.\-]\s*(\d{2}))?\s*(?:и\s*)?(?:до|\-)\s*(\d{1,2})(?:[:.]\s*(\d{2}))?",
+        r"(?:с|к|в)?\s*(\d{1,2})(?:[:.\-]\s*(\d{2}))?"
+        r"(?:\s*(?:час(?:а|ов)?\b|ч\b|чиса\b|чисов\b))?\s*(?:утра|дня|вечера|вечер|ночи)?"
+        r"\s*(?:и\s*)?(?:до|\-)\s*(\d{1,2})(?:[:.]\s*(\d{2}))?"
+        r"(?:\s*(?:час(?:а|ов)?\b|ч\b|чиса\b|чисов\b))?\s*(?:утра|дня|вечера|вечер|ночи)?",
         normalized,
     )
     if not match:
@@ -48,12 +49,11 @@ def time_period_patch(text: str) -> dict[str, Any]:
     start_minute = int(match.group(2) or 0)
     end_hour = int(match.group(3))
     end_minute = int(match.group(4) or 0)
-    original = original_text
-    start_context = original[max(0, original.find(match.group(1)) - 3) : original.find(match.group(1)) + 16]
+    original = normalized
+    start_context = original[max(0, match.start(1) - 8) : match.end(1) + 20]
     if start_hour < 12 and any(marker in start_context for marker in ("вечера", "вечер", "дня")):
         start_hour += 12
-    end_pos = original.find(match.group(3), original.find(match.group(1)) + len(match.group(1)))
-    end_context = original[max(0, end_pos - 3) : end_pos + 18] if end_pos >= 0 else ""
+    end_context = original[max(0, match.start(3) - 8) : match.end(3) + 20]
     if end_hour < 12 and any(marker in end_context for marker in ("вечера", "вечер", "дня")):
         end_hour += 12
     elif 8 <= end_hour < 12 and "ночи" in end_context:
@@ -179,7 +179,7 @@ def _period_match_starts_with_duration_answer(text: str, match: re.Match[str]) -
     start_index = match.start(1)
     before = text[max(0, start_index - 8):start_index]
     after = text[start_index:start_index + 14]
-    return bool(re.search(r"\bРЅР°\s*$", before) and re.search(r"\d{1,2}\s*(?:С‡Р°СЃ|С‡)\b", after))
+    return bool(re.search(r"\bна\s*$", before) and re.search(r"\d{1,2}\s*(?:час|ч)\b", after))
 
 
 def _period_match_is_people_count(text: str, match: re.Match[str]) -> bool:
@@ -253,7 +253,7 @@ def gazebo_default_duration_from_time(value: Any) -> int | float | None:
 
 
 def apply_open_ended_default_duration(form_data: dict[str, Any], *, force: bool = False) -> dict[str, Any]:
-    if form_data.get("service_type") not in {"gazebo", "bathhouse", "house"}:
+    if form_data.get("service_type") != "gazebo":
         return form_data
     if (form_data.get("duration") and not force) or not form_data.get("time"):
         return form_data
