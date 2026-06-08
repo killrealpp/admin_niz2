@@ -3219,6 +3219,45 @@ def _impl_handle_incoming(message: IncomingMessage) -> str:
             )
 
         current_form_data = conversation.get("form_data") or {}
+        if _handoff_active(user, now) and _is_waitlist_decline(message.text):
+            waitlist_repo.close_for_user(conn, user_id=int(user["id"]))
+            users_repo.clear_handoff(conn, user_id=int(user["id"]))
+            reply = "Поняла, запрос на уведомление сняла ✅\n\nЕсли снова понадобится проверить свободные даты, просто напишите услугу и дату."
+            return commit_reply(
+                reply,
+                status="payment_paid" if conversation.get("status") == "payment_paid" else "waiting_user",
+                current_step="reserved" if conversation.get("status") == "payment_paid" else conversation.get("current_step"),
+                next_step="payment_status" if conversation.get("status") == "payment_paid" else conversation.get("next_step"),
+                form_data=conversation.get("form_data") or {},
+            )
+
+        if _handoff_active(user, now):
+            reply = _handoff_reply()
+            return commit_reply(
+                reply,
+                status="handoff",
+                current_step="handoff",
+                next_step="handoff",
+                form_data=conversation.get("form_data") or {},
+            )
+
+        if _looks_like_handoff_needed(message.text):
+            _start_user_handoff(
+                conn,
+                user=user,
+                conversation_id=conversation["id"],
+                text=message.text,
+                now=now,
+            )
+            reply = _handoff_reply()
+            return commit_reply(
+                reply,
+                status="handoff",
+                current_step="handoff",
+                next_step="handoff",
+                form_data=conversation.get("form_data") or {},
+            )
+
         stale_result = _handle_stale_new_booking_flow_impl(
             conversation=conversation,
             text=message.text,
@@ -3286,45 +3325,6 @@ def _impl_handle_incoming(message: IncomingMessage) -> str:
                     next_step=next_key,
                     form_data=form_data,
                 )
-
-        if _handoff_active(user, now) and _is_waitlist_decline(message.text):
-            waitlist_repo.close_for_user(conn, user_id=int(user["id"]))
-            users_repo.clear_handoff(conn, user_id=int(user["id"]))
-            reply = "Поняла, запрос на уведомление сняла ✅\n\nЕсли снова понадобится проверить свободные даты, просто напишите услугу и дату."
-            return commit_reply(
-                reply,
-                status="payment_paid" if conversation.get("status") == "payment_paid" else "waiting_user",
-                current_step="reserved" if conversation.get("status") == "payment_paid" else conversation.get("current_step"),
-                next_step="payment_status" if conversation.get("status") == "payment_paid" else conversation.get("next_step"),
-                form_data=conversation.get("form_data") or {},
-            )
-
-        if _handoff_active(user, now):
-            reply = _handoff_reply()
-            return commit_reply(
-                reply,
-                status="handoff",
-                current_step="handoff",
-                next_step="handoff",
-                form_data=conversation.get("form_data") or {},
-            )
-
-        if _looks_like_handoff_needed(message.text):
-            _start_user_handoff(
-                conn,
-                user=user,
-                conversation_id=conversation["id"],
-                text=message.text,
-                now=now,
-            )
-            reply = _handoff_reply()
-            return commit_reply(
-                reply,
-                status="handoff",
-                current_step="handoff",
-                next_step="handoff",
-                form_data=conversation.get("form_data") or {},
-            )
 
         form_data_snapshot = conversation.get("form_data") or {}
         current_expected_key = next_question(form_data_snapshot)[0]

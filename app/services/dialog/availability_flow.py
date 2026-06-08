@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -298,8 +299,13 @@ def next_free_dates_reply(
     if not service_type:
         return None
 
+    service_variant = form_data.get("service_variant") or last_unavailable.get("service_variant")
     service_config = load_services_map().get(service_type) or {}
-    title = service_config.get("title") or service_type
+    title = (
+        str(service_variant)
+        if service_type == "gazebo" and service_variant
+        else service_config.get("title") or service_type
+    )
     booked_dates = {
         str(booking.get("booking_date"))
         for booking in active_user_bookings(conn, conversation, form_data, now)
@@ -325,8 +331,6 @@ def next_free_dates_reply(
     time_value = form_data.get("time") or last_unavailable.get("time")
     duration_value = form_data.get("duration") or last_unavailable.get("duration")
     guests_count = form_data.get("guests_count") or last_unavailable.get("guests_count")
-    service_variant = form_data.get("service_variant") or last_unavailable.get("service_variant")
-
     if anchor_date:
         candidate_dates: list[date] = []
         for distance in range(1, days_ahead + 1):
@@ -434,6 +438,16 @@ def direct_free_dates_lookup(
             form_data["time"] = None
         if not patch.get("duration"):
             form_data["duration"] = None
+        if form_data.get("service_type") == "gazebo" and not _mentions_specific_gazebo_variant(text):
+            form_data["service_variant"] = None
+            form_data.pop("single_available_gazebo_variant_auto", None)
+            form_data.pop("last_available_gazebo_variants", None)
+            if isinstance(form_data.get("last_unavailable"), dict):
+                form_data["last_unavailable"] = {
+                    key: value
+                    for key, value in form_data["last_unavailable"].items()
+                    if key != "service_variant"
+                }
 
     if form_data.get("date") and not callbacks.asks_nearest_free_dates(text):
         availability = callbacks.check_availability(conn, form_data=form_data, now=now)
@@ -451,6 +465,26 @@ def direct_free_dates_lookup(
     if not reply:
         return None
     return reply, "waiting_user", "awaiting_new_date", "date", form_data
+
+
+def _mentions_specific_gazebo_variant(text: str) -> bool:
+    normalized = text.lower().replace("ё", "е")
+    if "крыт" in normalized and "бесед" in normalized:
+        return True
+    if "№" in normalized:
+        return True
+    if re.search(r"\b(?:беседк[а-я]*\s*)?(?:номер\s*)?[1-8]\b", normalized):
+        return "бесед" in normalized or "номер" in normalized
+    ordinal_words = (
+        "перв",
+        "втор",
+        "трет",
+        "четверт",
+        "пят",
+        "шест",
+        "восьм",
+    )
+    return "бесед" in normalized and any(word in normalized for word in ordinal_words)
 
 
 def reset_unavailable_slot(form_data: dict[str, Any]) -> dict[str, Any]:

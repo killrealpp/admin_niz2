@@ -8217,6 +8217,110 @@ def _test_stale_davaite_continues(now: datetime) -> Check:
     return Check("stale davaite continues", ok, f"{reply} | {state}")
 
 
+def _test_stale_continue_free_dates_clears_old_gazebo_variant(now: datetime) -> Check:
+    suffix = "stale_continue_free_dates_clear_variant"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №5",
+            date=None,
+            time=None,
+            duration=None,
+            guests_count=5,
+            event_format=None,
+            client_name="Кирилл",
+            phone="+79990000035",
+            upsell_items=[],
+            stale_form_flow={"started_at": now.isoformat(), "previous_step": "date"},
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="stale_form_choice",
+            next_step="stale_form_choice",
+            form_data=created["conversation"]["form_data"],
+        )
+
+    first = _send(suffix, "да", now + timedelta(seconds=1))
+    original_availability = message_handler.check_availability
+    seen: list[dict[str, Any]] = []
+
+    def fake_availability(*_args: Any, **kwargs: Any) -> AvailabilityResult:
+        form = dict(kwargs.get("form_data") or {})
+        seen.append(form)
+        if form.get("service_variant"):
+            return AvailabilityResult(False, "busy", [])
+        return AvailabilityResult(True, "ok", ["Беседка №1: дата свободна"])
+
+    message_handler.check_availability = fake_availability
+    try:
+        reply = _send(suffix, "а когда будет свободан", now + timedelta(seconds=2))
+        state = _latest_state(suffix)
+        form = state.get("form_data") or {}
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            "продолжаем" in first.lower()
+            and "не нашла" not in lowered
+            and "беседка №1" in lowered
+            and seen
+            and seen[0].get("service_type") == "gazebo"
+            and not seen[0].get("service_variant")
+            and form.get("service_type") == "gazebo"
+            and not form.get("service_variant")
+            and state.get("current_step") == "awaiting_new_date"
+        )
+        return Check("stale continued free dates clears old gazebo variant", ok, f"{first} | {reply} | seen={seen[:1]} | {state}")
+    finally:
+        message_handler.check_availability = original_availability
+
+
+def _test_stale_complaint_bypasses_choice(now: datetime) -> Check:
+    suffix = "stale_complaint_bypass"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant="Беседка №5",
+            date=None,
+            time=None,
+            duration=None,
+            guests_count=5,
+            event_format=None,
+            client_name="Кирилл",
+            phone="+79990000036",
+            upsell_items=[],
+            stale_form_flow={"started_at": now.isoformat(), "previous_step": "date"},
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="stale_form_choice",
+            next_step="stale_form_choice",
+            form_data=created["conversation"]["form_data"],
+        )
+    reply = _send(suffix, "ты в своем уме?", now + timedelta(seconds=1))
+    state = _latest_state(suffix)
+    lowered = reply.lower().replace("ё", "е")
+    ok = (
+        "уточните" not in lowered
+        and "передала ситуацию" in lowered
+        and state.get("status") == "handoff"
+        and state.get("current_step") == "handoff"
+    )
+    return Check("stale complaint bypasses stale choice", ok, f"{reply} | {state}")
+
+
 def _test_stale_no_with_new_bath_request_processes_same_message(now: datetime) -> Check:
     suffix = "stale_no_new_bath_same_message"
     created = _create_reserved_conversation(
@@ -10035,6 +10139,16 @@ REGRESSION_CASES: tuple[RegressionCase, ...] = (
         "fresh",
         "stale davaite continues",
         _test_stale_davaite_continues,
+    ),
+    RegressionCase(
+        "fresh",
+        "stale continued free dates clears old gazebo variant",
+        _test_stale_continue_free_dates_clears_old_gazebo_variant,
+    ),
+    RegressionCase(
+        "handoff",
+        "stale complaint bypasses stale choice",
+        _test_stale_complaint_bypasses_choice,
     ),
     RegressionCase(
         "fresh",

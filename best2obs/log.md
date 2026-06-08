@@ -1,5 +1,12 @@
 # Project Log
 
+## 2026-06-08 - Live stale free-date and complaint loop fixed locally
+
+- User reported a live MAX loop: after stale-form continuation (`да`), the generic free-date request `а когда будет свободан` answered that no `Беседка` dates exist for 75 days, and the complaint `ты в своем уме?` fell back to repeating the date question.
+- Fixed generic gazebo nearest-free-date lookup: if the user does not explicitly mention a gazebo number/name, `direct_free_dates_lookup()` clears stale `service_variant` and old available-variant context before calling `next_free_dates_reply()`. If a concrete gazebo is intentionally searched, the response title now names that concrete gazebo instead of the generic service title.
+- Moved handoff/complaint handling before stale-form routing and added deterministic complaint markers for `ты что` / `в своем уме`.
+- Added regression coverage: `stale continued free dates clears old gazebo variant` and `stale complaint bypasses stale choice`. Local `compileall app scripts` passed; pure no-DB smoke for the new guards passed. Full DB regression is blocked from the Windows workstation by Beget PostgreSQL timeouts, so the new named cases should be run on the server. Details: [[bugs/2026-06-08-live-stale-free-dates-and-complaint-loop]].
+
 ## 2026-06-08 - Server env template prepared for Telegram+MAX production runtime
 
 - Prepared the local `.env` as a copyable server template without changing secret values: `APP_ENV=production`, `APP_DEBUG=false`, `CLIENT_CHANNELS=telegram,max`, MAX webhook mode enabled on `127.0.0.1:8089`, YooKassa webhook runner on `127.0.0.1:8088`, `MAX_SEND_RELATED_MEDIA=true`, and YCLIENTS sync interval reduced from 5 seconds to 60 seconds for production.

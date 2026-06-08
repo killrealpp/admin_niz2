@@ -1,5 +1,9 @@
 # best2 Project Memory
 
+## 2026-06-08 MAX stale free-date and complaint loop fix
+
+- Live MAX case `да` -> `а когда будет свободан` -> `ты в своем уме?` is fixed locally: generic gazebo free-date lookup no longer reuses an old selected gazebo variant, concrete variant lookups name the concrete gazebo, and complaint/handoff handling now runs before stale-form routing. Details: [[bugs/2026-06-08-live-stale-free-dates-and-complaint-loop]].
+
 ## 2026-06-08 YooKassa Basic Auth webhook/status correction
 
 - YooKassa webhook API `/v3/webhooks` is OAuth-only; for `best2` shopId/secret-key HTTP Basic Auth, HTTP notifications must be configured manually in the YooKassa dashboard (`Интеграция -> HTTP-уведомления`).

@@ -49,6 +49,9 @@ def looks_like_handoff_needed(text: str) -> bool:
         "плохо работает",
         "не работает",
         "вы что",
+        "ты что",
+        "в своем уме",
+        "в своём уме",
         "почему так",
     )
     if any(marker in normalized for marker in complaint_markers):
