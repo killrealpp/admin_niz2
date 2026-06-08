@@ -1,5 +1,12 @@
 # Project Log
 
+## 2026-06-08 - Server env template prepared for Telegram+MAX production runtime
+
+- Prepared the local `.env` as a copyable server template without changing secret values: `APP_ENV=production`, `APP_DEBUG=false`, `CLIENT_CHANNELS=telegram,max`, MAX webhook mode enabled on `127.0.0.1:8089`, YooKassa webhook runner on `127.0.0.1:8088`, `MAX_SEND_RELATED_MEDIA=true`, and YCLIENTS sync interval reduced from 5 seconds to 60 seconds for production.
+- Local compile check passed: `python -m compileall app scripts`.
+- Local live status checks are not authoritative from the Windows workstation right now: YooKassa/MAX/Telegram HTTPS checks fail with SSL EOF or connector errors, and DB status times out to Beget. Server logs still show YCLIENTS API `200 OK`, so the next source of truth is server-side checks after copying `.env`, pulling the latest code, restarting `best2.service`, and adding the nginx `/webhooks/yookassa` proxy location.
+- Current server-side blocker from operator output: internal YooKassa runner responds on `127.0.0.1:8088`, but public `https://max.killrealp2.ru/webhooks/yookassa` returns nginx `404` because nginx only proxies `/webhooks/max`.
+
 ## 2026-06-08 - YooKassa status helper corrected for Basic Auth
 
 - Found the root of the confusing YooKassa `Authentication type is not allowed` result: the old `scripts/yookassa_status.py` checked `/v3/webhooks`, but YooKassa webhook API setup is OAuth-only. For the shopId/secret-key HTTP Basic Auth flow used by `best2`, HTTP notifications are configured manually in the merchant dashboard.
