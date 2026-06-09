@@ -1,5 +1,21 @@
 # Project Log
 
+## 2026-06-09 - MAX ambiguous handoff guard and coal price update
+
+- Analyzed the latest MAX dialog (`conversations.id=816`, user `Евгений Ермантович`). Root cause of the unexpected block: while the user was choosing a gazebo variant for 20 guests, the short message `человек` was classified by AI as `handoff_to_human=True`; the runtime then moved the conversation to `handoff`.
+- Fixed this locally in `app/services/dialog/message_handler_flow_glue.py`: during active booking-form steps, short ambiguous people words (`человек`, `людей`, `гостей`, etc.) no longer trigger AI handoff. Explicit operator requests (`оператор`, `администратор`, `позовите`, `с человеком`, etc.) still can trigger handoff.
+- Added regression coverage: `bare human word during gazebo choice does not handoff`.
+- Updated current client knowledge and deterministic price replies for coal: `Уголь 3 кг` is now `250 ₽` in `best2info/prices/addons.md`, runtime/fallback knowledge and `price_info.py`.
+- Verification passed: `compileall app scripts`, `lint_best2info.py`, targeted cases `bare human word during gazebo choice does not handoff` and `coal price is known`, plus `local_regression_suite.py --group handoff`.
+- Graphify update completed successfully after the code/docs changes; graph/report/html artifacts were refreshed.
+- Rechecked latest MAX user state from the DB: `handoff_active=false`, conversation `816` is `reserved` on `Беседка №8`, not blocked. Details: [[bugs/2026-06-09-max-ambiguous-human-word-handoff]].
+
+## 2026-06-09 - MAX user handoff unblocked
+
+- Operator requested to unblock the currently blocked user. Read-only DB check found exactly one user with `handoff_until IS NOT NULL`: `users.id=801`, channel `max`, name `Евгений Ермантович`, reason `client_requested_human_agent`.
+- Cleared the handoff through the existing DB boundary (`users_repo.clear_handoff`) and reset the active conversation `conversations.id=816` from `status/current_step/next_step = handoff` to `status='waiting_user'`, `current_step=NULL`, `next_step=NULL`.
+- Immediate post-write query from the Windows workstation was blocked by an intermittent Beget PostgreSQL timeout, but the write command completed and returned `updated_conversation_ids=[816]`. If needed, recheck from the server with `SELECT COUNT(*) FROM users WHERE handoff_until IS NOT NULL;`.
+
 ## 2026-06-09 - Dialog control fixes verified
 
 - Fixed the remaining DB-backed unpaid-hold decline regression. The test fixture now creates a truly active hold relative to the current DB/runtime time, and confirmation of `Я не хочу оплачивать` cancels the active hold and supersedes the matching pending payment instead of falling into finalized-booking cancellation.

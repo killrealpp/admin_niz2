@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from app.services import message_handler as _handler_defaults
 from app.services.dialog.date_parsing import (
     explicit_numeric_dates as _explicit_numeric_dates_impl,
@@ -1024,6 +1026,79 @@ def _impl_build_reply(ai_reply: str, action: str, form_data: dict[str, Any]) -> 
     if ai_reply:
         return ai_reply, next_key
     return _fallback_reply(form_data)
+
+
+def _impl_should_suppress_ambiguous_ai_handoff(text: str, conversation: dict[str, Any]) -> bool:
+    _refresh_handler_globals()
+    form_data = conversation.get("form_data") or {}
+    if not form_data:
+        return False
+    if conversation.get("status") in {"handoff", "reserved", "payment_paid"}:
+        return False
+    active_step = conversation.get("next_step") or conversation.get("current_step") or next_question(form_data)[0]
+    if active_step in {None, "handoff", "reserved", "payment_status", "confirmation"}:
+        return False
+
+    normalized = str(text or "").lower().replace("ё", "е")
+    compact = re.sub(r"[^\w+]+", " ", normalized).strip()
+    words = compact.split()
+    if not words or len(words) > 3:
+        return False
+
+    explicit_handoff_markers = (
+        "оператор",
+        "администратор",
+        "менеджер",
+        "живой",
+        "живого",
+        "позови",
+        "позовите",
+        "соедини",
+        "соедините",
+        "свяжитесь",
+        "связаться",
+        "нужен человек",
+        "хочу человека",
+        "дай человека",
+        "дайте человека",
+        "человека позови",
+        "человека позовите",
+        "к человеку",
+        "с человеком",
+    )
+    if any(marker in normalized for marker in explicit_handoff_markers):
+        return False
+
+    ambiguous_people_words = {
+        "человек",
+        "человека",
+        "человеку",
+        "человеком",
+        "людей",
+        "люди",
+        "чел",
+        "чела",
+        "гостей",
+        "гость",
+        "гостя",
+    }
+    return any(word in ambiguous_people_words for word in words)
+
+
+def _impl_reply_looks_like_handoff(reply: str) -> bool:
+    normalized = str(reply or "").lower().replace("ё", "е")
+    return any(
+        marker in normalized
+        for marker in (
+            "передам",
+            "передала",
+            "свяж",
+            "оператор",
+            "администратор",
+            "менеджер",
+            "живой ответ",
+        )
+    )
 
 
 def _impl_append_expected_question(reply: str, form_data: dict[str, Any]) -> tuple[str, str | None]:
@@ -4182,6 +4257,23 @@ def _impl_handle_incoming(message: IncomingMessage) -> str:
                     history=history,
                     now=now,
                 )
+            if getattr(ai_result, "handoff_to_human", False) and _impl_should_suppress_ambiguous_ai_handoff(
+                message.text,
+                conversation,
+            ):
+                logger.info(
+                    "suppressing ambiguous ai handoff conversation_id=%s text=%r",
+                    conversation["id"],
+                    message.text[:120],
+                )
+                ai_result.handoff_to_human = False
+                ai_result.handoff_reason = None
+                if ai_result.intent == "human_request":
+                    ai_result.intent = "booking_request"
+                if ai_result.action == "handoff_to_human":
+                    ai_result.action = "ask_next_question"
+                if _impl_reply_looks_like_handoff(ai_result.reply_to_user):
+                    ai_result.reply_to_user = ""
             time_patch = _time_period_patch(message.text)
             if _period_conflict(message.text, time_patch):
                 form_data = conversation.get("form_data") or {}
@@ -4652,6 +4744,8 @@ def _impl_handle_incoming(message: IncomingMessage) -> str:
                     reason=ai_result.handoff_reason or "AI определил, что нужен живой ответ",
                 )
                 reply = reply or _handoff_reply()
+                current_step = "handoff"
+                next_key = "handoff"
             status = "handoff" if ai_result.handoff_to_human else "waiting_user"
             intent = ai_result.intent
             current_step = locals().get("current_step", ai_result.current_step)

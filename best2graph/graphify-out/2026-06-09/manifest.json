@@ -285,9 +285,9 @@
     "semantic_hash": "eff9d68ae8439f75410b4d597ae789fc"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\message_handler_flow_glue.py": {
-    "mtime": 1780938540.8375723,
-    "ast_hash": "131c98ee058d7011010bb0b85b6f114d",
-    "semantic_hash": "131c98ee058d7011010bb0b85b6f114d"
+    "mtime": 1781004648.6619325,
+    "ast_hash": "6d73aec0d7c60518b0cd8516def12473",
+    "semantic_hash": "6d73aec0d7c60518b0cd8516def12473"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\new_booking_flow.py": {
     "mtime": 1780502266.8987217,
@@ -305,9 +305,9 @@
     "semantic_hash": "eb6b21192c718078a5856c1fdcba8244"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\price_info.py": {
-    "mtime": 1780466512.6686547,
-    "ast_hash": "ebaba6978ca1d942006c22b6c7b16db3",
-    "semantic_hash": "ebaba6978ca1d942006c22b6c7b16db3"
+    "mtime": 1781004080.6488123,
+    "ast_hash": "693b248469aa9a44501d1cb6ed224372",
+    "semantic_hash": "693b248469aa9a44501d1cb6ed224372"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\app\\services\\dialog\\reschedule_flow.py": {
     "mtime": 1779990556.3716395,
@@ -500,9 +500,9 @@
     "semantic_hash": "259886a80a86e7f204b85e562b69cc8f"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\local_regression_suite.py": {
-    "mtime": 1780982527.1024075,
-    "ast_hash": "56d6077bf35905950aace75a65447ce4",
-    "semantic_hash": "56d6077bf35905950aace75a65447ce4"
+    "mtime": 1781004513.944316,
+    "ast_hash": "146bb16874392c7d71b250bb80d41613",
+    "semantic_hash": "146bb16874392c7d71b250bb80d41613"
   },
   "C:\\Users\\kaisa\\OneDrive\\\u0420\u0430\u0431\u043e\u0447\u0438\u0439 \u0441\u0442\u043e\u043b\\best2\\scripts\\register_yookassa_webhook.py": {
     "mtime": 1780932189.9797423,

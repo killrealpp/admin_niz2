@@ -1319,6 +1319,113 @@ def _test_gazebo_budget_preference_during_choice(now: datetime) -> Check:
     return Check("gazebo budget preference during choice", ok, f"{reply} | {state}")
 
 
+def _test_bare_human_word_during_gazebo_choice_does_not_handoff(now: datetime) -> Check:
+    suffix = "bare_human_word_gazebo_choice"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant=None,
+            date="2026-06-15",
+            time=None,
+            duration=None,
+            guests_count=20,
+            event_format=None,
+            client_name=None,
+            phone=None,
+            upsell_items=[],
+            last_available_gazebo_variants=["Беседка №1", "Беседка №8"],
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="service_variant",
+            next_step="service_variant",
+        )
+
+    original_call_ai = message_handler.call_ai
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="human_request",
+            action="handoff_to_human",
+            current_step="service_variant",
+            reply_to_user="Передала ситуацию команде, с вами свяжутся.",
+            handoff_to_human=True,
+            handoff_reason="fake handoff for ambiguous people word",
+        )
+
+    message_handler.call_ai = fake_call_ai
+    try:
+        reply = _send(suffix, "человек", now)
+        state = _latest_state(suffix)
+        lowered = reply.lower().replace("ё", "е")
+        ok = (
+            state.get("status") != "handoff"
+            and state.get("current_step") == "service_variant"
+            and ("№1" in reply or "№8" in reply or "какую" in lowered)
+        )
+        return Check("bare human word during gazebo choice does not handoff", ok, f"{reply} | {state}")
+    finally:
+        message_handler.call_ai = original_call_ai
+
+
+def _test_explicit_human_request_during_form_still_handoffs(now: datetime) -> Check:
+    suffix = "explicit_human_request_form"
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(
+            service_type="gazebo",
+            service_variant=None,
+            date="2026-06-15",
+            time=None,
+            duration=None,
+            guests_count=20,
+            event_format=None,
+            client_name=None,
+            phone=None,
+            upsell_items=[],
+            last_available_gazebo_variants=["Беседка №1", "Беседка №8"],
+        ),
+    )
+    with get_connection() as conn:
+        conversations_repo.update_after_message(
+            conn,
+            created["conversation"]["id"],
+            now,
+            status="waiting_user",
+            current_step="service_variant",
+            next_step="service_variant",
+        )
+
+    original_call_ai = message_handler.call_ai
+
+    def fake_call_ai(**_: Any) -> AIResponse:
+        return AIResponse(
+            intent="human_request",
+            action="handoff_to_human",
+            current_step="service_variant",
+            reply_to_user="Передала ситуацию команде, с вами свяжутся.",
+            handoff_to_human=True,
+            handoff_reason="fake explicit human request",
+        )
+
+    message_handler.call_ai = fake_call_ai
+    try:
+        reply = _send(suffix, "нужен человек", now)
+        state = _latest_state(suffix)
+        ok = state.get("status") == "handoff" and state.get("current_step") == "handoff"
+        return Check("explicit human request during form still handoffs", ok, f"{reply} | {state}")
+    finally:
+        message_handler.call_ai = original_call_ai
+
+
 def _test_gazebo_budget_without_date_asks_one_question(now: datetime) -> Check:
     suffix = "gazebo_budget_without_date"
     created = _create_reserved_conversation(
@@ -7967,7 +8074,7 @@ def _test_coal_price_is_known() -> Check:
         "уголь сколько стоит",
         _base_form(service_type="gazebo", service_variant="Беседка №2"),
     ) or ""
-    ok = "270" in reply and "уголь" in reply.lower()
+    ok = "250" in reply and "уголь" in reply.lower()
     return Check("coal price is known", ok, reply)
 
 
@@ -9441,6 +9548,16 @@ REGRESSION_CASES: tuple[RegressionCase, ...] = (
         "gazebo",
         "gazebo budget preference during choice",
         _test_gazebo_budget_preference_during_choice,
+    ),
+    RegressionCase(
+        "handoff",
+        "bare human word during gazebo choice does not handoff",
+        _test_bare_human_word_during_gazebo_choice_does_not_handoff,
+    ),
+    RegressionCase(
+        "handoff",
+        "explicit human request during form still handoffs",
+        _test_explicit_human_request_during_form_still_handoffs,
     ),
     RegressionCase(
         "gazebo",

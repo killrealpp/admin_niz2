@@ -2,6 +2,7 @@
 
 ## 2026-06-09 Whole-project control check
 
+- Latest MAX dialog fix: a short ambiguous people word like `человек` during an active booking form no longer lets AI put the client into handoff; explicit operator requests are still respected. Current coal price in client knowledge is `Уголь 3 кг — 250 ₽`. Details: [[bugs/2026-06-09-max-ambiguous-human-word-handoff]].
 - Latest additional fix: paid local bookings are no longer hidden from client summaries when YCLIENTS cache temporarily marks them `journal_missing`. Details: [[bugs/2026-06-09-paid-journal-missing-summary-hidden]].
 - Current answer after fixes: the main dialog regressions are locally under control, but production payment acceptance is not launch-ready until YooKassa status and public webhook routing are green on the server.
 - Green: compile/static checks, best2info lint, YCLIENTS map, identity/photo/MAX/channel smokes, DB reachability, fresh YCLIENTS sync, Telegram status, MAX active webhook subscription, live hygiene audit.

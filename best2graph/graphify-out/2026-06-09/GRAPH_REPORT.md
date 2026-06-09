@@ -4,12 +4,12 @@
 - cluster-only mode — file stats not available
 
 ## Summary
-- 90 nodes · 89 edges · 29 communities (8 shown, 21 thin omitted)
-- Extraction: 72% EXTRACTED · 28% INFERRED · 0% AMBIGUOUS · INFERRED: 25 edges (avg confidence: 0.86)
+- 397 nodes · 1696 edges · 26 communities (9 shown, 17 thin omitted)
+- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 25 edges (avg confidence: 0.85)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `1a3c0b9a`
+- Built from commit: `e6ed0e57`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -40,21 +40,18 @@
 - [[_COMMUNITY_Community 23|Community 23]]
 - [[_COMMUNITY_Community 24|Community 24]]
 - [[_COMMUNITY_Community 25|Community 25]]
-- [[_COMMUNITY_Community 26|Community 26]]
-- [[_COMMUNITY_Community 27|Community 27]]
-- [[_COMMUNITY_Community 28|Community 28]]
 
 ## God Nodes (most connected - your core abstractions)
-1. `Information Knowledge Base` - 10 edges
-2. `str` - 9 edges
-3. `Any` - 7 edges
-4. `Client Runtime Knowledge Base` - 7 edges
-5. `Объекты и услуги базы отдыха` - 7 edges
-6. `format_booking_summary()` - 6 edges
-7. `booking_object_title()` - 5 edges
-8. `Services Map Config` - 5 edges
-9. `booking_status_text()` - 4 edges
-10. `booking_word()` - 4 edges
+1. `Check` - 208 edges
+2. `datetime` - 170 edges
+3. `_send()` - 148 edges
+4. `_base_form()` - 142 edges
+5. `_latest_state()` - 119 edges
+6. `_create_reserved_conversation()` - 111 edges
+7. `_refresh_handler_globals()` - 73 edges
+8. `str` - 71 edges
+9. `date` - 60 edges
+10. `Any` - 56 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Беседки` --semantically_similar_to--> `Объекты и услуги базы отдыха`  [INFERRED] [semantically similar]
@@ -69,59 +66,65 @@
   information.md → app/images/besedka1.jpg
 
 ## Import Cycles
-- None detected.
+- 1-file cycle: `scripts/local_regression_suite.py -> scripts/local_regression_suite.py`
 
-## Communities (29 total, 21 thin omitted)
+## Communities (26 total, 17 thin omitted)
 
 ### Community 0 - "Community 0"
-Cohesion: 0.38
-Nodes (12): Any, booking_line_short(), booking_object_title(), booking_status_text(), booking_word(), confirmation_reply_text(), format_booking_summary(), format_hold_summary() (+4 more)
+Cohesion: 0.09
+Nodes (89): AIProviderUnavailable, Any, datetime, int, str, _AwaitingConfirmationCallbacks, bool, _CancelFlowCallbacks (+81 more)
 
 ### Community 1 - "Community 1"
+Cohesion: 0.06
+Nodes (80): _base_form(), Check, Deterministic regression tests for the booking bot.  The suite stubs AI/paymen, _test_abort_current_draft_from_upsell_refusal(), _test_abort_current_draft_keeps_contact(), _test_addon_price_question_does_not_add_item(), _test_afternoon_time_words_parse_pm(), _test_ai_semantic_price_question_without_price_keywords() (+72 more)
+
+### Community 2 - "Community 2"
+Cohesion: 0.07
+Nodes (82): _create_reserved_conversation(), _latest_state(), _send(), _test_addon_price_during_upsell_does_not_repeat_event_format(), _test_addon_prices_plural_question_replies_immediately(), _test_ai_event_format_is_not_invented(), _test_bare_human_word_during_gazebo_choice_does_not_handoff(), _test_bare_ne_first_upsell_gets_soft_push() (+74 more)
+
+### Community 3 - "Community 3"
+Cohesion: 0.09
+Nodes (63): date, _add_paid_booking(), _add_paid_payment_for_latest_booking(), _create_active_hold(), _create_paid_booking_for_action(), _create_waitlist_request(), Any, datetime (+55 more)
+
+### Community 4 - "Community 4"
+Cohesion: 0.14
+Nodes (18): Grill Sets, Hookah Service, Addons Pricing, Booking Logic, Bot Assistant Любовь, Gazebos Services, Guest House, Client Runtime Knowledge Base (+10 more)
+
+### Community 5 - "Community 5"
+Cohesion: 0.20
+Nodes (14): Крытая беседка (фото), Тёплая беседка (фото), Гостевой дом (фото), Объекты и услуги базы отдыха, YCLIENTS ID услуг и ресурсов, Bathhouse Object, Bathhouse Prices, Беседки (+6 more)
+
+### Community 6 - "Community 6"
 Cohesion: 0.17
 Nodes (12): Banya Image, Besedka 1 Image, Besedka 2 Image, Besedka 3 Image, Besedka 4 Image, Besedka 5 Image, Besedka 6 Image, Besedka 8 Image (+4 more)
 
-### Community 2 - "Community 2"
-Cohesion: 0.25
-Nodes (9): Addons Pricing, Bathhouse with Pool Service, Booking System Logic, Bot Assistant Lyubov, Gazebos Service, Guest House Service, Client Runtime Knowledge Base, Prepayment System (+1 more)
+### Community 7 - "Community 7"
+Cohesion: 0.24
+Nodes (9): _build_cases_by_name(), _cases_for_listing(), _cleanup(), _FakeWaitlistBot, install_regression_suite_lock(), main(), str, RegressionCase (+1 more)
 
-### Community 3 - "Community 3"
-Cohesion: 0.32
-Nodes (8): Backend System, Bot Main Rules, Gazebos Service, Payment and Booking System, Photo Management System, Sauna + Gazebo Combo, Sauna with Pool Service, YClients Integration
-
-### Community 4 - "Community 4"
-Cohesion: 0.43
-Nodes (7): Крытая беседка (фото), Тёплая беседка (фото), Гостевой дом (фото), Объекты и услуги базы отдыха, Беседки, Гостевой дом, Теплая беседка
-
-### Community 5 - "Community 5"
-Cohesion: 0.38
-Nodes (7): YCLIENTS ID услуг и ресурсов, Bathhouse Object, Bathhouse Prices, Форма бронирования, Services Map Config, Best2info Knowledge Base, Runtime Rules
-
-### Community 6 - "Community 6"
+### Community 8 - "Community 8"
 Cohesion: 0.50
 Nodes (5): Response Generator Prompt, Form Data Structure, JSON Response Schema, System Prompt, YCLIENTS Integration
 
-### Community 7 - "Community 7"
-Cohesion: 0.40
-Nodes (5): Base Knowledge File, Runtime Knowledge Base, Objects Knowledge File, Prices Knowledge File, YClients IDs Knowledge File
-
 ## Knowledge Gaps
-- **51 isolated node(s):** `int`, `Project Rules for best2`, `Graphify Workflow`, `LLM Wiki Workflow`, `PLAN.md - Development Plan` (+46 more)
+- **46 isolated node(s):** `_ReservedHoldCallbacks`, `_AwaitingConfirmationCallbacks`, `_NewBookingFlowCallbacks`, `_CancelFlowCallbacks`, `_RescheduleExecutionCallbacks` (+41 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **21 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **17 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Объекты и услуги базы отдыха` connect `Community 4` to `Community 5`?**
-  _High betweenness centrality (0.014) - this node is a cross-community bridge._
-- **Why does `Services Map Config` connect `Community 5` to `Community 4`?**
-  _High betweenness centrality (0.013) - this node is a cross-community bridge._
-- **Are the 9 inferred relationships involving `Information Knowledge Base` (e.g. with `Knowledge Base TODO` and `Banya Image`) actually correct?**
-  _`Information Knowledge Base` has 9 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 2 inferred relationships involving `Client Runtime Knowledge Base` (e.g. with `Addons Pricing` and `Pricing System`) actually correct?**
-  _`Client Runtime Knowledge Base` has 2 INFERRED edges - model-reasoned connections that need verification._
-- **Are the 6 inferred relationships involving `Объекты и услуги базы отдыха` (e.g. with `Крытая беседка (фото)` and `Тёплая беседка (фото)`) actually correct?**
-  _`Объекты и услуги базы отдыха` has 6 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `int`, `Project Rules for best2`, `Graphify Workflow` to the rest of the system?**
-  _51 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Why does `_send()` connect `Community 2` to `Community 0`, `Community 1`, `Community 3`, `Community 7`?**
+  _High betweenness centrality (0.298) - this node is a cross-community bridge._
+- **Why does `IncomingMessage` connect `Community 0` to `Community 2`?**
+  _High betweenness centrality (0.271) - this node is a cross-community bridge._
+- **What connects `_ReservedHoldCallbacks`, `_AwaitingConfirmationCallbacks`, `_NewBookingFlowCallbacks` to the rest of the system?**
+  _47 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Community 0` be split into smaller, more focused modules?**
+  _Cohesion score 0.08739076154806492 - nodes in this community are weakly interconnected._
+- **Should `Community 1` be split into smaller, more focused modules?**
+  _Cohesion score 0.06473953628425173 - nodes in this community are weakly interconnected._
+- **Should `Community 2` be split into smaller, more focused modules?**
+  _Cohesion score 0.06504065040650407 - nodes in this community are weakly interconnected._
+- **Should `Community 3` be split into smaller, more focused modules?**
+  _Cohesion score 0.0931899641577061 - nodes in this community are weakly interconnected._

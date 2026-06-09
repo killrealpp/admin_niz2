@@ -70,7 +70,7 @@ def addon_price_reply(text: str) -> str | None:
         lines.append("Мангальный набор №2 — 1 000 ₽: шампуры, кочерга, опахало.")
         lines.append("Малый мангальный набор — 400 ₽: маленькие шампуры, кочерга, опахало.")
         if "уголь" in normalized:
-            lines.append("Уголь 3 кг — 270 ₽.")
+            lines.append("Уголь 3 кг — 250 ₽.")
         if "розжиг" in normalized:
             lines.append("По розжигу отдельной точной цены в базе нет, поэтому сумму уточним по факту.")
     if asks_all_addons or any(marker in normalized for marker in ("лед", "вода", "посуд", "чай", "напит")):
