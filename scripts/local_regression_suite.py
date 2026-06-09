@@ -698,6 +698,93 @@ def _test_reserved_yes_retries_payment_link(now: datetime) -> Check:
         message_handler.create_payment_link_for_holds = original_payment
 
 
+def _test_decline_unpaid_hold_prompts_and_cancels_pending_payment(now: datetime) -> Check:
+    suffix = "decline_unpaid_hold"
+    actual_now = datetime.now(ZoneInfo(get_settings().app_timezone))
+    expires_base = actual_now if actual_now > now else now
+    created = _create_reserved_conversation(
+        suffix,
+        now,
+        _base_form(service_type="gazebo", service_variant="Беседка №2", date="2026-06-12", time="16:00", duration=6),
+    )
+    with get_connection() as conn:
+        hold = slot_holds_repo.create(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            service_type="gazebo",
+            yclients_service_id=f"local_decline_unpaid_hold_{created['conversation']['id']}",
+            slot_date=date(2026, 6, 12),
+            slot_time=time(16, 0),
+            duration_minutes=360,
+            expires_at=expires_base + timedelta(minutes=30),
+        )
+        payment = payments_repo.create_pending(
+            conn,
+            conversation_id=created["conversation"]["id"],
+            user_id=created["user"]["id"],
+            booking_ids=[],
+            provider="yookassa",
+            amount=Decimal("1.00"),
+            currency="RUB",
+            description="decline unpaid hold regression",
+            raw_payload={"hold_ids": [int(hold["id"])]},
+        )
+        payments_repo.attach_provider_response(
+            conn,
+            payment_id=int(payment["id"]),
+            provider_payment_id="local_decline_unpaid_hold",
+            payment_url="https://example.test/decline-unpaid",
+            status="pending",
+            raw_payload={"hold_ids": [int(hold["id"])]},
+        )
+
+    first_reply = _send(suffix, "Я не хочу оплачивать", now)
+    first_state = _latest_state(suffix)
+    first_form = first_state.get("form_data") or {}
+    with get_connection() as conn:
+        hold_after_prompt = slot_holds_repo.get_by_id(conn, int(hold["id"]))
+        payment_after_prompt = next(
+            item
+            for item in payments_repo.list_for_conversation(conn, conversation_id=created["conversation"]["id"])
+            if int(item["id"]) == int(payment["id"])
+        )
+
+    second_reply = _send(suffix, "да", now)
+    second_state = _latest_state(suffix)
+    second_form = second_state.get("form_data") or {}
+    with get_connection() as conn:
+        hold_after_confirm = slot_holds_repo.get_by_id(conn, int(hold["id"]))
+        payment_after_confirm = next(
+            item
+            for item in payments_repo.list_for_conversation(conn, conversation_id=created["conversation"]["id"])
+            if int(item["id"]) == int(payment["id"])
+        )
+
+    ok = (
+        "без предоплаты" in first_reply.lower().replace("ё", "е")
+        and "активной брони" not in first_reply.lower().replace("ё", "е")
+        and (first_form.get("unpaid_hold_cancel_flow") or {}).get("stage") == "confirm_cancel"
+        and hold_after_prompt
+        and hold_after_prompt.get("status") == "active"
+        and payment_after_prompt.get("status") == "pending"
+        and "сняла предварительную заявку" in second_reply.lower().replace("ё", "е")
+        and hold_after_confirm
+        and hold_after_confirm.get("status") == "cancelled"
+        and payment_after_confirm.get("status") == "superseded"
+        and second_state.get("status") == "waiting_user"
+        and second_state.get("current_step") == "service_type"
+        and second_form.get("client_name") == "Кирилл"
+        and second_form.get("phone") == TEST_PHONE
+        and not second_form.get("service_type")
+    )
+    return Check(
+        "decline unpaid hold prompts and cancels pending payment",
+        bool(ok),
+        f"first={first_reply} | second={second_reply} | hold={hold_after_confirm} | payment={payment_after_confirm} | state={second_state}",
+    )
+
+
 def _test_concurrent_active_hold_conflict(now: datetime) -> Check:
     real_now = datetime.now(ZoneInfo(get_settings().app_timezone))
     created_a = _create_reserved_conversation(
@@ -9204,6 +9291,11 @@ REGRESSION_CASES: tuple[RegressionCase, ...] = (
         "payments",
         "reserved yes retries payment link",
         _test_reserved_yes_retries_payment_link,
+    ),
+    RegressionCase(
+        "payments",
+        "decline unpaid hold prompts and cancels pending payment",
+        _test_decline_unpaid_hold_prompts_and_cancels_pending_payment,
     ),
     RegressionCase(
         "payments",

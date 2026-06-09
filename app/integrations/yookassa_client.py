@@ -18,12 +18,14 @@ class YooKassaError(RuntimeError):
 class YooKassaClient:
     BASE_URL = "https://api.yookassa.ru/v3"
 
-    def __init__(self) -> None:
+    def __init__(self, *, timeout: float = 30.0, attempts: int = 3) -> None:
         settings = get_settings()
         self.shop_id = settings.payment_shop_id
         self.secret_key = settings.payment_secret_key
         self.return_url = settings.payment_success_url or "https://t.me/fnsmvsvmpvpovbot"
         self.http_trust_env = settings.http_trust_env
+        self.timeout = timeout
+        self.attempts = max(1, attempts)
         if not self.shop_id or not self.secret_key:
             raise YooKassaError("YooKassa credentials are not configured")
 
@@ -83,11 +85,11 @@ class YooKassaClient:
         return response
 
     def _request_with_retry(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
-        attempts = 3
+        attempts = self.attempts
         last_error: httpx.HTTPError | None = None
         for attempt in range(1, attempts + 1):
             try:
-                with httpx.Client(timeout=30, trust_env=self.http_trust_env) as client:
+                with httpx.Client(timeout=self.timeout, trust_env=self.http_trust_env) as client:
                     response = client.request(
                         method,
                         f"{self.BASE_URL}{path}",

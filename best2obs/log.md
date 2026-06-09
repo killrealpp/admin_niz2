@@ -1,5 +1,46 @@
 # Project Log
 
+## 2026-06-09 - Dialog control fixes verified
+
+- Fixed the remaining DB-backed unpaid-hold decline regression. The test fixture now creates a truly active hold relative to the current DB/runtime time, and confirmation of `Я не хочу оплачивать` cancels the active hold and supersedes the matching pending payment instead of falling into finalized-booking cancellation.
+- Fixed the remaining stale gazebo free-date regression. A generic gazebo free-date question now performs broad gazebo lookup even after stale-form continuation, unless the new text explicitly names a concrete gazebo number/name.
+- Made `scripts/yookassa_status.py` fail fast for the read-only Basic Auth check: it now uses `YooKassaClient(timeout=10.0, attempts=1)` for `GET /payments?limit=1`. Default runtime payment retries are unchanged.
+- Verification passed locally: `compileall app scripts`; targeted unpaid-hold, stale/free-date and payment cases; `local_regression_suite.py --group payments --group fresh --group dates --group gazebo`; MAX media/outbound/webhook smokes; `dialog_contextual_photo_smoke.py`; `yclients_sync_status.py --strict`; `telegram_status.py`; `max_status.py`; `live_health_report.py`; `live_db_hygiene_audit.py --limit 20`.
+- Current controlled state: DB/YCLIENTS/Telegram/MAX are green, MAX has one active webhook subscription for `message_created` and `bot_started`, no active holds or pending payments remain after the test cleanup/hygiene audit.
+- Graphify update was run after the code changes. It completed incremental extraction/re-clustering but refused the final overwrite because the new graph has `395` nodes while the existing graph has `396`; no force overwrite was used.
+- Remaining watch items: `live_health_report.py` still warns about older OpenRouter context-limit errors, and local `yookassa_status.py` still fails with an SSL handshake timeout to YooKassa. No live YooKassa payment, MAX subscription mutation, or production server change was performed in this slice.
+
+## 2026-06-09 - Paid journal-missing booking summary fix
+
+- A wider regression pass found one more client-visible bug: `available services uses active booking not stale form` failed because `format_booking_summary()` hid paid bookings when their YCLIENTS journal status was temporarily `journal_missing`.
+- Fixed `app/services/dialog/booking_texts.py`: cancelled bookings remain hidden, but paid `journal_missing` bookings stay visible in the client summary with the existing safer status text that the payment passed and the journal row is currently not found.
+- Verification is green across all regression groups when run in smaller chunks: `post_booking`; `services,time,media`; `upsell,prices,gazebo,dates`; `payments,fresh`; `reschedule,cancel`; `waitlist,handoff,reminder`. The single full-suite command still exceeds the local 5-minute command timeout, so group runs are the current practical full coverage.
+- Status after the pass: YCLIENTS strict fresh (`records_seen=127`), Telegram status OK with empty webhook/pending `0`, MAX status OK with one active webhook subscription, `live_health_report.py` has no blockers, and hygiene audit is clean.
+- Graphify update was run again after this code/doc change. It completed incremental extraction/re-clustering but refused the final overwrite because the new graph has `90` nodes while the existing graph has `91`; no force overwrite was used.
+- Remaining infrastructure blockers are unchanged: local YooKassa read-only status fails with SSL handshake timeout, and `live_health_report.py` still shows old OpenRouter context-limit warnings from 2026-06-08. Details: [[bugs/2026-06-09-paid-journal-missing-summary-hidden]], [[bugs/2026-06-08-yookassa-payment-enable-blockers]], [[bugs/2026-06-09-openrouter-context-limit-live-errors]].
+
+## 2026-06-09 - Whole-project control check
+
+- Ran safe local/static checks: `compileall app scripts`, `lint_best2info.py`, `validate_yclients_map.py`, `dialog_identity_smoke.py`, `dialog_contextual_photo_smoke.py`, MAX media/outbound/webhook smokes, channel contract/notifications and YooKassa webhook hardening smoke passed.
+- Live/read-only status checks are mostly healthy: DB reachable, `yclients_sync_status.py --strict` fresh, Telegram bot reachable with empty webhook and `pending_update_count=0`, MAX bot reachable with one active subscription for `message_created` and `bot_started`, `live_db_hygiene_audit.py --limit 20` clean.
+- `live_health_report.py` is `status=ok` but still warns about recent `ai_provider_unavailable` / `ai_semantic_degraded` errors from OpenRouter context limits on messages like `ты в своем уме?` and `ау`. Tracked in [[bugs/2026-06-09-openrouter-context-limit-live-errors]].
+- Two dialog regressions are not under control yet:
+  - `decline unpaid hold prompts and cancels pending payment` fails against the DB-backed suite: the prompt routes correctly, but confirmation does not leave the expected cancelled-hold/superseded-payment state. Tracked in [[bugs/2026-06-08-unpaid-hold-decline-cancel-flow]].
+  - `stale continued free dates clears old gazebo variant` fails: stale continuation can keep the old gazebo variant for a generic free-date question. Tracked in [[bugs/2026-06-08-live-stale-free-dates-and-complaint-loop]].
+- Neighboring stale/free-date checks passed: `stale free dates request starts fresh lookup`, `old form new free dates skips stale choice`, and `stale complaint bypasses stale choice`.
+- `scripts/yookassa_status.py` timed out locally during the read-only `/payments?limit=1` check; YooKassa remains not launch-ready until server-side status and public `/webhooks/yookassa` proxy are green. Tracked in [[bugs/2026-06-08-yookassa-payment-enable-blockers]].
+- No production code, subscriptions or live payments were changed during this check.
+
+## 2026-06-08 - Full bot audit, DeepSeek smoke and unpaid-hold decline fix
+
+- Проведён аудит live-класса ошибок `Я не хочу оплачивать` после ссылки на предоплату. Root cause: фраза не попадала в reserved-hold path и позже уходила в generic booking cancel flow, где finalized booking ещё нет, поэтому бот отвечал `Активной брони для отмены не нашла`.
+- Исправлено локально: `confirmation_flow` получил deterministic `unpaid_hold_cancel_flow`. Первый отказ от предоплаты спрашивает подтверждение и сохраняет hold; подтверждение `да` отменяет только matching active `slot_holds` и помечает matching pending/waiting payments как `superseded`, не трогая оплаченные брони. `ReservedHoldCallbacks` расширен `confirmation_no`.
+- Добавлена DB regression: `decline unpaid hold prompts and cancels pending payment`. Локально она не дошла до выполнения из-за Beget PostgreSQL timeout с Windows workstation; in-memory unpaid-hold smoke прошёл.
+- Проверки зелёные локально: `compileall app scripts`, `lint_best2info.py`, `validate_yclients_map.py`, `dialog_identity_smoke.py`, `dialog_contextual_photo_smoke.py`, `max_media_buttons_smoke.py`, `max_outbound_text_smoke.py`, `channel_contract_smoke.py`, `channel_notifications_smoke.py`, `max_webhook_runner_smoke.py`.
+- DeepSeek smoke через временный env override `OPENAI_MODEL=deepseek/deepseek-chat` прошёл: JSON парсится, модель доступна. Сравнение с `anthropic/claude-sonnet-4` показало одинаковую классификацию `Я не хочу оплачивать` как generic cancel, поэтому production switch на DeepSeek не рекомендован без более широкого paired smoke.
+- Graphify update был запущен после code-slice: артефакты обновились, но финальный overwrite снова остановлен защитой node-count (`501` vs `502`); force не использовался.
+- Отчёт и источники знаний/состояния описаны в [[reports/2026-06-08-full-bot-audit-deepseek]], баг в [[bugs/2026-06-08-unpaid-hold-decline-cancel-flow]], архитектурная граница обновлена в [[architecture/backend]].
+
 ## 2026-06-08 - Live stale free-date and complaint loop fixed locally
 
 - User reported a live MAX loop: after stale-form continuation (`да`), the generic free-date request `а когда будет свободан` answered that no `Беседка` dates exist for 75 days, and the complaint `ты в своем уме?` fell back to repeating the date question.

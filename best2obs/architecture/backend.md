@@ -187,6 +187,7 @@
 - `app/services/dialog/booking_context.py::active_user_bookings()` remains the shared source for current/future active bookings in post-booking summary, cancel and reschedule flows.
 - The function first asks `bookings_repo.list_future_active_for_user()` and applies `filter_actual_journal_bookings()` against local YCLIENTS/cache state. It now also merges paid bookings from the current conversation when they are local active records in `created_in_yclients` or `journal_missing`.
 - This fallback is intentionally limited to the current conversation and paid local bookings. It prevents a temporary stale/missing YCLIENTS-cache row from hiding a paid booking from the client, while still excluding cancelled records and unpaid drafts/holds.
+- `booking_texts.format_booking_summary()` must preserve the same boundary: cancelled bookings are hidden, but paid `journal_missing` bookings are still shown with the existing "payment passed, journal row currently not found" wording. This keeps client-facing summaries honest without claiming YCLIENTS cache is healthy.
 - After a successful cancellation, `post_booking_flow.plain_ack_after_closed_booking()` handles `ок` and `окей` deterministically, so the bot does not ask AI to answer a closed paid conversation and does not say the cancelled booking is still fixed.
 
 ## 2026-06-01 state/text consistency hardening
@@ -210,6 +211,14 @@
 - `form_patches.upsell_items_patch()` now supports ordinal selections from the immediately shown addon price list: first/second/small mangal set, `№1/№2`, and clear price references for 500/1000 rubles. This keeps addon selection deterministic and avoids falling through to availability or repeating the upsell question.
 - `message_handler._available_services_reply()` is service-aware. After a confirmed/paid gazebo it says `Кроме вашей беседки...`; only bathhouse context uses `Помимо бани...`. The function remains informational and does not start a new booking until the user names a service/date.
 - These guards follow the project rule: AI can understand free text, but backend owns state transitions for fields already requested by the form and for post-booking context that depends on local bookings/form data.
+
+## 2026-06-08 unpaid hold decline boundary
+
+- Active unpaid preliminary reservations are a separate state from finalized bookings. If a user writes `Я не хочу оплачивать` while `slot_holds` is active, the reserved-hold flow now handles it before generic post-booking cancel routing.
+- The first decline message starts `form_data.unpaid_hold_cancel_flow` and asks for confirmation; it does not cancel the hold immediately.
+- Confirmation `да` cancels matching active `slot_holds` and marks matching pending/waiting `payments` as `superseded`. Paid bookings are not touched.
+- This keeps the core state rule explicit: booking cancel flow works on finalized `bookings`; prepayment refusal works on active `slot_holds` plus unpaid payment rows.
+- Telegram and MAX both use the same shared dialog flow, so the behavior is channel-neutral.
 
 ## 2026-06-01 best2info retrieval, prepayment modes and cleanup boundary
 

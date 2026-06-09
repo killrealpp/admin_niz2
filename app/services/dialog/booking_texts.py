@@ -92,7 +92,11 @@ def format_booking_summary(bookings: list[dict[str, Any]]) -> str:
     active = [
         booking
         for booking in bookings
-        if booking.get("status") not in {"cancelled", "journal_missing"}
+        if booking.get("status") != "cancelled"
+        and (
+            booking.get("status") != "journal_missing"
+            or booking.get("payment_status") == "paid"
+        )
     ]
     if not active:
         return "Пока не вижу активных броней."

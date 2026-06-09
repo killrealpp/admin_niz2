@@ -37,3 +37,16 @@ Open for production deployment. Code safety helpers are updated locally; live pa
 - `scripts/register_yookassa_webhook.py --dry-run` passes locally with the current redacted URL and does not call YooKassa API.
 - `scripts/register_yookassa_webhook.py --apply` is guarded locally and exits before any YooKassa API call, explaining that Basic Auth webhook setup is manual.
 - `scripts/local_regression_suite.py --group payments` passed after paid-state sync stabilization.
+
+## 2026-06-09 Verification Update
+
+- Local `scripts/yookassa_status.py` timed out after about 60 seconds during a read-only `GET /payments?limit=1` check.
+- No payment was created and no webhook registration was attempted.
+- Treat YooKassa as not launch-ready until this read-only status check is green from the server environment and the public nginx route for `/webhooks/yookassa` is verified.
+
+## 2026-06-09 Helper Update
+
+- `YooKassaClient` now accepts optional `timeout` and `attempts` parameters. Default runtime behavior remains `timeout=30.0`, `attempts=3`.
+- `scripts/yookassa_status.py` uses `timeout=10.0`, `attempts=1` for the read-only credential/connectivity check, so diagnostics fail fast instead of hanging for roughly a minute.
+- Current local result is still not green: `YooKassa request failed: _ssl.c:983: The handshake operation timed out`.
+- This points to connectivity/TLS/proxy/network path from the current environment, not to prepayment percent mode. A server-side repeat of `scripts/yookassa_status.py` is still needed before enabling live payment acceptance.

@@ -47,7 +47,7 @@ def main() -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
         return
     try:
-        payload = YooKassaClient().list_payments(limit=1)
+        payload = YooKassaClient(timeout=10.0, attempts=1).list_payments(limit=1)
     except YooKassaError as exc:
         result["status"] = "error"
         result["error"] = str(exc)

@@ -1,5 +1,9 @@
 # 2026-06-08 live stale free-dates and complaint loop
 
+## Status
+
+Fixed locally and verified on 2026-06-09.
+
 ## Symptoms
 
 - In MAX, after a stale-form choice the user continued the old draft with `да`, then asked `а когда будет свободан`.
@@ -27,3 +31,28 @@
 - Local compile passed: `python -m compileall app scripts`.
 - Pure no-DB smoke passed for `looks_like_handoff_needed()` and `direct_free_dates_lookup()` behavior.
 - Full DB regression could not run from the Windows workstation because Beget PostgreSQL timed out locally; run the new named cases on the server.
+
+## 2026-06-09 Verification Update
+
+- `scripts/local_regression_suite.py --case "stale complaint bypasses stale choice"` passed.
+- `scripts/local_regression_suite.py --case "stale free dates request starts fresh lookup" --case "old form new free dates skips stale choice"` passed.
+- `scripts/local_regression_suite.py --case "stale continued free dates clears old gazebo variant"` failed.
+- Current failure shape:
+  - after stale continuation (`yes`), the conversation keeps the old gazebo variant;
+  - a generic free-date question still checks that stale `service_variant`;
+  - user-facing reply can again say no dates were found for the old gazebo instead of doing a broad gazebo lookup.
+- Required next step: clear stale gazebo variant when continuing an old stale form and then asking a generic nearest/free-date question, unless the new text explicitly names a concrete gazebo.
+
+## 2026-06-09 Fix Verification
+
+- `direct_free_dates_lookup()` now treats generic gazebo free-date questions as broad lookup even when `callbacks.asks_nearest_free_dates()` does not classify the text strongly enough.
+- The broad lookup guard only triggers when:
+  - current service is `gazebo`;
+  - the text does not mention a concrete gazebo variant;
+  - the new patch has no date/time/duration;
+  - current form has no fresh date.
+- Verified green:
+  - `scripts/local_regression_suite.py --case "stale continued free dates clears old gazebo variant"`
+  - `scripts/local_regression_suite.py --case "stale free dates request starts fresh lookup" --case "old form new free dates skips stale choice" --case "stale complaint bypasses stale choice"`
+  - `scripts/local_regression_suite.py --group payments --group fresh --group dates --group gazebo`
+  - `python -m compileall app scripts`

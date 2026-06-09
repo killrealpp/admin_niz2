@@ -431,7 +431,13 @@ def direct_free_dates_lookup(
         reply, next_key = bathhouse_period
         return reply, "waiting_user", next_key, next_key, form_data
 
-    if callbacks.asks_nearest_free_dates(text):
+    generic_gazebo_free_lookup = (
+        form_data.get("service_type") == "gazebo"
+        and not _mentions_specific_gazebo_variant(text)
+        and not any(patch.get(key) for key in ("date", "time", "duration"))
+        and not form_data.get("date")
+    )
+    if callbacks.asks_nearest_free_dates(text) or generic_gazebo_free_lookup:
         if not patch.get("date"):
             form_data["date"] = None
         if not patch.get("time"):

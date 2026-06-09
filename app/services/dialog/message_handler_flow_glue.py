@@ -929,6 +929,7 @@ def _impl_reserved_hold_callbacks() -> _ReservedHoldCallbacks:
         correction_ack_text=_correction_ack_text,
         maybe_name_correction_without_value=_maybe_name_correction_without_value,
         confirmation_yes=_confirmation_yes,
+        confirmation_no=_confirmation_no,
         service_type_patch=_service_type_patch,
         date_patch_after_marker=_date_patch_after_marker,
         relative_date_patch=_relative_date_patch,

@@ -94,6 +94,33 @@ def wants_payment_delay_or_hold_extension(text: str) -> bool:
     ) and any(marker in normalized for marker in ("оплат", "денег", "соберу", "подожд", "резерв"))
 
 
+def wants_decline_unpaid_hold(text: str) -> bool:
+    normalized = re.sub(r"\s+", " ", text.lower().replace("ё", "е")).strip(" .,!?:;")
+    if not any(marker in normalized for marker in ("оплач", "оплат", "предоплат", "плат")):
+        return False
+    return any(
+        marker in normalized
+        for marker in (
+            "не хочу оплач",
+            "не буду оплач",
+            "не хочу платить",
+            "не буду платить",
+            "платить не буду",
+            "оплачивать не буду",
+            "оплату не буду",
+            "предоплату не буду",
+            "не надо оплач",
+            "не нужно оплач",
+            "не стану оплач",
+            "отказываюсь оплач",
+            "передумал оплач",
+            "передумала оплач",
+            "без оплаты",
+            "без предоплаты",
+        )
+    )
+
+
 def wants_resume_expired_hold(text: str) -> bool:
     normalized = re.sub(r"[^\w]+", " ", text.lower().replace("ё", "е")).strip()
     if normalized in {"давайте", "давай", "актуально", "еще актуально", "ещё актуально", "оформляем", "оформим"}:
@@ -264,6 +291,120 @@ def pending_payment_for_holds(conn, conversation_id: int, hold_ids: list[int]) -
     return None
 
 
+def pending_payments_for_holds(conn, conversation_id: int, hold_ids: list[int]) -> list[dict[str, Any]]:
+    wanted = {int(item) for item in hold_ids}
+    if not wanted:
+        return []
+    result: list[dict[str, Any]] = []
+    for payment in payments_repo.list_for_conversation(conn, conversation_id=conversation_id):
+        if payment.get("status") not in {"pending", "waiting_for_capture"}:
+            continue
+        raw_payload = payment.get("raw_payload") or {}
+        if not isinstance(raw_payload, dict):
+            continue
+        payment_hold_ids = {
+            int(item)
+            for item in raw_payload.get("hold_ids") or []
+            if str(item).isdigit()
+        }
+        if payment_hold_ids and payment_hold_ids <= wanted:
+            result.append(payment)
+    return result
+
+
+def _unpaid_hold_cancel_prompt() -> str:
+    return (
+        "Поняла, без предоплаты бронь не закрепляется.\n\n"
+        "Снять предварительную заявку и освободить слот? Если хотите подобрать другой вариант, "
+        "напишите «да» — после этого начнём новую заявку."
+    )
+
+
+def _start_unpaid_hold_cancel_flow(
+    conn,
+    conversation: dict[str, Any],
+    form_data: dict[str, Any],
+    active_holds: list[dict[str, Any]],
+) -> tuple[str, str, str, str | None, dict[str, Any]]:
+    hold_ids = [int(hold["id"]) for hold in active_holds]
+    pending_payments = pending_payments_for_holds(conn, int(conversation["id"]), hold_ids)
+    updated = {
+        **form_data,
+        "unpaid_hold_cancel_flow": {
+            "stage": "confirm_cancel",
+            "hold_ids": hold_ids,
+            "payment_ids": [int(payment["id"]) for payment in pending_payments],
+        },
+        "cancel_flow": None,
+        "reschedule_flow": None,
+        "swap_reschedule_flow": None,
+    }
+    return _unpaid_hold_cancel_prompt(), "reserved", "reserved", "payment_status", updated
+
+
+def _handle_unpaid_hold_cancel_flow(
+    conn,
+    conversation: dict[str, Any],
+    text: str,
+    form_data: dict[str, Any],
+    active_holds: list[dict[str, Any]],
+    now: datetime,
+    callbacks: ReservedHoldCallbacks,
+) -> tuple[str, str, str, str | None, dict[str, Any]]:
+    flow = dict(form_data.get("unpaid_hold_cancel_flow") or {})
+    hold_ids = [int(item) for item in flow.get("hold_ids") or [] if str(item).isdigit()]
+    if not hold_ids:
+        hold_ids = [int(hold["id"]) for hold in active_holds]
+    active_hold_ids = {int(hold["id"]) for hold in active_holds}
+    cancellable_hold_ids = [hold_id for hold_id in hold_ids if hold_id in active_hold_ids]
+
+    if callbacks.confirmation_no(text):
+        updated = {**form_data, "unpaid_hold_cancel_flow": None}
+        return (
+            "Хорошо, предварительную заявку оставила без изменений ✅\n\n"
+            "Если решите закрепить бронь, оплатите по ссылке выше до окончания резерва.",
+            "reserved",
+            "reserved",
+            "payment_status",
+            updated,
+        )
+
+    normalized = text.lower().replace("ё", "е")
+    if not (
+        callbacks.confirmation_yes(text)
+        or wants_decline_unpaid_hold(text)
+        or any(marker in normalized for marker in ("снять заявку", "сними заявку", "освободить слот", "подобрать другой", "другой вариант"))
+    ):
+        updated = {**form_data, "unpaid_hold_cancel_flow": flow | {"stage": "confirm_cancel", "hold_ids": hold_ids}}
+        return _unpaid_hold_cancel_prompt(), "reserved", "reserved", "payment_status", updated
+
+    if cancellable_hold_ids:
+        slot_holds_repo.cancel_ids(conn, hold_ids=cancellable_hold_ids, now=now)
+    pending_payments = pending_payments_for_holds(conn, int(conversation["id"]), cancellable_hold_ids or hold_ids)
+    for payment in pending_payments:
+        raw_payload = payment.get("raw_payload") or {}
+        if not isinstance(raw_payload, dict):
+            raw_payload = {}
+        payments_repo.mark_superseded(
+            conn,
+            payment_id=int(payment["id"]),
+            raw_payload=raw_payload | {
+                "state": "superseded_by_client_declined_prepayment",
+                "cancelled_hold_ids": cancellable_hold_ids,
+            },
+        )
+
+    cleaned = callbacks.new_booking_form_data(form_data)
+    return (
+        "Сняла предварительную заявку ✅\n\n"
+        "Без предоплаты бронь не закрепляется. Если хотите подобрать другой вариант, напишите услугу и дату.",
+        "waiting_user",
+        "service_type",
+        "service_type",
+        cleaned,
+    )
+
+
 def reply_with_hold_summary(
     conn,
     conversation: dict[str, Any],
@@ -311,6 +452,7 @@ class ReservedHoldCallbacks:
     correction_ack_text: Callable[[dict[str, Any]], str]
     maybe_name_correction_without_value: Callable[[str], bool]
     confirmation_yes: Callable[[str], bool]
+    confirmation_no: Callable[[str], bool]
     service_type_patch: Callable[[str], dict[str, Any]]
     date_patch_after_marker: Callable[[str, datetime, str], dict[str, Any]]
     relative_date_patch: Callable[[str, datetime], dict[str, Any]]
@@ -382,6 +524,46 @@ def handle_reserved_hold_command(
         now=now,
     )
     if not active_holds:
+        if hold_context and form_data.get("unpaid_hold_cancel_flow"):
+            flow = dict(form_data.get("unpaid_hold_cancel_flow") or {})
+            hold_ids = [int(item) for item in flow.get("hold_ids") or [] if str(item).isdigit()]
+            normalized = text.lower().replace("ё", "е")
+            if (
+                callbacks.confirmation_yes(text)
+                or wants_decline_unpaid_hold(text)
+                or any(marker in normalized for marker in ("снять заявку", "сними заявку", "освободить слот", "подобрать другой", "другой вариант"))
+            ):
+                for payment in pending_payments_for_holds(conn, int(conversation["id"]), hold_ids):
+                    raw_payload = payment.get("raw_payload") or {}
+                    if not isinstance(raw_payload, dict):
+                        raw_payload = {}
+                    payments_repo.mark_superseded(
+                        conn,
+                        payment_id=int(payment["id"]),
+                        raw_payload=raw_payload | {
+                            "state": "superseded_by_client_declined_expired_prepayment",
+                            "cancelled_hold_ids": [],
+                            "expired_hold_ids": hold_ids,
+                        },
+                    )
+                cleaned = callbacks.new_booking_form_data(form_data)
+                return (
+                    "Предварительная заявка уже не активна, ссылку на предоплату закрыла в этой заявке.\n\n"
+                    "Если хотите подобрать другой вариант, напишите услугу и дату.",
+                    "waiting_user",
+                    "service_type",
+                    "service_type",
+                    cleaned,
+                )
+            cleaned = callbacks.new_booking_form_data(form_data)
+            return (
+                "Предварительная заявка уже не активна: резерв не найден или истёк.\n\n"
+                "Если хотите подобрать другой вариант, напишите услугу и дату.",
+                "waiting_user",
+                "service_type",
+                "service_type",
+                cleaned,
+            )
         expired_holds = slot_holds_repo.list_expired_for_conversation(
             conn,
             conversation_id=conversation["id"],
@@ -464,6 +646,20 @@ def handle_reserved_hold_command(
                 form_data,
         )
         return None
+
+    if form_data.get("unpaid_hold_cancel_flow"):
+        return _handle_unpaid_hold_cancel_flow(
+            conn,
+            conversation,
+            text,
+            form_data,
+            active_holds,
+            now,
+            callbacks,
+        )
+
+    if hold_context and wants_decline_unpaid_hold(text):
+        return _start_unpaid_hold_cancel_flow(conn, conversation, form_data, active_holds)
 
     if wants_fake_payment_simulation(text):
         status = "payment_paid" if conversation.get("status") == "payment_paid" else "reserved"

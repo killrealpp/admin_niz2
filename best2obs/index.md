@@ -1,5 +1,18 @@
 # best2 Project Memory
 
+## 2026-06-09 Whole-project control check
+
+- Latest additional fix: paid local bookings are no longer hidden from client summaries when YCLIENTS cache temporarily marks them `journal_missing`. Details: [[bugs/2026-06-09-paid-journal-missing-summary-hidden]].
+- Current answer after fixes: the main dialog regressions are locally under control, but production payment acceptance is not launch-ready until YooKassa status and public webhook routing are green on the server.
+- Green: compile/static checks, best2info lint, YCLIENTS map, identity/photo/MAX/channel smokes, DB reachability, fresh YCLIENTS sync, Telegram status, MAX active webhook subscription, live hygiene audit.
+- Fixed green: `decline unpaid hold prompts and cancels pending payment` and `stale continued free dates clears old gazebo variant`. Details: [[bugs/2026-06-08-unpaid-hold-decline-cancel-flow]], [[bugs/2026-06-08-live-stale-free-dates-and-complaint-loop]].
+- Watch: `live_health_report.py` still sees older OpenRouter context-limit errors; YooKassa read-only status now fails fast locally with an SSL handshake timeout and still needs server-side confirmation. Details: [[bugs/2026-06-09-openrouter-context-limit-live-errors]], [[bugs/2026-06-08-yookassa-payment-enable-blockers]].
+
+## 2026-06-08 Full bot audit and unpaid-hold decline fix
+
+- Live class `Я не хочу оплачивать` after prepayment link is fixed locally as a dedicated unpaid-hold decline flow: first ask confirmation, then on `да` cancel active `slot_holds` and supersede pending payment rows without touching paid bookings. Details: [[bugs/2026-06-08-unpaid-hold-decline-cancel-flow]], [[architecture/backend]].
+- Full audit report explains knowledge sources, state sources, background processes, scenario risks and DeepSeek comparison. `deepseek/deepseek-chat` works through OpenRouter and parses JSON in a small smoke, but it did not improve the payment/hold intent issue; keep Sonnet in production until broader paired smoke. Details: [[reports/2026-06-08-full-bot-audit-deepseek]].
+
 ## 2026-06-08 MAX stale free-date and complaint loop fix
 
 - Live MAX case `да` -> `а когда будет свободан` -> `ты в своем уме?` is fixed locally: generic gazebo free-date lookup no longer reuses an old selected gazebo variant, concrete variant lookups name the concrete gazebo, and complaint/handoff handling now runs before stale-form routing. Details: [[bugs/2026-06-08-live-stale-free-dates-and-complaint-loop]].
