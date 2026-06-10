@@ -1,5 +1,14 @@
 # Project Log
 
+## 2026-06-10 - expired hold notification now resets conversation state
+
+- Fixed a live dialog-state bug where automatic `slot_hold_expired` notifications told the client that the reserve expired, but left `conversations.status/current_step/next_step` as `reserved/reserved/payment_status`.
+- `payment_status_runner.notify_expired_holds_once()` now resets the conversation to `waiting_user/service_type/service_type` after successful delivery, preserves only `client_name` and `phone`, and skips the reset when another active hold or active booking exists.
+- Added smoke coverage for the background notification path in `scripts/channel_notifications_smoke.py`; the existing DB-backed manual expired-hold regression still passes.
+- Repaired the current stuck live rows after the code fix: `conversation_id=322`, `816`, `1006`. Post-check shows `stuck_expired_reserved_count=0`.
+- Latest chat remains `conversation_id=1006` with Telegram user `Ермантович Евгений`: the reserve for `Беседка №1` on 24 June expired after the payment link could not be created automatically and no prepayment arrived within 30 minutes. The payment-link failure was a second bug: `96865785568` was accepted as `+968...`, then YooKassa rejected the receipt phone. Phone validation now accepts only supported Russian shapes before payment creation. Details: [[bugs/2026-06-10-expired-hold-notification-kept-reserved]], [[bugs/2026-06-10-yookassa-phone-validation]].
+- Production readiness cleanup was performed on the shared DB runtime tables: `users`, `conversations`, `messages`, `conversation_summaries`, `slot_holds`, `bookings`, `payments`, `waitlist_requests`, and `system_logs` were truncated and reset to `0` rows. YCLIENTS cache tables were intentionally preserved (`yclients_records=135`, `resource_busy_intervals=135`, `yclients_sync_state=1`) so availability remains warm. Post-clean checks: `db_status.py`, `live_health_report.py`, `live_db_hygiene_audit.py --limit 20`, and `yclients_sync_status.py --strict` are green; `live_health_report.py` reports `status=ok`.
+
 ## 2026-06-10 - release readiness guardrails added
 
 - Added `scripts/release_readiness_report.py`: one safe read-only gate for public launch checks. It validates production env targets and runs DB, YCLIENTS freshness, Telegram, MAX, live health, hygiene, YooKassa dry-run and read-only YooKassa status checks. It does not create YooKassa payments, register webhooks, mutate MAX subscriptions or write runtime data.
@@ -1668,3 +1677,10 @@
 - Tightened Git hygiene: root `.gitignore` now excludes local env files, runtime logs/state, Python caches, root `graphify-out/`, `best2graph/.venv/`, `best2graph/.obsidian/` and generated `best2graph/graphify-out/`. `best2graph/.gitignore` mirrors local Graphify ignores.
 - Removed generated Graphify outputs from the Git index with `git rm --cached` while leaving local files on disk. Kept `best2graph/README.md`, `best2graph/update_graph.ps1` and `best2graph/.gitignore` tracked as developer tooling.
 - Confirmed knowledge-source rule for deploy discussion: client-facing answers use `best2info/` through `knowledge_service.retrieve_client_knowledge()` with one-hop wikilink expansion; `best2graph/` is developer code-map tooling and is not used for client answers.
+
+# 2026-06-10 - MAX new-domain live reply blocker
+
+- Public DNS and health for the new MAX domain are green from the workstation: `max.ermantgz.ru -> 5.35.92.120`, and `https://max.ermantgz.ru/webhooks/max` returns HTTP 200.
+- Read-only `scripts/max_status.py` still shows the active MAX subscription URL as `https://max.killrealp2.ru/webhooks/max`, so MAX live updates still go to the old domain. This explains the live symptom where the MAX bot does not answer on the new server.
+- Local fake MAX checks are green for typing/action, inbound text/voice normalization and outbound text: `max_api_client_smoke.py`, `max_inbound_normalization_smoke.py`, `max_outbound_text_smoke.py`.
+- Required operational fix: update the new server env to `MAX_WEBHOOK_URL=https://max.ermantgz.ru/webhooks/max`, verify public health, run `scripts/register_max_webhook.py --dry-run`, then run real `--apply` only after explicit operator approval. Details: `best2obs/bugs/2026-06-10-max-subscription-old-domain.md`.

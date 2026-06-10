@@ -196,8 +196,6 @@ def phone_patch(text: str) -> dict[str, str]:
         digits = "7" + digits[1:]
     if len(digits) == 11 and digits.startswith("7"):
         return {"phone": "+" + digits}
-    if 11 <= len(digits) <= 15 and not digits.startswith(("7", "8")):
-        return {"phone": "+" + digits}
     return {"phone": text.strip()}
 
 
@@ -520,9 +518,7 @@ def valid_phone(value: Any) -> bool:
     digits = re.sub(r"\D", "", str(value or ""))
     if len(digits) == 10 and digits.startswith("9"):
         return True
-    if digits.startswith(("7", "8")):
-        return len(digits) == 11
-    return 11 <= len(digits) <= 15
+    return len(digits) == 11 and digits.startswith(("7", "8"))
 
 
 def guests_count_patch(text: str, expected_key: str | None) -> dict[str, int]:

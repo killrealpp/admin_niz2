@@ -51,6 +51,7 @@ class RecordingClient:
 
 class FakeSettings:
     app_timezone = "Europe/Moscow"
+    hold_ttl_minutes = 30
 
 
 class FixedDateTime(datetime):
@@ -241,6 +242,138 @@ async def assert_adapter_failure_not_delivered() -> None:
     assert system_logs[0]["payload"]["error_type"] == "RuntimeError"
 
 
+async def assert_expired_hold_resets_reserved_conversation() -> None:
+    max_client = RecordingClient()
+    router = NotificationRouter({CHANNEL_MAX: max_client})
+    marked: list[int] = []
+    messages: list[dict[str, Any]] = []
+    updates: list[dict[str, Any]] = []
+    hold = {
+        "id": 51,
+        "conversation_id": 777,
+        "user_channel": CHANNEL_MAX,
+        "user_external_id": "max-expired",
+        "service_type": "gazebo",
+        "yclients_service_id": "18201055",
+        "slot_date": date(2026, 6, 24),
+        "slot_time": time(18, 0),
+        "duration_minutes": 360,
+    }
+    conversation = {
+        "id": 777,
+        "status": "reserved",
+        "current_step": "reserved",
+        "next_step": "payment_status",
+        "form_data": {
+            "service_type": "gazebo",
+            "service_variant": "Беседка №1",
+            "date": "2026-06-24",
+            "time": "18:00",
+            "duration": 6,
+            "client_name": "Евгений",
+            "phone": "+79990000000",
+            "upsell_items": ["уголь"],
+            "payment_status": "pending",
+        },
+    }
+
+    def update_after_message(_conn, conversation_id: int, now: datetime, **kwargs: Any) -> None:
+        updates.append({"conversation_id": conversation_id, "now": now, **kwargs})
+
+    patches: list[tuple[Any, str, Any]] = []
+    try:
+        patch_attr(patches, payment_status_runner, "datetime", FixedDateTime)
+        patch_attr(patches, payment_status_runner, "get_settings", lambda: FakeSettings())
+        patch_attr(patches, payment_status_runner, "get_connection", fake_connection)
+        patch_attr(patches, client_notification_service, "get_connection", fake_connection)
+        patch_attr(
+            patches,
+            payment_status_runner.slot_holds_repo,
+            "expire_old",
+            lambda _conn, now: 1,
+        )
+        patch_attr(
+            patches,
+            payment_status_runner.slot_holds_repo,
+            "list_expired_unnotified",
+            lambda _conn, limit=50: [hold],
+        )
+        patch_attr(
+            patches,
+            payment_status_runner.slot_holds_repo,
+            "mark_expired_notified",
+            lambda _conn, *, hold_id, now: marked.append(int(hold_id)),
+        )
+        patch_attr(
+            patches,
+            payment_status_runner.slot_holds_repo,
+            "list_active_for_conversation",
+            lambda _conn, *, conversation_id, now: [],
+        )
+        patch_attr(
+            patches,
+            payment_status_runner.bookings_repo,
+            "list_active_for_conversation",
+            lambda _conn, *, conversation_id: [],
+        )
+        patch_attr(
+            patches,
+            payment_status_runner.conversations_repo,
+            "get_by_id",
+            lambda _conn, conversation_id: dict(conversation),
+        )
+        patch_attr(
+            patches,
+            payment_status_runner.conversations_repo,
+            "update_after_message",
+            update_after_message,
+        )
+        patch_attr(
+            patches,
+            payment_status_runner.messages_repo,
+            "create",
+            lambda _conn, **kwargs: messages.append(kwargs),
+        )
+        patch_attr(
+            patches,
+            client_notification_service.system_logs_repo,
+            "create",
+            lambda _conn, **_kwargs: None,
+        )
+        patch_attr(
+            patches,
+            payment_status_runner,
+            "load_services_map",
+            lambda: {
+                "gazebo": {
+                    "title": "Беседка",
+                    "variants": [{"title": "Беседка №1", "yclients_service_id": "18201055"}],
+                }
+            },
+        )
+
+        await payment_status_runner.notify_expired_holds_once(router)
+    finally:
+        restore(patches)
+
+    assert [target.external_id for target, _text in max_client.sent] == ["max-expired"]
+    assert marked == [51]
+    assert len(messages) == 1
+    assert updates, "expired hold notification must reset reserved conversation"
+    update = updates[0]
+    form_data = update["form_data"]
+    assert update["conversation_id"] == 777
+    assert update["status"] == "waiting_user"
+    assert update["current_step"] == "service_type"
+    assert update["next_step"] == "service_type"
+    assert form_data["client_name"] == "Евгений"
+    assert form_data["phone"] == "+79990000000"
+    assert form_data["payment_status"] == "not_required_yet"
+    assert form_data["upsell_items"] == []
+    assert form_data["service_type"] is None
+    assert form_data["date"] is None
+
+
 def assert_repository_contracts_include_user_channel() -> None:
     files = [
         ROOT / "app/db/repositories/payments_repo.py",
@@ -292,6 +425,7 @@ async def main() -> None:
     await assert_payment_reminders_by_channel()
     await assert_waitlist_by_channel()
     await assert_adapter_failure_not_delivered()
+    await assert_expired_hold_resets_reserved_conversation()
     assert_repository_contracts_include_user_channel()
     print("channel_notifications_smoke=ok")
 

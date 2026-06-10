@@ -22,6 +22,7 @@ from app.services.client_notification_service import (
 )
 from app.services.admin_telegram_service import notify_admin_about_new_bookings, notify_admin_text
 from app.services.availability_service import load_services_map
+from app.services.booking_form_service import initial_form_data
 from app.services.dialog.booking_texts import booking_line_short, payment_reply_text
 from app.services.media_service import media_for_bookings
 from app.services.payment_service import create_payment_link_for_holds, sync_payment_statuses
@@ -355,6 +356,36 @@ async def notify_expired_holds_once(notifier: ClientNotifier) -> None:
                 text=text,
                 raw_payload={"event": "slot_hold_expired", "hold_id": hold["id"]},
             )
+            _reset_conversation_after_expired_hold(conn, hold, now)
+
+
+def _reset_conversation_after_expired_hold(conn, hold: dict, now: datetime) -> None:
+    conversation_id = int(hold["conversation_id"])
+    conversation = conversations_repo.get_by_id(conn, conversation_id)
+    if not conversation:
+        return
+    if conversation.get("status") != "reserved" and conversation.get("current_step") != "reserved":
+        return
+    if slot_holds_repo.list_active_for_conversation(conn, conversation_id=conversation_id, now=now):
+        return
+    if bookings_repo.list_active_for_conversation(conn, conversation_id=conversation_id):
+        return
+
+    previous_form = conversation.get("form_data") or {}
+    form_data = initial_form_data()
+    for key in ("client_name", "phone"):
+        if previous_form.get(key):
+            form_data[key] = previous_form[key]
+    conversations_repo.update_after_message(
+        conn,
+        conversation_id,
+        now,
+        status="waiting_user",
+        intent="booking_request",
+        current_step="service_type",
+        next_step="service_type",
+        form_data=form_data,
+    )
 
 
 async def notify_booking_reminders_once(notifier: ClientNotifier) -> None:

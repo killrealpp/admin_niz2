@@ -2984,6 +2984,25 @@ def _test_invalid_phone_reply_is_client_safe(now: datetime) -> Check:
         message_handler.generate_process_reply = original_generate
 
 
+def _test_non_russian_phone_does_not_reach_yookassa(now: datetime) -> Check:
+    foreign_like = message_handler._phone_patch("96865785568").get("phone")
+    ten_digit_ru = message_handler._phone_patch("9968533502").get("phone")
+    eight_prefixed_ru = message_handler._phone_patch("89968533502").get("phone")
+    ok = (
+        foreign_like == "96865785568"
+        and not message_handler._valid_phone(foreign_like)
+        and ten_digit_ru == "+79968533502"
+        and message_handler._valid_phone(ten_digit_ru)
+        and eight_prefixed_ru == "+79968533502"
+        and message_handler._valid_phone(eight_prefixed_ru)
+    )
+    return Check(
+        "non russian phone does not reach yookassa",
+        ok,
+        f"foreign_like={foreign_like}, ten_digit_ru={ten_digit_ru}, eight_prefixed_ru={eight_prefixed_ru}",
+    )
+
+
 def _test_admin_notification_includes_booking_object(now: datetime) -> Check:
     suffix = "admin_booking_object"
     created = _create_paid_booking_for_action(
@@ -9838,6 +9857,11 @@ REGRESSION_CASES: tuple[RegressionCase, ...] = (
         "fresh",
         "invalid phone reply is client safe",
         _test_invalid_phone_reply_is_client_safe,
+    ),
+    RegressionCase(
+        "fresh",
+        "non russian phone does not reach yookassa",
+        _test_non_russian_phone_does_not_reach_yookassa,
     ),
     RegressionCase(
         "dates",
