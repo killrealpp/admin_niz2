@@ -123,6 +123,8 @@ Step 10 уже добавил MAX media upload и link-button для payment URL
 | `PAYMENT_STATUS_SYNC_ENABLED` | `true` | Fallback polling статусов оплаты. |
 | `PAYMENT_STATUS_SYNC_INTERVAL_SECONDS` | `60` или осознанно выбранное значение | Не ставить слишком редко перед release smoke. |
 
+`scripts/yookassa_status.py` печатает `prepayment_effective_source`: при `PREPAYMENT_MODE=percent` сумма берется из `PREPAYMENT_PERCENT`, а `PREPAYMENT_AMOUNT_RUB` игнорируется. Если в production случайно выставить `PREPAYMENT_MODE=fixed` и `PREPAYMENT_AMOUNT_RUB=1`, status/checklist должны считать это тестовым режимом, а не публичным release target.
+
 ## YooKassa webhook
 
 | Переменная | Production value / проверка | Заметка |
@@ -138,6 +140,14 @@ Step 10 уже добавил MAX media upload и link-button для payment URL
 Production endpoint должен быть доступен по HTTPS, а внутренний `8088` не должен быть открыт публично напрямую. Для YooKassa HTTP Basic Auth уведомления настраиваются вручную в личном кабинете (`Интеграция -> HTTP-уведомления`); API `/v3/webhooks` относится к OAuth-интеграциям.
 
 ## Проверка safe summary
+
+Перед публичным запуском предпочтительно использовать общий read-only gate:
+
+```bash
+./.venv/bin/python scripts/release_readiness_report.py --limit 5
+```
+
+Для диагностики без сетевого вызова YooKassa API можно временно добавить `--skip-yookassa-api`, но публичный payment gate он не закрывает.
 
 Локально на Windows:
 

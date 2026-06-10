@@ -373,6 +373,41 @@ def _pending_refunds(conn: Any, existing_tables: set[str], limit: int) -> dict[s
     return {"total": int(count["total"]) if count else 0, "items": items}
 
 
+def _active_handoffs(conn: Any, existing_tables: set[str], limit: int) -> dict[str, Any]:
+    if "users" not in existing_tables:
+        return {"total": None, "items": []}
+    count = _fetch_one(
+        conn,
+        """
+        SELECT count(1) AS total
+        FROM users
+        WHERE handoff_until IS NOT NULL
+          AND handoff_until > NOW()
+        """,
+    )
+    items = _fetch_all(
+        conn,
+        """
+        SELECT id,
+               channel,
+               external_id,
+               name,
+               phone,
+               handoff_until,
+               handoff_reason,
+               handoff_notified_at,
+               updated_at
+        FROM users
+        WHERE handoff_until IS NOT NULL
+          AND handoff_until > NOW()
+        ORDER BY updated_at DESC, id DESC
+        LIMIT %s
+        """,
+        (limit,),
+    )
+    return {"total": int(count["total"]) if count else 0, "items": items}
+
+
 def _recent_system_activity(conn: Any, existing_tables: set[str], limit: int) -> dict[str, Any]:
     if "system_logs" not in existing_tables:
         return {"recent_errors": [], "recent_logs": []}
@@ -462,6 +497,10 @@ def build_report(limit: int) -> dict[str, Any]:
         if pending_refunds["total"]:
             blockers.append("pending_refund_required")
 
+        active_handoffs = _active_handoffs(conn, existing_tables, limit)
+        if active_handoffs["total"]:
+            warnings.append("active_handoffs_present")
+
         system_activity = _recent_system_activity(conn, existing_tables, limit)
         if system_activity["recent_errors"]:
             warnings.append("recent_system_errors_present")
@@ -488,6 +527,7 @@ def build_report(limit: int) -> dict[str, Any]:
             "paid_bookings_without_admin_notification": paid_bookings_admin_unnotified,
             "bookings_with_journal_or_yclients_errors": journal_or_yclients_errors,
             "pending_refund_required": pending_refunds,
+            "active_handoffs": active_handoffs,
             "system_logs": system_activity,
         }
 

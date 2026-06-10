@@ -408,6 +408,28 @@ curl -i https://DOMAIN/webhooks/yookassa
 
 OK: `scripts/yookassa_status.py` возвращает `status=ok` и `auth_ok=true`; GET webhook endpoint возвращает `service=yookassa-webhook`; `journalctl -u best2` без webhook startup/processing errors.
 
+## Общий release-readiness report
+
+Перед открытием бота для реальных клиентов можно прогнать одну безопасную сводную проверку:
+
+```bash
+cd /opt/best2
+set -a
+source /etc/best2/best2.env
+set +a
+./.venv/bin/python scripts/release_readiness_report.py --limit 5
+```
+
+Скрипт read-only: не создает YooKassa платежи, не регистрирует webhook, не меняет MAX subscriptions и не пишет runtime-данные. Он проверяет production env target, DB, YCLIENTS freshness, Telegram, MAX, live health, hygiene, YooKassa dry-run plan и read-only YooKassa auth check.
+
+Если нужно временно проверить всё, кроме сетевого read-only вызова YooKassa API, использовать:
+
+```bash
+./.venv/bin/python scripts/release_readiness_report.py --skip-yookassa-api --limit 5
+```
+
+Для публичного запуска `--skip-yookassa-api` не закрывает payment gate: финальный запуск оплат считается готовым только когда полный report без этого флага возвращает `status=ok`.
+
 ## Проверить DB и hygiene
 
 ```bash

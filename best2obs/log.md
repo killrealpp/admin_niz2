@@ -1,5 +1,24 @@
 # Project Log
 
+## 2026-06-10 - release readiness guardrails added
+
+- Added `scripts/release_readiness_report.py`: one safe read-only gate for public launch checks. It validates production env targets and runs DB, YCLIENTS freshness, Telegram, MAX, live health, hygiene, YooKassa dry-run and read-only YooKassa status checks. It does not create YooKassa payments, register webhooks, mutate MAX subscriptions or write runtime data.
+- Extended `scripts/live_health_report.py` with `active_handoffs`, so stuck handoff/manual-mode users are visible in release health. Current local check shows `active_handoffs.total=0`.
+- Hardened `scripts/yookassa_status.py`: it now reports `prepayment_effective_source` and blocks accidental public release with `PREPAYMENT_MODE=fixed` + `PREPAYMENT_AMOUNT_RUB=1`. In `percent` mode it explicitly says `PREPAYMENT_AMOUNT_RUB` is ignored.
+- Normalized UTF-8 stdout/stderr for status/dry-run scripts used by the release report (`db_status.py`, `telegram_status.py`, `max_status.py`, `yclients_sync_status.py`, `register_yookassa_webhook.py`, `yookassa_status.py`, `release_readiness_report.py`) so Windows and server reports keep Russian text readable.
+- Documentation updated: [[operations/production-runbook]] and [[operations/production-env-checklist]] now include the new readiness command and the prepayment-mode warning.
+- Verification: compile for changed scripts passed. `scripts/release_readiness_report.py --skip-yookassa-api --limit 1` returned `status=ok` after YCLIENTS one-shot sync. Full `scripts/release_readiness_report.py --limit 1` correctly returns `status=blocker` only because `yookassa_status` still fails from the local workstation with SSL handshake timeout; server-side YooKassa confirmation remains the final payment launch gate.
+
+## 2026-06-10 - full local release diagnostics after MAX/YooKassa hardening
+
+- Checked release preflight locally without live YooKassa payment creation and without MAX subscription changes. `compileall app scripts`, `lint_best2info.py`, `validate_yclients_map.py`, identity/contextual-photo smokes, MAX API/inbound/media/outbound/webhook smokes, channel contract/notification smokes and YooKassa webhook hardening/dry-run checks passed.
+- Telegram status is OK: bot API responds, webhook is empty and pending update count is 0. MAX status is OK: token works, one active subscription points to `https://max.killrealp2.ru/webhooks/max` with `message_created` and `bot_started`.
+- Regression suite groups passed after sequential runs: payments, fresh, post_booking, services, time, media, upsell, prices, gazebo, dates, cancel, reschedule, waitlist, handoff and reminder. The handoff group confirms casual/emotional language does not trigger handoff, while explicit human-agent requests still do. Active handoffs count in DB is 0.
+- YCLIENTS one-shot sync works: `sync_yclients_records.py --once` returned `seen=126 upserted=126`; final `live_health_report.py` after sync is `status=ok` with no blockers, and `live_db_hygiene_audit.py --limit 20` is clean. Local health becomes stale again when no local runtime is running, so production readiness depends on the server `main.py` background sync loop staying alive.
+- Payment configuration nuance: `PREPAYMENT_AMOUNT_RUB=1` makes a 1-ruble prepayment only when `PREPAYMENT_MODE=fixed`. With `PREPAYMENT_MODE=percent`, the fixed amount is ignored and the bot uses `PREPAYMENT_PERCENT` against the main service/package price. Public production target remains `PREPAYMENT_MODE=percent` and `PREPAYMENT_PERCENT=50`; fixed 1 ruble is for controlled payment tests only.
+- Current release blockers/risks: local YooKassa API status still fails with SSL handshake timeout, so YooKassa must be rechecked from the server before public payment launch; earlier server-side 401 history means credentials/shop mode also need server confirmation. Beget/PostgreSQL connectivity from local Windows is intermittent: pool and direct connections sometimes time out, though later checks succeed. Keep this as infra monitoring risk and prefer server-side checks as source of truth.
+- Observed non-blocking warnings: old `system_logs` still contain OpenRouter 402 prompt-token-limit errors from 2026-06-08 (`ау`, `ты в своем уме?`), already admin-notified. Functional regression is green, but these logs should be watched after deploy to ensure prompt/context pressure does not recur.
+
 ## 2026-06-09 - MAX ambiguous handoff guard and coal price update
 
 - Analyzed the latest MAX dialog (`conversations.id=816`, user `Евгений Ермантович`). Root cause of the unexpected block: while the user was choosing a gazebo variant for 20 guests, the short message `человек` was classified by AI as `handoff_to_human=True`; the runtime then moved the conversation to `handoff`.
