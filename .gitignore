@@ -1,11 +1,37 @@
+# Secrets and local environment
 .env
+.env.*
+!.env.example
+
+# Python/runtime artifacts
 .venv/
 venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local logs and runtime state
+*.log
+logs/
+runtime_logs/
+*.pid
+*.sqlite
+*.sqlite3
+*.db
+
+# IDE/OS files
 .idea/
 .vscode/
-*.log
 .DS_Store
+Thumbs.db
+
+# Generated Graphify output. Keep best2graph README/scripts, regenerate maps locally.
+graphify-out/
+best2graph/.venv/
+best2graph/.obsidian/
+best2graph/graphify-out/

@@ -1,5 +1,10 @@
 # best2 Project Memory
 
+## 2026-06-10 New server deploy target
+
+- New deployment target documented for `https://max.ermantgz.ru`: [[operations/new-server-deploy-max-ermantgz]]. Use it for the clean-server path from `apt update` through nginx/Certbot/systemd/readiness checks.
+- Repository hygiene was tightened for release: generated Graphify outputs and local runtime/dev artifacts are ignored and removed from the Git index; `best2graph` remains developer tooling, not a client-answer source.
+
 ## 2026-06-09 Whole-project control check
 
 - Latest MAX dialog fix: a short ambiguous people word like `человек` during an active booking form no longer lets AI put the client into handoff; explicit operator requests are still respected. Current coal price in client knowledge is `Уголь 3 кг — 250 ₽`. Details: [[bugs/2026-06-09-max-ambiguous-human-word-handoff]].
