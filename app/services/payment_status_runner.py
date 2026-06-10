@@ -23,7 +23,7 @@ from app.services.client_notification_service import (
 from app.services.admin_telegram_service import notify_admin_about_new_bookings, notify_admin_text
 from app.services.availability_service import load_services_map
 from app.services.booking_form_service import initial_form_data
-from app.services.dialog.booking_texts import booking_line_short, payment_reply_text
+from app.services.dialog.booking_texts import booking_line_short, paid_booking_previsit_text, payment_reply_text
 from app.services.media_service import media_for_bookings
 from app.services.payment_service import create_payment_link_for_holds, sync_payment_statuses
 from app.services.yclients_record_service import create_missing_yclients_records
@@ -768,5 +768,6 @@ def _paid_notification_text(payment: dict, bookings: list[dict] | None = None) -
         "Запись создана в журнале, ждём вас на отдых. "
         "Пусть всё пройдёт легко, уютно и с хорошим настроением.\n\n"
         f"Предоплата: {amount} ₽.\n\n"
+        f"{paid_booking_previsit_text(bookings or [])}\n\n"
         "Если планы изменятся, аванс можно вернуть при отмене не позднее чем за 7 дней до даты брони."
     )

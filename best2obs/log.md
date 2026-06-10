@@ -1,5 +1,12 @@
 # Project Log
 
+## 2026-06-10 - paid booking pre-visit instructions added
+
+- Added a shared post-payment client instruction block to paid booking confirmations. It is now included both in the automatic paid-payment notification and in the manual `оплата прошла?` reply path.
+- The block reminds guests to bring disposable dishes, cutlery and a tablecloth, says that bathhouse bookings with pool cannot use bath brooms, notes that only coal is allowed in the grill and firewood is forbidden, and says loud music is allowed until 23:00.
+- Added conditional video links after successful payment: bathhouse bookings get the bathhouse arrival video, `Крытая/закрытая беседка` gets the closed-gazebo arrival video, and guest-house bookings get the guest-house arrival video. Ordinary gazebo bookings intentionally get no video link.
+- Verification passed: `python -m compileall app scripts`; `local_regression_suite.py --case "paid notification includes booking summary" --case "paid notification previsit video links"`; `local_regression_suite.py --case "paid booking payment question is deterministic"`. The last DB-backed test completed OK but printed the known intermittent local Beget pool timeout warnings after success.
+
 ## 2026-06-10 - expired hold notification now resets conversation state
 
 - Fixed a live dialog-state bug where automatic `slot_hold_expired` notifications told the client that the reserve expired, but left `conversations.status/current_step/next_step` as `reserved/reserved/payment_status`.

@@ -8,7 +8,11 @@ from app.ai.errors import AIProviderUnavailable
 from app.core.constants import SENDER_ASSISTANT, SENDER_USER
 from app.db.repositories import payments_repo, slot_holds_repo
 from app.services.dialog.booking_context import active_user_bookings
-from app.services.dialog.booking_texts import format_booking_summary, format_hold_summary
+from app.services.dialog.booking_texts import (
+    format_booking_summary,
+    format_hold_summary,
+    paid_booking_previsit_text,
+)
 
 
 def post_booking_summary(
@@ -100,7 +104,8 @@ def payment_status_reply(
         summary = format_booking_summary(bookings) if bookings else "Заявка зафиксирована."
         return (
             f"Да, оплата получена. Спасибо!\n\n{summary}\n\n"
-            "Повторно подтверждать заявку уже не нужно.",
+            "Повторно подтверждать заявку уже не нужно.\n\n"
+            f"{paid_booking_previsit_text(bookings)}",
             "payment_paid",
         )
 

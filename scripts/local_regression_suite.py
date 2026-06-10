@@ -6371,8 +6371,59 @@ def _test_paid_notification_includes_booking_summary() -> Check:
         and "29 мая" in lowered
         and "15:00" in text
         and "предоплата: 1.00 ₽" in lowered
+        and "одноразовую посуду" in lowered
     )
     return Check("paid notification includes booking summary", ok, text)
+
+
+def _test_paid_notification_previsit_video_links() -> Check:
+    common = {
+        "booking_date": date(2026, 7, 5),
+        "booking_time": time(18, 0),
+        "duration_minutes": 360,
+    }
+    normal_gazebo_text = payment_status_runner._paid_notification_text(
+        {"amount": "1.00"},
+        [
+            common
+            | {
+                "service_type": "gazebo",
+                "hold_yclients_service_id": "18201061",
+            }
+        ],
+    )
+    combo_text = payment_status_runner._paid_notification_text(
+        {"amount": "1.00"},
+        [
+            common
+            | {
+                "service_type": "bathhouse",
+                "hold_yclients_service_id": "18490331",
+            },
+            common
+            | {
+                "service_type": "gazebo",
+                "hold_yclients_service_id": "19196656",
+            },
+            common
+            | {
+                "service_type": "house",
+                "hold_yclients_service_id": "18201042",
+            },
+        ],
+    )
+    lowered = combo_text.lower().replace("ё", "е")
+    ok = (
+        "disk.yandex" not in normal_gazebo_text.lower()
+        and "https://disk.yandex.ru/d/vc7ki6Pm3LPYQA" in combo_text
+        and "https://disk.yandex.ru/d/ShvGhGJnC1Z3AQ" in combo_text
+        and "https://disk.yandex.ru/d/h1TZWkUYHoCUoA" in combo_text
+        and combo_text.count("https://disk.yandex.ru/d/") == 3
+        and "с вениками нельзя" in lowered
+        and "использование дров запрещено" in lowered
+        and "громко до 23:00" in lowered
+    )
+    return Check("paid notification previsit video links", ok, combo_text)
 
 
 def _test_new_bath_request_does_not_cancel_paid_gazebo(now: datetime) -> Check:
@@ -9447,6 +9498,11 @@ REGRESSION_CASES: tuple[RegressionCase, ...] = (
         "payments",
         "paid notification includes booking summary",
         lambda _now: _test_paid_notification_includes_booking_summary(),
+    ),
+    RegressionCase(
+        "payments",
+        "paid notification previsit video links",
+        lambda _now: _test_paid_notification_previsit_video_links(),
     ),
     RegressionCase(
         "payments",

@@ -116,6 +116,58 @@ def format_booking_summary(bookings: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def paid_booking_previsit_text(bookings: list[dict[str, Any]] | None = None) -> str:
+    text = (
+        "Мы хотим, чтобы ваш визит прошел максимально комфортно, поэтому хотели бы поделиться "
+        "общей информацией перед вашим приходом: рекомендуем с собой взять одноразовую посуду, "
+        "приборы и скатерть.\n\n"
+        "А также проинформируем вас: если вы забронировали баню с бассейном, то с вениками нельзя.\n\n"
+        "На нашей территории допускается использование только угля в мангале. Использование дров запрещено.\n\n"
+        "И обращаем ваше внимание: музыку на нашей базе можно включать громко до 23:00."
+    )
+    videos = _previsit_video_links(bookings or [])
+    if videos:
+        text += "\n\n" + "\n\n".join(f"{url}\n{caption}" for url, caption in videos)
+    return text
+
+
+def _previsit_video_links(bookings: list[dict[str, Any]]) -> list[tuple[str, str]]:
+    links: list[tuple[str, str]] = []
+    for booking in bookings:
+        service_type = str(booking.get("service_type") or "")
+        title = booking_object_title(booking).lower().replace("ё", "е")
+        if service_type in {"bathhouse", "gazebo_bathhouse"} or "баня" in title:
+            links.append(
+                (
+                    "https://disk.yandex.ru/d/vc7ki6Pm3LPYQA",
+                    "видео инструкция по приезде в баню с бассейном.",
+                )
+            )
+        if service_type == "house" or "гостевой дом" in title:
+            links.append(
+                (
+                    "https://disk.yandex.ru/d/h1TZWkUYHoCUoA",
+                    "видео инструкция по приезде в гостевой дом.",
+                )
+            )
+        if "крыт" in title or "закрыт" in title:
+            links.append(
+                (
+                    "https://disk.yandex.ru/d/ShvGhGJnC1Z3AQ",
+                    "видео инструкция по приезде в закрытую беседку",
+                )
+            )
+
+    unique: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for url, caption in links:
+        if url in seen:
+            continue
+        seen.add(url)
+        unique.append((url, caption))
+    return unique
+
+
 def payment_reply_text(payment: dict[str, Any] | None) -> str:
     if not payment or not payment.get("payment_url"):
         return (
