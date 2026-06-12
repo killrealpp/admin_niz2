@@ -137,9 +137,19 @@ def _apply_patch(draft: BookingDraft, patch: dict[str, Any] | None, *, from_user
         draft.payment_url = None
     aliases = {"guests": "guests_count", "variant": "service_variant", "format": "event_format", "name": "client_name"}
     allowed = set(BookingDraft.__dataclass_fields__)
+
+    # Сначала применяем счётчик предложений допов, чтобы upsell_done проверял
+    # уже актуальное значение независимо от порядка ключей в JSON от LLM.
+    if "upsell_offer_count" in patch:
+        count = _to_int(patch.get("upsell_offer_count"))
+        if count is not None:
+            draft.upsell_offer_count = max(0, min(int(count), 2))
+
     for raw_key, raw_value in patch.items():
         key = aliases.get(raw_key, raw_key)
         if key not in allowed:
+            continue
+        if key == "upsell_offer_count":
             continue
         value = raw_value
         if key == "service_type":
@@ -166,11 +176,13 @@ def _apply_patch(draft: BookingDraft, patch: dict[str, Any] | None, *, from_user
             value = list(value or []) if isinstance(value, list) else []
         elif key == "upsell_done":
             value = bool(value)
-            logger.info("UPSEL: value=%s offer_count=%s", value, draft.upsell_offer_count)
-            if value and draft.upsell_offer_count == 0:
-                draft.upsell_offer_count = 1
+            logger.info("UPSEL: value=%s offer_count=%s items=%s", value, draft.upsell_offer_count, draft.upsell_items)
+            if value and not draft.upsell_items and draft.upsell_offer_count < 2:
+                # Не даём закрыть допы после первого отказа. Ответ формирует LLM,
+                # engine только защищает состояние от преждевременного перехода.
+                draft.upsell_offer_count = max(draft.upsell_offer_count, 1)
                 value = False
-                logger.info("UPSEL: forced second offer")
+                logger.info("UPSEL: blocked early completion until second offer")
         if value in ("", [], None) and key not in ("upsell_items", "upsell_done"):
             continue
         setattr(draft, key, value)

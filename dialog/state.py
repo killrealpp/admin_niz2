@@ -76,9 +76,10 @@ class BookingDraft:
             return "event_format"
         if not self.upsell_done:
             return "upsell_items"
-        if self.upsell_done and self.upsell_offer_count < 1:
-            self.upsell_done = False
-            self.upsell_offer_count += 1
+        # Если клиент не выбрал допы, но предложение было сделано меньше двух раз,
+        # не считаем шаг допов закрытым. next_step не должен менять состояние,
+        # он только сообщает следующий шаг.
+        if self.upsell_done and not self.upsell_items and self.upsell_offer_count < 2:
             return "upsell_items"
         if not self.client_name:
             return "client_name"

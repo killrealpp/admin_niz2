@@ -23,6 +23,31 @@ logger = logging.getLogger(__name__)
 
 _RATE_LIMIT_EVENT = threading.Event()
 
+_CLEARABLE_DRAFT_FIELDS = {
+    "service_type",
+    "service_variant",
+    "date",
+    "time",
+    "duration",
+    "guests_count",
+    "event_format",
+    "upsell_items",
+    "upsell_done",
+    "client_name",
+    "phone",
+}
+
+_READ_ONLY_SELECTION_INTENTS = {
+    "availability_question",
+    "recommendation_request",
+    "alternative_request",
+    "alternatives_request",
+    "info_question",
+    "other",
+}
+
+_SELECTION_FIELDS = {"service_type", "service_variant", "time", "duration", "event_format", "client_name", "phone"}
+
 
 def is_llm_rate_limited() -> bool:
     """True while an LLM request is sleeping after a 429 retry.
@@ -137,18 +162,33 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
     if not decision:
         return fallback_decision(text)
 
-    router_patch = predecision.get("fields_patch") or {}
-    if router_patch:
-        merged_patch = dict(router_patch)
-        merged_patch.update(decision.fields_patch or {})
-        decision.fields_patch = {key: value for key, value in merged_patch.items() if value not in (None, "", [])}
+    predecision_intent = str(predecision.get("intent") or "other")
+
+    # Важно: LLM может рекомендовать единственный свободный объект и вернуть его в draft.
+    # Но рекомендация НЕ равна выбору клиента. В fields_patch оставляем только явно
+    # подтверждённые клиентом поля; для запросов подбора/доступности не записываем объект.
+    router_patch = _sanitize_fields_patch(predecision.get("fields_patch") or {})
+    decision_patch = _sanitize_fields_patch(decision.fields_patch or {})
+
+    merged_patch = dict(router_patch)
+    merged_patch.update(decision_patch)
+    decision.fields_patch = _guard_fields_patch_by_intent(
+        merged_patch,
+        predecision_intent=predecision_intent,
+        current_draft=draft,
+    )
+    decision.fields_patch = _enforce_upsell_two_step(
+        decision.fields_patch,
+        reply=decision.reply,
+        current_draft=draft,
+    )
 
     proposed_draft = _draft_with_patch(draft, decision.fields_patch)
 
     # Отдельный LLM-шаг выравнивает финальный ответ по уже собранному draft.
-    # Здесь код не решает, что говорить клиенту: он только передаёт модели факты
-    # после применения fields_patch — next_step, точную цену и статус готовности.
-    if proposed_draft.service_type:
+    # Но его нельзя запускать на подборы/альтернативы/сброс выбора: иначе он
+    # начинает продолжать оформление старого объекта и ломает диалог.
+    if _should_run_flow_finalizer(predecision_intent, decision.fields_patch, proposed_draft):
         decision = _finalize_reply_with_flow_state(
             original_message=text,
             original_decision=decision,
@@ -156,6 +196,16 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
             proposed_draft=proposed_draft,
             availability_context=availability_context,
             settings=settings,
+        )
+        decision.fields_patch = _guard_fields_patch_by_intent(
+            _sanitize_fields_patch(decision.fields_patch or {}),
+            predecision_intent=predecision_intent,
+            current_draft=draft,
+        )
+        decision.fields_patch = _enforce_upsell_two_step(
+            decision.fields_patch,
+            reply=decision.reply,
+            current_draft=draft,
         )
         proposed_draft = _draft_with_patch(draft, decision.fields_patch)
 
@@ -209,7 +259,7 @@ def _finalize_reply_with_flow_state(
 5. Если не хватает guests_count — спроси количество гостей.
 6. Если не хватает event_format — спроси формат. Если клиент пишет «не знаю», можно записать event_format="отдых" и перейти дальше.
 7. Допы предлагай только когда уже есть service_type, date, time, duration, guests_count и event_format.
-8. Допы нужно предложить два раза. Если upsell_offer_count=0 и клиент отказался — предложи допы ещё раз, не переходи к имени/телефону. Если upsell_offer_count>=1 и клиент снова отказался — можно перейти к имени/телефону.
+8. Допы нужно предложить два раза перед переходом к имени/телефону. Если upsell_offer_count=0 — сделай первое предложение допов и верни fields_patch.upsell_offer_count=1, upsell_done=false. Если upsell_offer_count=1 и клиент отказался или прислал имя/телефон — всё равно сделай второе короткое предложение допов, сохрани имя/телефон в fields_patch при наличии, верни upsell_offer_count=2, upsell_done=false. Только если upsell_offer_count>=2 и клиент снова отказался — можно поставить upsell_done=true и перейти к имени/телефону/подтверждению.
 9. Если flow_state.next_required_step_before_message == "confirmation", покажи финальную сводку заявки и точную стоимость из price_info. Не выдумывай цену.
 10. Для бани 8+ часов цена берётся только из price_info. Не пересчитывай её самостоятельно и не используй цену из старого ответа.
 11. Если в исходном ответе есть противоречивая цена, замени её на price_info.price_rub.
@@ -279,7 +329,7 @@ def _finalize_reply_with_flow_state(
 
     media = data.get("requested_media")
     if isinstance(media, list):
-        original_decision.requested_media = [str(item) for item in media if item]
+        original_decision.requested_media = _normalize_requested_media_items(media)
 
     original_decision.ready_for_confirmation = bool(data.get("ready_for_confirmation") or False)
     return original_decision
@@ -296,10 +346,146 @@ def _draft_with_patch(draft: BookingDraft, patch: dict[str, Any] | None) -> Book
         key = aliases.get(raw_key, raw_key)
         if key not in allowed:
             continue
-        if raw_value in (None, "", []):
+
+        # None в fields_patch — это явное очищение поля. Нужно для сценариев
+        # «не хочу пятую», «давайте не на 13», «посмотрим другое».
+        if raw_value is None:
+            if key in _CLEARABLE_DRAFT_FIELDS:
+                data[key] = None
+            continue
+
+        if raw_value in ("", []):
             continue
         data[key] = raw_value
     return BookingDraft.from_dict(data)
+
+
+def _sanitize_fields_patch(patch: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(patch, dict):
+        return {}
+
+    aliases = {"guests": "guests_count", "variant": "service_variant", "format": "event_format", "name": "client_name"}
+    allowed = set(BookingDraft.__dataclass_fields__)
+    result: dict[str, Any] = {}
+
+    for raw_key, value in patch.items():
+        key = aliases.get(raw_key, raw_key)
+        if key not in allowed:
+            continue
+        if value in ("", []):
+            continue
+        if value is None and key not in _CLEARABLE_DRAFT_FIELDS:
+            continue
+        result[key] = value
+
+    return result
+
+
+def _guard_fields_patch_by_intent(
+    patch: dict[str, Any],
+    *,
+    predecision_intent: str,
+    current_draft: BookingDraft,
+) -> dict[str, Any]:
+    result = dict(patch or {})
+
+    # Если клиент просит посмотреть/подобрать/посоветовать, не записываем в draft
+    # объект, который модель сама рекомендовала. Можно сохранять дату/гостей как
+    # контекст для follow-up, но не начинать оформление без явного выбора.
+    if predecision_intent in _READ_ONLY_SELECTION_INTENTS:
+        for key in list(result.keys()):
+            if key in _SELECTION_FIELDS:
+                result.pop(key, None)
+
+    # reset — клиент отказался от текущего выбранного сценария/даты. Старый объект
+    # нельзя оставлять в draft, иначе следующий ответ снова продолжит его оформление.
+    if predecision_intent == "reset":
+        result.setdefault("service_type", None)
+        result.setdefault("service_variant", None)
+        result.setdefault("date", None)
+        result.setdefault("time", None)
+        result.setdefault("duration", None)
+        result.setdefault("event_format", None)
+
+    # change_booking с service_variant=None должен реально очистить вариант.
+    # Если вариант очищен, время тоже уже невалидно.
+    if result.get("service_variant") is None and "service_variant" in result:
+        result.setdefault("time", None)
+
+    return result
+
+
+
+def _enforce_upsell_two_step(
+    patch: dict[str, Any],
+    *,
+    reply: str,
+    current_draft: BookingDraft,
+) -> dict[str, Any]:
+    """State-level safety for the two-offer upsell flow.
+
+    The LLM still writes the customer-facing answer. This guard only prevents
+    the draft from skipping the second upsell attempt when the model marks
+    upsell_done too early.
+    """
+    result = dict(patch or {})
+
+    future = _draft_with_patch(current_draft, result)
+    core_ready = bool(
+        future.service_type
+        and future.date
+        and future.time
+        and future.duration
+        and future.guests_count
+        and future.event_format
+    )
+
+    if not core_ready:
+        return result
+
+    current_count = int(current_draft.upsell_offer_count or 0)
+    patched_count = result.get("upsell_offer_count")
+    try:
+        target_count = int(patched_count) if patched_count is not None else current_count
+    except (TypeError, ValueError):
+        target_count = current_count
+
+    has_accepted_items = bool(result.get("upsell_items") or current_draft.upsell_items)
+
+    if not has_accepted_items and current_count == 0 and target_count == 0 and _reply_mentions_upsell(reply):
+        result["upsell_offer_count"] = 1
+        result["upsell_done"] = False
+        return result
+
+    if result.get("upsell_done") is True and not has_accepted_items and target_count < 2:
+        result["upsell_done"] = False
+        result["upsell_offer_count"] = max(current_count, target_count, 1)
+
+    return result
+
+
+def _reply_mentions_upsell(reply: str) -> bool:
+    text = (reply or "").lower().replace("ё", "е")
+    return any(word in text for word in ("доп", "уголь", "розжиг", "решет", "посуда", "лед", "кальян"))
+
+
+def _should_run_flow_finalizer(
+    predecision_intent: str,
+    fields_patch: dict[str, Any],
+    proposed_draft: BookingDraft,
+) -> bool:
+    if not proposed_draft.service_type:
+        return False
+
+    if predecision_intent in {"reset", "availability_question", "recommendation_request", "alternative_request", "alternatives_request", "info_question"}:
+        return False
+
+    # Если текущий ход только очищает выбор, finalizer не должен возвращать старую
+    # заявку к жизни и спрашивать время по старому объекту.
+    if any(value is None for value in (fields_patch or {}).values()):
+        return False
+
+    return True
 
 
 def _booking_price_info(draft: BookingDraft) -> dict[str, Any]:
@@ -410,13 +596,35 @@ def _decide_requested_media(
 
     allowed = set(media_catalog.keys())
     result: list[str] = []
-    for item in requested:
-        title = str(item).strip()
+    for title in _normalize_requested_media_items(requested):
         if title in allowed and title not in result:
             result.append(title)
         if len(result) >= 10:
             break
 
+    return result
+
+
+def _normalize_requested_media_items(items: list[Any]) -> list[str]:
+    result: list[str] = []
+    for item in items:
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("name") or item.get("id") or "").strip()
+        else:
+            title = str(item).strip()
+
+        if not title:
+            continue
+
+        if title == "Баня с бассейном":
+            title = "bathhouse"
+        elif title == "Гостевой дом":
+            title = "house"
+        elif title == "Теплая беседка":
+            title = "Тёплая беседка"
+
+        if title and title not in result:
+            result.append(title)
     return result
 
 
@@ -740,6 +948,9 @@ def _decision_from_json(content: str) -> AdminDecision | None:
 
     fields_patch = data.get("form_data_patch") or data.get("fields_patch") or {}
     if not fields_patch and isinstance(data.get("draft"), dict):
+        # Старые промпты могли возвращать draft целиком вместо fields_patch.
+        # Берём только заполненные значения; явные null-очистки должны приходить
+        # именно через fields_patch, иначе полный draft с null сотрёт заявку.
         fields_patch = {key: value for key, value in data["draft"].items() if value not in (None, "", [])}
 
     requested_media = data.get("requested_media") or []
@@ -749,11 +960,11 @@ def _decision_from_json(content: str) -> AdminDecision | None:
     return AdminDecision(
         reply=_clean_reply(str(data.get("reply_to_user") or data.get("reply") or "")),
         intent=str(data.get("intent") or "unknown"),
-        fields_patch={key: value for key, value in fields_patch.items() if value not in (None, "", [])},
+        fields_patch=_sanitize_fields_patch(fields_patch),
         action=AdminAction(type=action_type, params=action_params),
         missing_fields=list(data.get("missing_fields") or []),
         confidence=float(data.get("confidence") or 0),
-        requested_media=[str(item) for item in requested_media if item],
+        requested_media=_normalize_requested_media_items(requested_media),
         ready_for_confirmation=bool(data.get("ready_for_confirmation") or False),
     )
 
