@@ -118,7 +118,100 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
         merged_patch.update(decision.fields_patch or {})
         decision.fields_patch = {key: value for key, value in merged_patch.items() if value not in (None, "", [])}
 
+    # Финальная модель иногда игнорирует requested_media, потому что у неё слишком много задач.
+    # Поэтому решение о фото выносим в отдельный маленький LLM-вызов: модель видит готовый ответ,
+    # availability и media_catalog, и возвращает только список фото. Код сам не решает, где фото нужны.
+    if not decision.requested_media:
+        decision.requested_media = _decide_requested_media(
+            reply=decision.reply,
+            availability_context=availability_context,
+            media_catalog=_compact_media_catalog(),
+            settings=settings,
+        )
+
+    logger.info("LLM_MEDIA_DECISION requested_media=%s", decision.requested_media)
+
     return decision
+
+
+def _decide_requested_media(
+    *,
+    reply: str,
+    availability_context: str,
+    media_catalog: dict[str, Any],
+    settings: Any,
+) -> list[str]:
+    if not media_catalog:
+        logger.info("LLM_MEDIA_SKIP empty_media_catalog=true")
+        return []
+
+    system_prompt = """
+Ты решаешь, какие фото объектов нужно отправить клиенту после готового ответа бота.
+
+Верни только JSON. Никакого текста вокруг.
+
+Правила:
+- Если ответ бота предлагает клиенту выбрать из списка свободных объектов, фото нужны обязательно.
+- Если ответ бота рекомендует конкретный свободный объект или несколько объектов, фото нужны обязательно.
+- Если ответ бота просто спрашивает имя, телефон, время, количество гостей, цену или уточняет детали без выбора объекта — фото не нужны.
+- Добавляй только объекты, которые упомянуты в ответе бота и есть в media_catalog.
+- Не добавляй объект, если в availability_context он находится в блоке НЕДОСТУПНО на обсуждаемую дату.
+- Для бани используй "bathhouse".
+- Для гостевого дома используй "house".
+- Для тёплой беседки используй "Тёплая беседка".
+- Для крытой беседки используй "Крытая беседка".
+- Для обычных беседок используй полные названия: "Беседка №1", "Беседка №2" и так далее.
+- Максимум 10 элементов.
+
+Формат ответа строго такой:
+{
+  "requested_media": []
+}
+""".strip()
+
+    payload = {
+        "model": settings.openai_model,
+        "temperature": 0,
+        "max_tokens": 500,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "task": "decide_requested_media",
+                        "bot_reply": reply,
+                        "availability_context": availability_context[:7000],
+                        "media_catalog": media_catalog,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ],
+    }
+
+    try:
+        content = _post_chat_completion(payload)
+        logger.info("LLM_MEDIA_RAW_RESPONSE=%s", content[:2000])
+        data = _json_from_content(content) or {}
+    except Exception as exc:
+        logger.exception("LLM media decision failed: %s", exc)
+        return []
+
+    requested = data.get("requested_media") or []
+    if not isinstance(requested, list):
+        return []
+
+    allowed = set(media_catalog.keys())
+    result: list[str] = []
+    for item in requested:
+        title = str(item).strip()
+        if title in allowed and title not in result:
+            result.append(title)
+        if len(result) >= 10:
+            break
+
+    return result
 
 
 def _decide_data_request(
@@ -302,21 +395,19 @@ def _compact_services_catalog() -> dict[str, Any]:
 
 
 def _compact_media_catalog() -> dict[str, Any]:
-    catalog: dict[str, Any] = {}
-
-    for service_type, service in load_services().items():
-        service_title = str(service.get("title") or service_type)
-        service_media = service.get("media") or service.get("photos") or service.get("images") or []
-
-        if service_media:
-            catalog[service_title] = service_media
-            catalog[service_type] = service_media
-
-        for variant in service.get("variants") or []:
-            title = variant.get("title")
-            variant_media = variant.get("media") or variant.get("photos") or variant.get("images") or service_media
-
-            if title and variant_media:
-                catalog[str(title)] = variant_media
-
-    return catalog
+    # Фотки в этом проекте лежат не в services.yaml, а в app/images + app/bot/media.py.
+    # Для LLM нужен не путь к файлу, а список допустимых названий, которые потом понимает media.py.
+    return {
+        "bathhouse": {"title": "Баня с бассейном"},
+        "house": {"title": "Гостевой дом"},
+        "Тёплая беседка": {"title": "Тёплая беседка"},
+        "Теплая беседка": {"title": "Теплая беседка"},
+        "Крытая беседка": {"title": "Крытая беседка"},
+        "Беседка №1": {"title": "Беседка №1"},
+        "Беседка №2": {"title": "Беседка №2"},
+        "Беседка №3": {"title": "Беседка №3"},
+        "Беседка №4": {"title": "Беседка №4"},
+        "Беседка №5": {"title": "Беседка №5"},
+        "Беседка №6": {"title": "Беседка №6"},
+        "Беседка №8": {"title": "Беседка №8"},
+    }

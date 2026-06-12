@@ -9,7 +9,7 @@ from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
-from app.bot.media import paths_for_requested_media
+from app.bot.media import paths_for_requested_media, extract_media_titles_from_reply
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from app.core.config import get_settings
@@ -60,14 +60,27 @@ async def on_text(message: Message) -> None:
             sqlite.add_message(chat_id, "user", text, raw={"telegram_message_id": message.message_id})
             reply = await _safe_handle(chat_id, message.from_user.full_name if message.from_user else "", text)
             requested_media = pop_requested_media(chat_id)
+            marker_media = extract_media_titles_from_reply(reply)
+            if marker_media:
+                requested_media = marker_media
+
+            logger.info(
+                "MEDIA_DECISION chat_id=%s requested_media=%s marker_media=%s",
+                chat_id,
+                requested_media,
+                marker_media,
+            )
+
             sqlite.add_message(chat_id, "assistant", reply)
         finally:
             typing_task.cancel()
-    await message.answer(reply)
+    if reply:
+        await message.answer(reply)
     await _send_requested_media(message, requested_media)
     
 async def _send_requested_media(message: Message, requested_media: list[str]) -> None:
     paths = paths_for_requested_media(requested_media)
+    logger.info("MEDIA_SEND requested_media=%s paths=%s", requested_media, [str(path) for path in paths])
     if not paths:
         return
     try:
