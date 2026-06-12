@@ -293,6 +293,203 @@ def _refresh_availability_cache_locked(
     )
 
 
+def refresh_availability_cache_for_date(
+    date: str,
+    *,
+    reason: str = "date_missing",
+) -> None:
+    """Догружает в кэш ровно одну дату из YClients.
+
+    Используется, когда клиент спрашивает дату, которой ещё нет в таблице.
+    Не очищает весь кэш и не трогает остальные даты.
+    """
+    global _LAST_REFRESH
+
+    with _REFRESH_LOCK:
+        if sqlite.availability_date_exists(date):
+            logger.info("Availability cache date refresh skipped reason=%s date=%s exists=true", reason, date)
+            _load_cache_from_db(force=True)
+            return
+
+        client = YClientsClient()
+        rows, cache = _build_availability_rows_for_date(client, date)
+        refreshed_at = datetime.utcnow().isoformat()
+        sqlite.replace_availability_cache_for_date(date, rows, refreshed_at=refreshed_at)
+
+        with _LOCK:
+            for key in list(_CACHE.keys()):
+                if key[2] == date:
+                    _CACHE.pop(key, None)
+            _CACHE.update(cache)
+            _LAST_REFRESH = datetime.fromisoformat(refreshed_at)
+
+        logger.info(
+            "Availability cache single date refreshed reason=%s date=%s rows=%s",
+            reason,
+            date,
+            len(rows),
+        )
+
+
+def ensure_availability_date_cached(date: str, *, reason: str = "date_missing") -> bool:
+    _load_cache_from_db()
+    if sqlite.availability_date_exists(date):
+        return True
+
+    logger.info("AVAIL_DATE_MISSING date=%s refresh_live=true reason=%s", date, reason)
+    try:
+        refresh_availability_cache_for_date(date, reason=reason)
+        return True
+    except Exception:
+        logger.exception("Failed to refresh missing availability date=%s", date)
+        return False
+
+
+def _build_availability_rows_for_date(
+    client: YClientsClient,
+    date: str,
+) -> tuple[list[dict[str, str]], dict[tuple[str, str, str], list[str]]]:
+    rows: list[dict[str, str]] = []
+    cache: dict[tuple[str, str, str], list[str]] = {}
+
+    items = _iter_yclients_items()
+    staff_map: dict[str, list[dict[str, Any]]] = {}
+
+    for service_type, service, variant in items:
+        service_id = str(variant.get("yclients_service_id") or service.get("yclients_service_id") or "")
+        staff_id = str(variant.get("yclients_staff_id") or service.get("yclients_staff_id") or "")
+        title = str(variant.get("title") or service.get("title") or service_type)
+        block_full_day = bool(service.get("block_full_day_on_any_booking"))
+
+        if not service_id or not staff_id:
+            continue
+
+        staff_map.setdefault(staff_id, []).append(
+            {
+                "service_type": service_type,
+                "title": title,
+                "service_id": service_id,
+                "staff_id": staff_id,
+                "block_full_day": block_full_day,
+            }
+        )
+
+    busy_staff_ids = _busy_staff_ids_for_date(client, date)
+    logger.info("AVAIL_RECORDS date=%s busy_staff_ids=%s", date, sorted(busy_staff_ids))
+
+    request_count = 0
+
+    for staff_id, staff_items in staff_map.items():
+        full_day_items = [item for item in staff_items if item["block_full_day"]]
+        slot_items = [item for item in staff_items if not item["block_full_day"]]
+
+        for item in full_day_items:
+            service_type = str(item["service_type"])
+            title = str(item["title"])
+            service_id = str(item["service_id"])
+            sid = str(item["staff_id"])
+            key = (sid, service_id, date)
+
+            if sid in busy_staff_ids:
+                cache[key] = []
+                rows.append(
+                    {
+                        "service_type": service_type,
+                        "title": title,
+                        "date": date,
+                        "time": "",
+                        "service_id": service_id,
+                        "staff_id": sid,
+                        "status": "empty",
+                    }
+                )
+                logger.info("AVAIL_FULL_DAY_BUSY date=%s title=%s staff_id=%s service_id=%s", date, title, sid, service_id)
+            else:
+                cache[key] = ["day"]
+                rows.append(
+                    {
+                        "service_type": service_type,
+                        "title": title,
+                        "date": date,
+                        "time": "day",
+                        "service_id": service_id,
+                        "staff_id": sid,
+                        "status": "free",
+                    }
+                )
+                logger.info("AVAIL_FULL_DAY_FREE date=%s title=%s staff_id=%s service_id=%s", date, title, sid, service_id)
+
+        if not slot_items:
+            continue
+
+        request_count += 1
+        if request_count % 5 == 0:
+            time.sleep(0.5)
+
+        try:
+            raw_times = client.get_book_times(staff_id=staff_id, date=date)
+            all_times = sorted(
+                set(
+                    slot_time
+                    for item in raw_times
+                    if (slot_time := _extract_time(item))
+                )
+            )
+            logger.info(
+                "AVAIL_BOOK_TIMES date=%s staff_id=%s times_count=%s times_preview=%s",
+                date,
+                staff_id,
+                len(all_times),
+                all_times[:8],
+            )
+        except YClientsError as exc:
+            logger.warning(
+                "Availability cache YCLIENTS error staff=%s date=%s error=%s",
+                staff_id,
+                date,
+                exc,
+            )
+            if "429" in str(exc):
+                time.sleep(2)
+            all_times = []
+
+        for item in slot_items:
+            service_type = str(item["service_type"])
+            title = str(item["title"])
+            service_id = str(item["service_id"])
+            sid = str(item["staff_id"])
+            key = (sid, service_id, date)
+            cache[key] = all_times
+
+            if all_times:
+                for slot_time in all_times:
+                    rows.append(
+                        {
+                            "service_type": service_type,
+                            "title": title,
+                            "date": date,
+                            "time": slot_time,
+                            "service_id": service_id,
+                            "staff_id": sid,
+                            "status": "free",
+                        }
+                    )
+            else:
+                rows.append(
+                    {
+                        "service_type": service_type,
+                        "title": title,
+                        "date": date,
+                        "time": "",
+                        "service_id": service_id,
+                        "staff_id": sid,
+                        "status": "empty",
+                    }
+                )
+
+    return rows, cache
+
+
 def get_cached_times(*, staff_id: str, service_id: str, date: str) -> tuple[bool, list[str]]:
     with _LOCK:
         key = (str(staff_id), str(service_id), str(date))
@@ -306,6 +503,15 @@ def get_cached_times(*, staff_id: str, service_id: str, date: str) -> tuple[bool
         if key in _CACHE:
             return True, list(_CACHE[key])
 
+    # Если дата вообще отсутствует в таблице, догружаем её live из YClients.
+    if date and not sqlite.availability_date_exists(str(date)):
+        ensure_availability_date_cached(str(date), reason="date_missing_for_booking_check")
+
+        with _LOCK:
+            key = (str(staff_id), str(service_id), str(date))
+            if key in _CACHE:
+                return True, list(_CACHE[key])
+
     return False, []
 
 
@@ -316,6 +522,12 @@ def availability_context_for_llm(
     limit: int = 80,
 ) -> str:
     _load_cache_from_db()
+
+    if date and not ensure_availability_date_cached(date, reason="date_missing_for_llm"):
+        return (
+            f"По дате {date} нет актуальных данных доступности. "
+            "Нельзя утверждать, что объекты свободны."
+        )
 
     rows = sqlite.list_availability_rows(
         service_type=service_type,
@@ -667,8 +879,8 @@ def _iter_yclients_items() -> list[tuple[str, dict[str, Any], dict[str, Any]]]:
     return sorted(items, key=lambda item: priority.get(item[0], 99))
 
 
-def _load_cache_from_db() -> None:
-    if _CACHE:
+def _load_cache_from_db(*, force: bool = False) -> None:
+    if _CACHE and not force:
         return
 
     cache: dict[tuple[str, str, str], list[str]] = {}
@@ -684,6 +896,8 @@ def _load_cache_from_db() -> None:
                 cache[key].append(row.get("time", ""))
 
     with _LOCK:
+        if force:
+            _CACHE.clear()
         if not _CACHE:
             _CACHE.update({key: sorted(set(times)) for key, times in cache.items()})
 

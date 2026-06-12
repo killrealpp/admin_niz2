@@ -13,6 +13,7 @@ from app.data.services import normalize_service_type, service_title
 from app.dialog.availability import check_availability
 from app.dialog.dialog_guard import next_step_question, GuardResult
 from app.dialog.payment import create_prepayment
+from app.dialog.admin_notify import notify_admin_booking_created
 from app.dialog.state import BookingDraft, AdminDecision
 from app.storage import sqlite
 
@@ -104,10 +105,10 @@ def handle_text(chat_id: str, user_name: str, text: str) -> str:
         sqlite.save_draft(chat_id, draft.to_dict(), status="active", current_step=draft.next_step())
         return sanitize_reply(availability_reply)
 
-    if draft.ready_for_confirmation() and decision.ready_for_confirmation:
-        reply = _booking_summary(draft)
-    else:
-        reply = decision.reply or _fallback_question(draft)
+    # Финальную сводку и переход к оплате формирует LLM.
+    # Engine здесь не хардкодит текст заявки, чтобы не терять ответы на вопросы клиента
+    # и не подменять цену, рассчитанную/переданную модели.
+    reply = decision.reply or _fallback_question(draft)
 
     reply = sanitize_reply(reply, fallback=_fallback_question(draft))
     sqlite.save_draft(chat_id, draft.to_dict(), status="active", current_step=draft.next_step())
@@ -246,36 +247,12 @@ def _create_payment_or_admin_handoff(chat_id: str, draft: BookingDraft) -> str:
         sqlite.update_booking(booking_id, draft.to_dict(), status="waiting_payment")
         sqlite.save_draft(chat_id, draft.to_dict(), status="waiting_payment", current_step=draft.next_step())
         sqlite.upsert_hold(chat_id, draft.to_dict())
+        notify_admin_booking_created(chat_id=chat_id, booking_id=booking_id, draft=draft)
         return f"Отлично, бронь подготовила. Для подтверждения нужна предоплата. Ссылка на оплату:\n{payment_url}"
     except Exception as exc:
         logger.exception("Payment creation failed chat_id=%s", chat_id)
         sqlite.enqueue_admin_notification(f"Клиент подтвердил заявку, но автоматическая оплата не создалась.\nchat_id: {chat_id}\nОшибка: {exc}\nЗаявка: {draft.to_dict()}", chat_id=chat_id)
         return "Заявку собрала. Сейчас не получилось автоматически создать ссылку на оплату, передала администратору — он поможет завершить бронь."
-
-
-def _booking_summary(draft: BookingDraft) -> str:
-    lines = ["Проверьте, пожалуйста, заявку:"]
-    lines.append(f"— Объект: {draft.service_variant or service_title(draft.service_type)}")
-    lines.append(f"— Дата: {_human_date(draft.date)}")
-    lines.append(f"— Время: {draft.time}")
-    if isinstance(draft.duration, (int, float)):
-        if draft.duration == 24:
-            lines.append("— Длительность: сутки")
-        elif draft.duration == int(draft.duration):
-            lines.append(f"— Длительность: {int(draft.duration)} ч")
-        else:
-            lines.append(f"— Длительность: {draft.duration} ч")
-    elif draft.duration:
-        lines.append(f"— Длительность: {draft.duration}")
-    else:
-        lines.append("— Длительность: не указана")
-    lines.append(f"— Гостей: {draft.guests_count}")
-    lines.append(f"— Формат: {draft.event_format}")
-    lines.append(f"— Допы: {', '.join(draft.upsell_items) if draft.upsell_items else 'без допов'}")
-    lines.append(f"— Имя: {draft.client_name}")
-    lines.append(f"— Телефон: {draft.phone}")
-    lines.append("\nЕсли всё верно — напишите «да», и я подготовлю оплату.")
-    return "\n".join(lines)
 
 
 def _fallback_question(draft: BookingDraft) -> str:

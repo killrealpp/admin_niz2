@@ -7,6 +7,12 @@ from typing import Any
 from app.dialog.availability import build_yclients_payload, check_availability
 from app.dialog.availability_cache import refresh_availability_cache
 from app.dialog.state import BookingDraft
+from app.dialog.admin_notify import (
+    notify_admin_manual_review,
+    notify_admin_payment_canceled,
+    notify_admin_payment_received,
+    notify_admin_yclients_error,
+)
 from app.integrations.yclients import YClientsClient
 from app.integrations.yookassa import YooKassaClient
 from app.storage import sqlite
@@ -30,6 +36,12 @@ def sync_paid_bookings() -> list[dict[str, str]]:
             if payment.get("status") in {"canceled", "expired"}:
                 draft.status = "payment_canceled"
                 sqlite.update_booking(int(row["id"]), draft.to_dict(), "payment_canceled")
+                notify_admin_payment_canceled(
+                    chat_id=str(row["chat_id"]),
+                    booking_id=int(row["id"]),
+                    draft=draft,
+                    status=str(payment.get("status") or "payment_canceled"),
+                )
                 logger.info("Payment is no longer pending booking_id=%s status=%s", row["id"], payment.get("status"))
             continue
         result = check_availability(draft, chat_id=str(row["chat_id"]))
@@ -37,9 +49,11 @@ def sync_paid_bookings() -> list[dict[str, str]]:
             draft.status = "paid_needs_manual_review"
             sqlite.update_booking(int(row["id"]), draft.to_dict(), "paid_needs_manual_review")
             logger.warning("Paid booking unavailable booking_id=%s message=%s", row["id"], result.message)
-            sqlite.enqueue_admin_notification(
-                f"Оплаченная заявка требует ручной проверки.\nBooking ID: {row['id']}\nПричина: {result.message}",
+            notify_admin_manual_review(
                 chat_id=str(row["chat_id"]),
+                booking_id=int(row["id"]),
+                draft=draft,
+                reason=result.message or "доступность не подтвердилась",
             )
             events.append(
                 {
@@ -55,9 +69,10 @@ def sync_paid_bookings() -> list[dict[str, str]]:
             draft.status = "booked"
             sqlite.update_booking(int(row["id"]), draft.to_dict(), "booked")
             sqlite.convert_hold(str(row["chat_id"]))
-            sqlite.enqueue_admin_notification(
-                f"Создана бронь после оплаты.\nBooking ID: {row['id']}\nЗапись: {draft.yclients_record_id or 'создана, но номер не вернулся в ответе'}",
+            notify_admin_payment_received(
                 chat_id=str(row["chat_id"]),
+                booking_id=int(row["id"]),
+                draft=draft,
             )
             try:
                 refresh_availability_cache(days=14, max_seconds=180, reason="booking_created")
@@ -73,9 +88,10 @@ def sync_paid_bookings() -> list[dict[str, str]]:
             draft.status = "paid_yclients_error"
             sqlite.update_booking(int(row["id"]), draft.to_dict(), "paid_yclients_error")
             logger.exception("Failed to create YCLIENTS record booking_id=%s", row["id"])
-            sqlite.enqueue_admin_notification(
-                f"Оплата прошла, но автоматическая запись не создалась.\nBooking ID: {row['id']}",
+            notify_admin_yclients_error(
                 chat_id=str(row["chat_id"]),
+                booking_id=int(row["id"]),
+                draft=draft,
             )
             events.append(
                 {

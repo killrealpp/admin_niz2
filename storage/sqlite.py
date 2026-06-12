@@ -573,6 +573,44 @@ def replace_availability_cache(rows: list[dict[str, Any]], *, refreshed_at: str 
             )
 
 
+def availability_date_exists(date: str) -> bool:
+    with connect() as conn:
+        row = conn.execute(
+            f"SELECT 1 FROM {T_AVAILABILITY_CACHE} WHERE date = ? LIMIT 1",
+            (date,),
+        ).fetchone()
+    return row is not None
+
+
+def replace_availability_cache_for_date(
+    date: str,
+    rows: list[dict[str, Any]],
+    *,
+    refreshed_at: str | None = None,
+) -> None:
+    refreshed_at = refreshed_at or datetime.utcnow().isoformat()
+    with connect() as conn:
+        conn.execute(f"DELETE FROM {T_AVAILABILITY_CACHE} WHERE date = ?", (date,))
+        for row in rows:
+            conn.execute(
+                f"""
+                INSERT INTO {T_AVAILABILITY_CACHE}
+                    (service_type, title, date, time, service_id, staff_id, status, refreshed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    row.get("service_type") or "",
+                    row.get("title") or "",
+                    row.get("date") or date,
+                    row.get("time") or None,
+                    row.get("service_id") or "",
+                    row.get("staff_id") or "",
+                    row.get("status") or "",
+                    refreshed_at,
+                ),
+            )
+
+
 def availability_cache_age_seconds() -> float | None:
     with connect() as conn:
         row = conn.execute(f"SELECT MAX(refreshed_at) AS refreshed_at FROM {T_AVAILABILITY_CACHE}").fetchone()

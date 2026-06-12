@@ -10,6 +10,7 @@ from aiogram.enums import ChatAction, ParseMode
 from aiogram.filters import Command
 from aiogram.types import FSInputFile, Message
 from app.bot.media import paths_for_requested_media, extract_media_titles_from_reply
+from app.ai.parser import is_llm_rate_limited
 from aiogram.utils.media_group import MediaGroupBuilder
 
 from app.core.config import get_settings
@@ -100,7 +101,11 @@ async def _typing_loop(message: Message) -> None:
             await message.bot.send_chat_action(message.chat.id, ChatAction.TYPING)
         except Exception:
             logger.debug("Failed to send typing action", exc_info=True)
-        await asyncio.sleep(4)
+
+        # If OpenAI returns 429, parser.py sleeps with backoff. During that pause
+        # we keep Telegram's "bot is typing" indicator more alive instead of
+        # looking like the bot froze silently.
+        await asyncio.sleep(2 if is_llm_rate_limited() else 4)
 
 
 async def run_bot() -> None:

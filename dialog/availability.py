@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 from app.core.config import get_settings
 from app.data.services import load_services, service_title, service_variants, variant_by_title
-from app.dialog.availability_cache import get_cached_times, busy_staff_ids_for_date
+from app.dialog.availability_cache import get_cached_times
 from app.dialog.state import BookingDraft
 from app.storage import sqlite
 
@@ -31,147 +31,30 @@ def suitable_variants(draft: BookingDraft) -> list[dict[str, Any]]:
             continue
         if draft.guests_count and variant.get("capacity_max") and draft.guests_count > int(variant["capacity_max"]):
             continue
-        if draft.duration and variant.get("duration_minutes") and int(float(draft.duration) * 60) != int(variant["duration_minutes"]):
-            continue
+        if draft.duration and variant.get("duration_minutes"):
+            requested_minutes = int(float(draft.duration) * 60)
+            # Баня может бронироваться больше 7 часов: для проверки доступности и выбора
+            # YClients-услуги используем базовый вариант на 7 часов, а итоговая цена
+            # считается отдельно в pricing.py. Сам payload записи не меняем.
+            if draft.service_type == "bathhouse" and requested_minutes > 7 * 60:
+                requested_minutes = 7 * 60
+            if requested_minutes != int(variant["duration_minutes"]):
+                continue
         result.append(variant)
     result.sort(key=lambda item: (int(item.get("capacity_max") or 9999), int(item.get("price") or 999999)))
     return result[:10]
 
 def _has_any_booking_for_date(service_type: str, date_str: str, staff_id: str) -> bool:
-    return str(staff_id) in busy_staff_ids_for_date(date_str)
-
-def _busy_staff_ids_for_date(date_str: str) -> set[str]:
     from app.integrations.yclients import YClientsClient
-
-    busy: set[str] = set()
-
     try:
         client = YClientsClient()
-
-        for page in range(1, 6):
-            records = client.get_records(start_date=date_str, end_date=date_str, page=page)
-
-            if not records:
-                break
-
-            for record in records:
-                if not isinstance(record, dict):
-                    continue
-
-                if _record_is_cancelled(record):
-                    continue
-
-                staff_id = _record_staff_id(record)
-                if not staff_id:
-                    continue
-
-                start_time = _record_start_time(record)
-
-                # Если время не распарсили — безопаснее считать занятым.
-                # Если запись после 08:00 — объект занят на весь день.
-                if start_time is None or start_time >= "08:00":
-                    busy.add(staff_id)
-
-            if len(records) < 200:
-                break
-
+        records = client.get_records(start_date=date_str, end_date=date_str, page=1)
+        for r in records:
+            if str(r.get('staff_id', '')) == staff_id:
+                return True
+        return False
     except Exception:
-        return set()
-
-    return busy
-
-
-def list_available_objects_for_date(date_str: str, service_type: str | None = None) -> list[str]:
-    busy_staff_ids = _busy_staff_ids_for_date(date_str)
-
-    result: list[str] = []
-    seen: set[tuple[str, str]] = set()
-
-    services = load_services()
-    items = [(service_type, services.get(service_type or "") or {})] if service_type else list(services.items())
-
-    for current_type, config in items:
-        if not config or not config.get("block_full_day_on_any_booking"):
-            continue
-
-        variants = config.get("variants") or [config]
-
-        for variant in variants:
-            title = _object_public_title(current_type, variant)
-            service_id = str(variant.get("yclients_service_id") or "")
-            staff_id = str(variant.get("yclients_staff_id") or "")
-
-            if not title or not service_id or not staff_id:
-                continue
-
-            if staff_id in busy_staff_ids:
-                continue
-
-            key = (title, staff_id)
-            if key in seen:
-                continue
-
-            known, cached_times = get_cached_times(
-                staff_id=staff_id,
-                service_id=service_id,
-                date=date_str,
-            )
-
-            if known and cached_times:
-                seen.add(key)
-                result.append(title)
-
-    return result
-
-
-def _object_public_title(service_type: str | None, variant: dict[str, Any]) -> str:
-    if service_type == "bathhouse":
-        return "Баня с бассейном"
-
-    if service_type == "house":
-        return "Гостевой дом"
-
-    if service_type == "warm_gazebo":
-        return "Тёплая беседка"
-
-    return str(variant.get("title") or service_title(service_type) or "")
-
-
-def _record_staff_id(record: dict[str, Any]) -> str:
-    if record.get("staff_id"):
-        return str(record.get("staff_id"))
-
-    staff = record.get("staff")
-    if isinstance(staff, dict) and staff.get("id"):
-        return str(staff.get("id"))
-
-    return ""
-
-
-def _record_start_time(record: dict[str, Any]) -> str | None:
-    for key in ("datetime", "seance_date", "start_at", "date", "time", "start_time"):
-        value = record.get(key)
-        if not value:
-            continue
-
-        text = str(value).strip().replace("T", " ")
-
-        if " " in text:
-            text = text.split(" ", 1)[1]
-
-        normalized = _normalize_time(text[:5])
-        if normalized:
-            return normalized
-
-    return None
-
-
-def _record_is_cancelled(record: dict[str, Any]) -> bool:
-    if record.get("deleted") is True:
-        return True
-
-    status = str(record.get("status") or record.get("record_status") or "").lower()
-    return status in {"cancelled", "canceled", "deleted", "removed"}
+        return False
 
 def check_availability(draft: BookingDraft, *, chat_id: str | None = None) -> Availability:
     if not draft.service_type or not draft.date:
@@ -211,7 +94,7 @@ def check_availability(draft: BookingDraft, *, chat_id: str | None = None) -> Av
         return Availability(True, "", [str(selected.get("title") or "")])
     
     if _has_any_booking_for_date(draft.service_type, draft.date, staff_id):
-        return Availability(False, "", [])
+                return Availability(False, "", [])
             
     normalized_times = sorted(set(cached_times))
     if not draft.time:
