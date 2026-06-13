@@ -472,29 +472,97 @@ def expire_holds() -> None:
         )
 
 
-def active_hold_exists(draft: dict, *, ignore_chat_id: str | None = None) -> bool:
+
+def active_holds_for_service_date(service_type: str, date: str, *, ignore_chat_id: str | None = None) -> list[dict]:
+    """Return active holds for service/date, optionally excluding current chat.
+
+    Used for date-level answers: the whole date may still have available times,
+    but we should not tell another client that everything is simply free while
+    a concrete time is already reserved before payment.
+    """
     expire_holds()
+    if not service_type or not date:
+        return []
     with connect() as conn:
-        params = [
-            draft.get("service_type"),
-            draft.get("date"),
-            draft.get("time"),
-            float(draft.get("duration") or 0),
-            draft.get("service_variant"),
-        ]
+        params: list[object] = [service_type, date]
         query = """
-            SELECT 1 FROM mvp_slot_holds
+            SELECT * FROM mvp_slot_holds
             WHERE status = 'active'
               AND service_type = ?
               AND date = ?
-              AND time = ?
-              AND COALESCE(duration, 0) = ?
+        """
+        if ignore_chat_id:
+            query += " AND chat_id != ?"
+            params.append(ignore_chat_id)
+        query += " ORDER BY time ASC"
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+def active_hold_exists(draft: dict, *, ignore_chat_id: str | None = None) -> bool:
+    """Return True if another active reservation hold conflicts.
+
+    The old check required the exact same duration. That misses races like:
+    client A holds bathhouse 14:00-22:00 and client B asks 14:00-17:00.
+    For the same object/date we compare time intervals and block overlaps.
+    """
+    expire_holds()
+    service_type = draft.get("service_type")
+    date = draft.get("date")
+    time_value = draft.get("time")
+    duration = _hold_duration(draft.get("duration"))
+    service_variant = draft.get("service_variant") or ""
+    if not service_type or not date or not time_value or not duration:
+        return False
+
+    with connect() as conn:
+        params = [service_type, date, service_variant]
+        query = """
+            SELECT * FROM mvp_slot_holds
+            WHERE status = 'active'
+              AND service_type = ?
+              AND date = ?
               AND COALESCE(service_variant, '') = COALESCE(?, '')
         """
         if ignore_chat_id:
             query += " AND chat_id != ?"
             params.append(ignore_chat_id)
-        return conn.execute(query, params).fetchone() is not None
+        rows = conn.execute(query, params).fetchall()
+
+    current = _hold_interval(str(time_value), float(duration))
+    if not current:
+        return False
+    start_a, end_a = current
+    for row in rows:
+        item = dict(row)
+        other = _hold_interval(str(item.get("time") or ""), float(item.get("duration") or 0))
+        if not other:
+            continue
+        start_b, end_b = other
+        if start_a < end_b and start_b < end_a:
+            return True
+    return False
+
+
+def _hold_duration(value: object) -> float | None:
+    try:
+        number = float(value or 0)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _hold_interval(time_value: str, duration_hours: float) -> tuple[int, int] | None:
+    try:
+        parts = str(time_value)[:5].split(":")
+        hour = int(parts[0])
+        minute = int(parts[1]) if len(parts) > 1 else 0
+    except Exception:
+        return None
+    if not (0 <= hour <= 23 and 0 <= minute <= 59 and duration_hours > 0):
+        return None
+    start = hour * 60 + minute
+    end = start + int(duration_hours * 60)
+    return start, end
 
 
 def upsert_hold(chat_id: str, draft: dict) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -21,6 +22,14 @@ class Availability:
     ok: bool
     message: str
     variants: list[str]
+
+
+def _format_time_list(times: list[str], *, limit: int = 6) -> str:
+    shown = [str(t) for t in times if t][:limit]
+    if not shown:
+        return ""
+    tail = " и другие" if len(times) > limit else ""
+    return ", ".join(shown) + tail
 
 
 def suitable_variants(draft: BookingDraft) -> list[dict[str, Any]]:
@@ -48,14 +57,49 @@ def suitable_variants(draft: BookingDraft) -> list[dict[str, Any]]:
     result.sort(key=lambda item: (int(item.get("capacity_max") or 9999), int(item.get("price") or 999999)))
     return result[:10]
 
+def _record_start_date(record: dict[str, Any]) -> str | None:
+    """Return YYYY-MM-DD of a YClients record start.
+
+    YClients /records may return bookings that started the previous day and
+    overlap into the requested date. For this bot's business rule those records
+    must NOT block the target date. So we only treat a record as busy for the
+    date it actually starts on.
+    """
+    for key in ("datetime", "date", "seance_date", "start_date", "create_date"):
+        raw = record.get(key)
+        if not raw:
+            continue
+        text = str(raw)
+        if len(text) >= 10 and re.match(r"\d{4}-\d{2}-\d{2}", text[:10]):
+            return text[:10]
+    appointments = record.get("appointments") or []
+    if isinstance(appointments, list):
+        for item in appointments:
+            if not isinstance(item, dict):
+                continue
+            nested = _record_start_date(item)
+            if nested:
+                return nested
+    return None
+
+
 def _has_any_booking_for_date(service_type: str, date_str: str, staff_id: str) -> bool:
     from app.integrations.yclients import YClientsClient
     try:
         client = YClientsClient()
         records = client.get_records(start_date=date_str, end_date=date_str, page=1)
         for r in records:
-            if str(r.get('staff_id', '')) == staff_id:
-                return True
+            if str(r.get('staff_id', '')) != staff_id:
+                continue
+            record_date = _record_start_date(r)
+            if record_date and record_date != date_str:
+                logger.info(
+                    "AVAIL_SKIP_PREVIOUS_DAY_RECORD target_date=%s staff_id=%s record_start_date=%s",
+                    date_str, staff_id, record_date,
+                )
+                continue
+            # If YClients did not return a parseable start date, stay conservative.
+            return True
         return False
     except Exception:
         return False
@@ -108,22 +152,29 @@ def check_availability(draft: BookingDraft, *, chat_id: str | None = None) -> Av
     # конкретное время старта в get_book_times — иначе после оплаты бронь на 10 часов
     # ошибочно уходит в ручную проверку с причиной "доступность не подтвердилась".
     if "day" in normalized_times:
+        if draft.time and draft.duration and _active_hold_exists_safe(draft, chat_id=chat_id):
+            return Availability(False, "время уже предварительно занято", [])
         # День свободен по /records, но перед оплатой/созданием записи
         # YClients ещё должен разрешать конкретное время старта для выбранной услуги.
         # Иначе получаем оплату, а /book_record потом отвечает 422.
         if draft.time:
             live_times = _live_book_times_for_variant(selected, draft.date)
             if live_times is not None:
-                return Availability(draft.time in live_times, "", [title] if draft.time in live_times else [])
+                if draft.time in live_times:
+                    return Availability(True, "", [title])
+                message = _format_time_list(live_times)
+                return Availability(False, message, live_times)
         return Availability(True, "", [title])
 
     if not draft.time:
         return Availability(True, "", [title])
 
     if draft.time in normalized_times:
+        if draft.duration and _active_hold_exists_safe(draft, chat_id=chat_id):
+            return Availability(False, "время уже предварительно занято", [])
         return Availability(True, "", [title])
 
-    return Availability(False, "", [])
+    return Availability(False, _format_time_list(normalized_times), normalized_times)
 
 
 

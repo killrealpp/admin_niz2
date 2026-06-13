@@ -316,7 +316,7 @@ def _finalize_reply_with_flow_state(
 5. Если не хватает guests_count — спроси количество гостей.
 6. Если не хватает event_format — спроси формат. Если клиент пишет «не знаю», можно записать event_format="отдых" и перейти дальше.
 7. Допы предлагай только когда уже есть service_type, date, time, duration, guests_count и event_format.
-8. Допы нужно предложить два раза перед переходом к имени/телефону. Если upsell_offer_count=0 — сделай первое предложение допов и верни fields_patch.upsell_offer_count=1, upsell_done=false. Если upsell_offer_count=1 и клиент отказался или прислал имя/телефон — всё равно сделай второе короткое предложение допов, сохрани имя/телефон в fields_patch при наличии, верни upsell_offer_count=2, upsell_done=false. Только если upsell_offer_count>=2 и клиент снова отказался — можно поставить upsell_done=true и перейти к имени/телефону/подтверждению.
+8. Допы предлагай без давления. Если upsell_offer_count=0 — сделай первое мягкое предложение допов и верни upsell_offer_count=1, upsell_done=false. Если upsell_offer_count=1 и клиент коротко отказался — можно сделать второе короткое предложение. Если клиент явно просит не предлагать снова, раздражён или повторно отказывается — ставь upsell_done=true и переходи к имени/телефону/подтверждению.
 9. Если flow_state.next_required_step_before_message == "confirmation", покажи финальную сводку заявки и точную стоимость из price_info. Не выдумывай цену.
 10. Для бани 8+ часов цена берётся только из price_info. Не пересчитывай её самостоятельно и не используй цену из старого ответа.
 11. Если в исходном ответе есть противоречивая цена, замени её на price_info.price_rub.
@@ -475,15 +475,26 @@ def _guard_fields_patch_by_intent(
             if key in _SELECTION_FIELDS:
                 result.pop(key, None)
 
-    # reset — клиент отказался от текущего выбранного сценария/даты. Старый объект
-    # нельзя оставлять в draft, иначе следующий ответ снова продолжит его оформление.
+    # reset must be explicit. If the user has an active object and the bot has
+    # just offered dates, a bare «нет/не подходит» is often a date refinement, not
+    # a full reset. Preserve the object context; engine/router will ask for other
+    # dates instead of switching to random alternatives.
     if predecision_intent == "reset":
-        result.setdefault("service_type", None)
-        result.setdefault("service_variant", None)
-        result.setdefault("date", None)
-        result.setdefault("time", None)
-        result.setdefault("duration", None)
-        result.setdefault("event_format", None)
+        has_active_date_context = bool(current_draft.service_type and current_draft.last_offered_dates)
+        if has_active_date_context:
+            result.pop("service_type", None)
+            result.pop("service_variant", None)
+            result.setdefault("date", None)
+            result.pop("time", None)
+            result.pop("duration", None)
+            result.pop("event_format", None)
+        else:
+            result.setdefault("service_type", None)
+            result.setdefault("service_variant", None)
+            result.setdefault("date", None)
+            result.setdefault("time", None)
+            result.setdefault("duration", None)
+            result.setdefault("event_format", None)
 
     # change_booking с service_variant=None должен реально очистить вариант.
     # Если вариант очищен, время тоже уже невалидно.
@@ -1256,7 +1267,7 @@ def _booking_flow_state(draft: BookingDraft) -> dict[str, Any]:
             "phone",
             "confirmation",
         ],
-        "rule": "Если next_required_step_before_message не confirmation, нельзя писать что бронь подтверждена или что ссылка на оплату будет отправлена. Сначала ответь на вопрос клиента, затем спроси ровно следующий недостающий пункт. Допы нельзя предлагать до заполнения time, duration, guests_count и event_format. Если must_offer_second_upsell=true, нельзя спрашивать имя/телефон или показывать сводку — нужно только вторично мягко уточнить допы одним цельным LLM-ответом.",
+        "rule": "Если next_required_step_before_message не confirmation, нельзя писать что бронь подтверждена или что ссылка на оплату будет отправлена. Сначала ответь на вопрос клиента, затем спроси ровно следующий недостающий пункт. Допы нельзя предлагать до заполнения time, duration, guests_count и event_format. Если must_offer_second_upsell=true, второе предложение допов допускается только если клиент не попросил закрыть тему. Не используй технические слова: слот, система записи, Booking ID.",
     }
 
 

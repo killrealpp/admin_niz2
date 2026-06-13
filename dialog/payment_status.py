@@ -36,6 +36,7 @@ def sync_paid_bookings() -> list[dict[str, str]]:
             if payment.get("status") in {"canceled", "expired"}:
                 draft.status = "payment_canceled"
                 sqlite.update_booking(int(row["id"]), draft.to_dict(), "payment_canceled")
+                sqlite.save_draft(str(row["chat_id"]), draft.to_dict(), status="payment_canceled", current_step=draft.next_step())
                 notify_admin_payment_canceled(
                     chat_id=str(row["chat_id"]),
                     booking_id=int(row["id"]),
@@ -48,6 +49,7 @@ def sync_paid_bookings() -> list[dict[str, str]]:
         if not result.ok:
             draft.status = "paid_needs_manual_review"
             sqlite.update_booking(int(row["id"]), draft.to_dict(), "paid_needs_manual_review")
+            sqlite.save_draft(str(row["chat_id"]), draft.to_dict(), status="paid_needs_manual_review", current_step=draft.next_step())
             logger.warning("Paid booking unavailable booking_id=%s message=%s", row["id"], result.message)
             notify_admin_manual_review(
                 chat_id=str(row["chat_id"]),
@@ -68,6 +70,7 @@ def sync_paid_bookings() -> list[dict[str, str]]:
             draft.yclients_record_id = _extract_record_id(response)
             draft.status = "booked"
             sqlite.update_booking(int(row["id"]), draft.to_dict(), "booked")
+            sqlite.save_draft(str(row["chat_id"]), draft.to_dict(), status="booked", current_step=draft.next_step())
             sqlite.convert_hold(str(row["chat_id"]))
             notify_admin_payment_received(
                 chat_id=str(row["chat_id"]),
@@ -87,6 +90,7 @@ def sync_paid_bookings() -> list[dict[str, str]]:
         except Exception:
             draft.status = "paid_yclients_error"
             sqlite.update_booking(int(row["id"]), draft.to_dict(), "paid_yclients_error")
+            sqlite.save_draft(str(row["chat_id"]), draft.to_dict(), status="paid_yclients_error", current_step=draft.next_step())
             logger.exception("Failed to create YCLIENTS record booking_id=%s", row["id"])
             notify_admin_yclients_error(
                 chat_id=str(row["chat_id"]),

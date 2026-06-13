@@ -135,6 +135,9 @@ def _booking_message(
 
     if price:
         lines.append(f"Стоимость: {price:,} ₽".replace(",", " "))
+        breakdown = _price_breakdown(draft)
+        if breakdown:
+            lines.append(f"Расчёт стоимости: {breakdown}")
     if draft.payment_id:
         lines.append(f"YooKassa payment_id: {draft.payment_id}")
     if draft.yclients_record_id:
@@ -169,6 +172,24 @@ def _format_duration(value: object) -> str:
         return f"{int(number)} ч"
     return f"{number:g} ч"
 
+
+
+def _price_breakdown(draft: BookingDraft) -> str | None:
+    if draft.service_type != "bathhouse" or not draft.duration:
+        return None
+    try:
+        duration = int(float(draft.duration))
+    except (TypeError, ValueError):
+        return None
+    if duration <= 7:
+        return None
+    total = calculate_booking_price(draft)
+    if not total:
+        return None
+    extra_hours = duration - 7
+    extra_sum = extra_hours * 1500
+    base = total - extra_sum
+    return f"{base:,} ₽ за 7 часов + {extra_hours} × 1 500 ₽ = {total:,} ₽".replace(",", " ")
 
 
 def notify_admin_cancel_refund_required(
