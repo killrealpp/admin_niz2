@@ -6,6 +6,7 @@ import random
 import re
 import threading
 import time
+from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
@@ -42,11 +43,15 @@ _READ_ONLY_SELECTION_INTENTS = {
     "recommendation_request",
     "alternative_request",
     "alternatives_request",
+    "date_refinement",
     "info_question",
     "other",
 }
 
-_SELECTION_FIELDS = {"service_type", "service_variant", "time", "duration", "event_format", "client_name", "phone"}
+# Для read-only запросов нельзя начинать оформление нового объекта,
+# но нельзя выкидывать полезные данные вроде имени/телефона из сообщения
+# «Савелий, 8902..., а парковка большая?».
+_SELECTION_FIELDS = {"service_type", "service_variant"}
 
 
 def is_llm_rate_limited() -> bool:
@@ -87,6 +92,7 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
         history=history,
     )
 
+    predecision = _apply_date_refinement_context(predecision, draft, today=today)
     availability_query = _normalize_availability_query(predecision.get("availability_query"))
 
     mode = availability_query.get("mode")
@@ -119,7 +125,7 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
         )
 
     logger.info("LLM_PREDECISION=%s", predecision)
-    logger.info("LLM_AVAILABILITY_CONTEXT:\n%s", availability_context[:6000])
+    logger.debug("LLM_AVAILABILITY_CONTEXT:\n%s", availability_context[:6000])
 
     payload = {
         "model": settings.answer_model,
@@ -153,7 +159,7 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
 
     try:
         content = _post_chat_completion(payload)
-        logger.info("LLM_FINAL_RAW_RESPONSE=%s", content[:6000])
+        logger.info("LLM_FINAL_RAW_RESPONSE=%s", content[:1200])
     except Exception as exc:
         logger.exception("LLM final decision failed: %s", exc)
         return fallback_decision(text)
@@ -163,6 +169,12 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
         return fallback_decision(text)
 
     predecision_intent = str(predecision.get("intent") or "other")
+    router_action = predecision.get("action") or {}
+    if (not decision.action or decision.action.type == "none") and isinstance(router_action, dict):
+        action_type = str(router_action.get("type") or "none")
+        action_params = dict(router_action.get("params") or {})
+        if action_type != "none" and _router_action_allowed(action_type, action_params, predecision.get("intent"), draft):
+            decision.action = AdminAction(type=action_type, params=action_params)
 
     # Важно: LLM может рекомендовать единственный свободный объект и вернуть его в draft.
     # Но рекомендация НЕ равна выбору клиента. В fields_patch оставляем только явно
@@ -185,29 +197,19 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
 
     proposed_draft = _draft_with_patch(draft, decision.fields_patch)
 
-    # Отдельный LLM-шаг выравнивает финальный ответ по уже собранному draft.
-    # Но его нельзя запускать на подборы/альтернативы/сброс выбора: иначе он
-    # начинает продолжать оформление старого объекта и ломает диалог.
-    if _should_run_flow_finalizer(predecision_intent, decision.fields_patch, proposed_draft):
-        decision = _finalize_reply_with_flow_state(
-            original_message=text,
-            original_decision=decision,
-            current_draft=draft,
-            proposed_draft=proposed_draft,
-            availability_context=availability_context,
-            settings=settings,
-        )
-        decision.fields_patch = _guard_fields_patch_by_intent(
-            _sanitize_fields_patch(decision.fields_patch or {}),
-            predecision_intent=predecision_intent,
-            current_draft=draft,
-        )
-        decision.fields_patch = _enforce_upsell_two_step(
-            decision.fields_patch,
-            reply=decision.reply,
-            current_draft=draft,
-        )
-        proposed_draft = _draft_with_patch(draft, decision.fields_patch)
+    # Важно: отдельный LLM-finalizer отключён.
+    # Он начал спорить с основным решением: додумывал duration=3, сушил ответы,
+    # возвращал допы и мог менять action. Дальше flow защищают только кодовые guard'ы.
+    decision.fields_patch = _guard_no_default_duration(
+        decision.fields_patch,
+        message=text,
+        current_draft=draft,
+    )
+    decision.fields_patch = _drop_null_overwrites_unless_clear_intent(
+        decision.fields_patch,
+        predecision_intent=predecision_intent,
+    )
+    proposed_draft = _draft_with_patch(draft, decision.fields_patch)
 
     # Финальная модель иногда игнорирует requested_media, потому что у неё слишком много задач.
     # Поэтому решение о фото выносим в отдельный маленький LLM-вызов: модель видит готовый ответ,
@@ -225,10 +227,65 @@ def decide(text: str, draft: BookingDraft, *, today: str, history: list[dict[str
             missing_fields=decision.missing_fields,
         )
 
+    final_draft_for_reply = _draft_with_patch(draft, decision.fields_patch)
+    decision.requested_media = _filter_requested_media_by_active_draft(
+        decision.requested_media,
+        final_draft_for_reply,
+        current_draft=draft,
+        predecision_intent=predecision_intent,
+    )
+    decision.reply = _canonicalize_price_in_reply(decision.reply, final_draft_for_reply)
     logger.info("LLM_MEDIA_DECISION requested_media=%s", decision.requested_media)
 
     return decision
 
+
+
+def _router_action_allowed(action_type: str, params: dict[str, Any], intent: Any, draft: BookingDraft) -> bool:
+    """Do not let the router accidentally reset an active booking on confirmation/payment.
+
+    The previous bug was: router returned action=new_booking on "все верно",
+    engine reset the draft, and the next "оплачу" started from empty state.
+    """
+    if action_type == "new_booking":
+        explicit = bool(params.get("explicit") or params.get("confirmed") or params.get("confirmed_new_booking"))
+        has_active_draft = bool(draft.service_type or draft.date or draft.time or draft.duration or draft.guests_count or draft.client_name or draft.phone)
+        if has_active_draft and not explicit:
+            logger.warning("ROUTER_ACTION_BLOCKED action=new_booking intent=%s active_draft=True params=%s", intent, params)
+            return False
+    return True
+
+
+def _finalizer_lost_useful_context(original_reply: str, final_reply: str) -> bool:
+    original = (original_reply or "").strip()
+    final = (final_reply or "").strip()
+    if not original or not final:
+        return False
+    if len(final) >= max(80, int(len(original) * 0.7)):
+        return False
+    final_l = final.lower().replace("ё", "е")
+    original_l = original.lower().replace("ё", "е")
+    final_is_bare_question = final.endswith("?") and not any(w in final_l for w in ("запис", "понял", "принял", "доступ", "стоим", "итого", "состав"))
+    original_has_context = any(w in original_l for w in ("запис", "понял", "принял", "доступ", "с ", "это ", "стоим", "итого", "состав"))
+    return bool(final_is_bare_question and original_has_context)
+
+
+def _canonicalize_price_in_reply(reply: str, draft: BookingDraft) -> str:
+    if not reply:
+        return reply
+    price = calculate_booking_price(draft)
+    if not price:
+        return reply
+    price_text = f"{price:,}".replace(",", " ")
+    patterns = [
+        r"(общая стоимость(?:\s+составит|\s*[:—-])?\s*)\d[\d\s]*(?:руб(?:\.|лей)?|₽)",
+        r"(стоимость(?:\s+составит|\s*[:—-])\s*)\d[\d\s]*(?:руб(?:\.|лей)?|₽)",
+        r"(итого(?:\s*[:—-])?\s*)\d[\d\s]*(?:руб(?:\.|лей)?|₽)",
+    ]
+    result = reply
+    for pattern in patterns:
+        result = re.sub(pattern, lambda m: f"{m.group(1)}{price_text} ₽", result, flags=re.I)
+    return result
 
 
 def _finalize_reply_with_flow_state(
@@ -264,13 +321,19 @@ def _finalize_reply_with_flow_state(
 10. Для бани 8+ часов цена берётся только из price_info. Не пересчитывай её самостоятельно и не используй цену из старого ответа.
 11. Если в исходном ответе есть противоречивая цена, замени её на price_info.price_rub.
 12. requested_media не заполняй здесь, если бот собирает данные или показывает финальную сводку.
+13. Если flow_state.upsell_locked=true, запрещено снова предлагать дополнительные услуги, баню, питание, кальян, комфортные добавки и любые допы. Тема допов уже закрыта.
+14. Предлагай только допы из upsell_catalog/services_catalog. Нельзя выдумывать массаж, ресторан, питание и любые услуги, которых нет в базе.
+15. Если клиент просит оплату или ссылку на оплату, и flow_state.payment_allowed_now=true, верни wants_payment=true и action.type="create_payment". Не предлагай допы и не задавай новых вопросов.
+16. Не сокращай хороший исходный ответ. Если original_decision.reply уже подтверждает полученное поле и задаёт следующий вопрос, оставь его смысл и детали. Например: «Поняла, с 12:00 до 22:00, это 10 часов. Сколько гостей?» лучше, чем просто «Сколько гостей?».
 
 Формат ответа:
 {
   "reply": "сообщение клиенту",
   "ready_for_confirmation": true или false,
   "fields_patch": {},
-  "requested_media": []
+  "requested_media": [],
+  "wants_payment": true или false,
+  "action": {"type": "none", "params": {}}
 }
 """.strip()
 
@@ -293,6 +356,8 @@ def _finalize_reply_with_flow_state(
                             "fields_patch": original_decision.fields_patch,
                             "ready_for_confirmation": original_decision.ready_for_confirmation,
                             "missing_fields": original_decision.missing_fields,
+                            "wants_payment": getattr(original_decision, "wants_payment", False),
+                            "action": original_decision.action.__dict__ if original_decision.action else {"type": "none", "params": {}},
                         },
                         "current_draft_before_message": current_draft.to_dict(),
                         "proposed_draft_after_message": proposed_draft.to_dict(),
@@ -308,7 +373,7 @@ def _finalize_reply_with_flow_state(
 
     try:
         content = _post_chat_completion(payload)
-        logger.info("LLM_FLOW_FINALIZER_RAW_RESPONSE=%s", content[:3000])
+        logger.info("LLM_FLOW_FINALIZER_RAW_RESPONSE=%s", content[:1200])
         data = _json_from_content(content) or {}
     except Exception as exc:
         logger.exception("LLM flow finalizer failed: %s", exc)
@@ -319,7 +384,20 @@ def _finalize_reply_with_flow_state(
 
     reply = str(data.get("reply") or original_decision.reply or "").strip()
     if reply:
-        original_decision.reply = _clean_reply(reply)
+        cleaned_reply = _clean_reply(reply)
+        if _finalizer_lost_useful_context(original_decision.reply, cleaned_reply):
+            original_decision.reply = _clean_reply(original_decision.reply)
+        else:
+            original_decision.reply = cleaned_reply
+
+    if "wants_payment" in data:
+        original_decision.wants_payment = bool(data.get("wants_payment"))
+
+    action_raw = data.get("action")
+    if isinstance(action_raw, dict):
+        action_type = str(action_raw.get("type") or "none")
+        if action_type != "none":
+            original_decision.action = AdminAction(type=action_type, params=dict(action_raw.get("params") or {}))
 
     patch = data.get("fields_patch")
     if isinstance(patch, dict) and patch:
@@ -416,6 +494,95 @@ def _guard_fields_patch_by_intent(
 
 
 
+
+def _drop_null_overwrites_unless_clear_intent(patch: dict[str, Any], *, predecision_intent: str) -> dict[str, Any]:
+    result = dict(patch or {})
+    if predecision_intent in {"reset", "change_booking"}:
+        return result
+    return {key: value for key, value in result.items() if value is not None}
+
+
+def _guard_no_default_duration(
+    patch: dict[str, Any],
+    *,
+    message: str,
+    current_draft: BookingDraft,
+) -> dict[str, Any]:
+    """Do not let the model invent duration while the user only answered time."""
+    result = dict(patch or {})
+    if "duration" not in result:
+        return result
+
+    if current_draft.next_step() == "time" and "time" in result and not _message_has_explicit_duration(message):
+        logger.warning(
+            "GUARD_DROP_DEFAULT_DURATION message=%r time=%r dropped_duration=%r",
+            message,
+            result.get("time"),
+            result.get("duration"),
+        )
+        result.pop("duration", None)
+
+    return result
+
+
+def _message_has_explicit_duration(message: str) -> bool:
+    text = (message or "").lower().replace("ё", "е")
+    if " до " in f" {text} " or re.search(r"\b\d{1,2}(?::\d{2})?\s*[-–—]\s*\d{1,2}(?::\d{2})?\b", text):
+        return True
+    if any(word in text for word in ("длитель", "аренд", "на весь", "сутк")):
+        return True
+    if re.search(r"\b(3|4|5|6|7|8|9|10|11)\s*(?:ч|час|часа|часов)\b", text):
+        return True
+    return False
+
+
+def _filter_requested_media_by_active_draft(
+    requested_media: list[str] | None,
+    draft: BookingDraft,
+    *,
+    current_draft: BookingDraft | None = None,
+    predecision_intent: str,
+) -> list[str]:
+    items = _normalize_requested_media_items(requested_media or [])
+    if not items:
+        return []
+
+    # If the user is already booking the same object type and only уточняет дату /
+    # продолжает сбор полей, do not resend the same photos. Text remains LLM-made;
+    # this guard only prevents duplicate media side effects.
+    if current_draft and current_draft.service_type and draft.service_type == current_draft.service_type:
+        if predecision_intent in {"availability_question", "booking_request", "continue_booking", "info_question", "other"}:
+            return []
+
+    if predecision_intent in {"availability_question", "recommendation_request", "alternative_request", "alternatives_request"}:
+        # For selection/availability output, still don't allow media from a different
+        # active service type. This prevents bathhouse flow from sending gazebo photos.
+        if draft.service_type == "bathhouse":
+            return [item for item in items if item == "bathhouse"]
+        if draft.service_type == "house":
+            return [item for item in items if item == "house"]
+        if draft.service_type == "warm_gazebo":
+            return [item for item in items if item in {"Тёплая беседка", "Теплая беседка"}]
+        if draft.service_type == "gazebo":
+            if draft.service_variant:
+                return [item for item in items if item == draft.service_variant]
+            return [item for item in items if item.startswith("Беседка №") or item == "Крытая беседка"]
+        return items
+
+    if draft.service_type == "bathhouse":
+        return [item for item in items if item == "bathhouse"]
+    if draft.service_type == "house":
+        return [item for item in items if item == "house"]
+    if draft.service_type == "warm_gazebo":
+        return [item for item in items if item in {"Тёплая беседка", "Теплая беседка"}]
+    if draft.service_type == "gazebo":
+        if draft.service_variant:
+            return [item for item in items if item == draft.service_variant]
+        return [item for item in items if item.startswith("Беседка №") or item == "Крытая беседка"]
+
+    return items
+
+
 def _enforce_upsell_two_step(
     patch: dict[str, Any],
     *,
@@ -444,6 +611,13 @@ def _enforce_upsell_two_step(
         return result
 
     current_count = int(current_draft.upsell_offer_count or 0)
+    # После двух предложений тема допов закрывается. Модель может отвечать живым текстом,
+    # но состояние не должно откатываться назад и запускать третий оффер.
+    if bool(current_draft.upsell_done) or current_count >= 2:
+        result.pop("upsell_offer_count", None)
+        result["upsell_done"] = True
+        return result
+
     patched_count = result.get("upsell_offer_count")
     try:
         target_count = int(patched_count) if patched_count is not None else current_count
@@ -458,8 +632,15 @@ def _enforce_upsell_two_step(
         return result
 
     if result.get("upsell_done") is True and not has_accepted_items and target_count < 2:
-        result["upsell_done"] = False
-        result["upsell_offer_count"] = max(current_count, target_count, 1)
+        # If the booking already has contact details, do not keep the flow stuck
+        # on upsells forever. The model may close upsells after the user answers
+        # a repeated refusal/confirmation, even if it forgot to bump the counter.
+        if future.client_name and future.phone:
+            result["upsell_offer_count"] = 2
+            result["upsell_done"] = True
+        else:
+            result["upsell_done"] = False
+            result["upsell_offer_count"] = max(current_count, target_count, 1)
 
     return result
 
@@ -474,6 +655,9 @@ def _should_run_flow_finalizer(
     fields_patch: dict[str, Any],
     proposed_draft: BookingDraft,
 ) -> bool:
+    # Deprecated: the extra LLM finalizer is intentionally disabled.
+    return False
+
     if not proposed_draft.service_type:
         return False
 
@@ -584,7 +768,7 @@ def _decide_requested_media(
 
     try:
         content = _post_chat_completion(payload)
-        logger.info("LLM_MEDIA_RAW_RESPONSE=%s", content[:2000])
+        logger.debug("LLM_MEDIA_RAW_RESPONSE=%s", content[:1200])
         data = _json_from_content(content) or {}
     except Exception as exc:
         logger.exception("LLM media decision failed: %s", exc)
@@ -677,6 +861,65 @@ def _decide_data_request(
     data["fields_patch"] = fields_patch if isinstance(fields_patch, dict) else {}
 
     return data
+
+
+def _apply_date_refinement_context(predecision: dict[str, Any], draft: BookingDraft, *, today: str) -> dict[str, Any]:
+    """Convert the router's semantic date-refinement intent into a scoped availability query.
+
+    This is not a phrase hack: the router/LLM decides intent=date_refinement.
+    Code only turns that structured intent plus saved last_offered_dates into
+    a query for the same object after the previously offered dates.
+    """
+    if not isinstance(predecision, dict):
+        return {}
+
+    intent = str(predecision.get("intent") or "")
+    if intent != "date_refinement":
+        return predecision
+
+    offered = sorted(str(item) for item in (getattr(draft, "last_offered_dates", None) or []) if item)
+    if not offered:
+        return predecision
+
+    last_date = offered[-1]
+    try:
+        date_from = (datetime.fromisoformat(last_date).date() + timedelta(days=1)).isoformat()
+    except Exception:
+        date_from = today
+
+    service_type = getattr(draft, "last_offered_service_type", None) or draft.service_type
+    object_title = getattr(draft, "last_offered_object_title", None)
+    if not object_title and service_type == "bathhouse":
+        object_title = "Баня с бассейном"
+    elif not object_title and service_type == "house":
+        object_title = "Гостевой дом"
+    elif not object_title and service_type == "warm_gazebo":
+        object_title = "Теплая беседка"
+    elif not object_title and draft.service_variant:
+        object_title = draft.service_variant
+
+    if object_title:
+        query = {
+            "mode": "object_dates",
+            "date_from": date_from,
+            "date_to": None,
+            "service_type": service_type,
+            "object_title": object_title,
+        }
+    else:
+        query = {
+            "mode": "date_overview",
+            "date_from": date_from,
+            "date_to": None,
+            "service_type": service_type,
+            "object_title": None,
+        }
+
+    predecision = dict(predecision)
+    predecision["availability_query"] = query
+    predecision.setdefault("fields_patch", {})
+    logger.info("DATE_REFINEMENT_CONTEXT last_offered=%s query=%s", offered, query)
+    return predecision
 
 
 def _normalize_availability_query(value: Any) -> dict[str, Any]:
@@ -915,6 +1158,7 @@ def fallback_decision(text: str) -> AdminDecision:
         action=AdminAction("none"),
         confidence=0.0,
         ready_for_confirmation=False,
+        wants_payment=False,
     )
 
 
@@ -966,6 +1210,7 @@ def _decision_from_json(content: str) -> AdminDecision | None:
         confidence=float(data.get("confidence") or 0),
         requested_media=_normalize_requested_media_items(requested_media),
         ready_for_confirmation=bool(data.get("ready_for_confirmation") or False),
+        wants_payment=bool(data.get("wants_payment") or False),
     )
 
 
@@ -983,6 +1228,8 @@ def _booking_flow_state(draft: BookingDraft) -> dict[str, Any]:
         and draft.guests_count
         and draft.event_format
     )
+    upsell_count = int(draft.upsell_offer_count or 0)
+    must_offer_second_upsell = bool(core_ready_for_upsell and not draft.upsell_done and upsell_count == 1)
     return {
         "next_required_step_before_message": next_step,
         "ready_for_confirmation_before_message": draft.ready_for_confirmation(),
@@ -990,6 +1237,12 @@ def _booking_flow_state(draft: BookingDraft) -> dict[str, Any]:
         "core_ready_for_upsell": core_ready_for_upsell,
         "upsell_offer_count": draft.upsell_offer_count,
         "upsell_done": draft.upsell_done,
+        "must_offer_second_upsell": must_offer_second_upsell,
+        "block_contact_request": must_offer_second_upsell,
+        "upsell_locked": bool(draft.upsell_done or upsell_count >= 2),
+        "last_offered_dates": list(getattr(draft, "last_offered_dates", []) or []),
+        "last_offered_service_type": getattr(draft, "last_offered_service_type", None),
+        "last_offered_object_title": getattr(draft, "last_offered_object_title", None),
         "required_order": [
             "service_type",
             "date",
@@ -1003,7 +1256,7 @@ def _booking_flow_state(draft: BookingDraft) -> dict[str, Any]:
             "phone",
             "confirmation",
         ],
-        "rule": "Если next_required_step_before_message не confirmation, нельзя писать что бронь подтверждена или что ссылка на оплату будет отправлена. Сначала ответь на вопрос клиента, затем спроси ровно следующий недостающий пункт. Допы нельзя предлагать до заполнения time, duration, guests_count и event_format.",
+        "rule": "Если next_required_step_before_message не confirmation, нельзя писать что бронь подтверждена или что ссылка на оплату будет отправлена. Сначала ответь на вопрос клиента, затем спроси ровно следующий недостающий пункт. Допы нельзя предлагать до заполнения time, duration, guests_count и event_format. Если must_offer_second_upsell=true, нельзя спрашивать имя/телефон или показывать сводку — нужно только вторично мягко уточнить допы одним цельным LLM-ответом.",
     }
 
 

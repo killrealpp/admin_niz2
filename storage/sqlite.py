@@ -21,6 +21,7 @@ T_SLOT_HOLDS = "mvp_slot_holds"
 T_SYSTEM_LOGS = "mvp_system_logs"
 T_ADMIN_NOTIFICATIONS = "mvp_admin_notifications"
 T_AVAILABILITY_CACHE = "mvp_availability_cache"
+T_AVAILABILITY_WATCHLIST = "mvp_availability_watchlist"
 
 
 def _use_postgres() -> bool:
@@ -132,6 +133,22 @@ def init_db() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mvp_availability_lookup ON mvp_availability_cache(staff_id, service_id, date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mvp_availability_filter ON mvp_availability_cache(service_type, date)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mvp_availability_watchlist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id TEXT NOT NULL,
+                service_type TEXT,
+                object_title TEXT NOT NULL,
+                date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                notified_at TEXT,
+                canceled_at TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mvp_watchlist_active ON mvp_availability_watchlist(status, date)")
         conn.commit()
 
 
@@ -234,6 +251,22 @@ def _init_postgres() -> None:
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mvp_availability_lookup ON mvp_availability_cache(staff_id, service_id, date)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_mvp_availability_filter ON mvp_availability_cache(service_type, date)")
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mvp_availability_watchlist (
+                id BIGSERIAL PRIMARY KEY,
+                chat_id TEXT NOT NULL,
+                service_type TEXT,
+                object_title TEXT NOT NULL,
+                date TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active',
+                created_at TEXT NOT NULL,
+                notified_at TEXT,
+                canceled_at TEXT
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_mvp_watchlist_active ON mvp_availability_watchlist(status, date)")
 
 
 def _add_column(conn: sqlite3.Connection, table: str, name: str, definition: str) -> None:
@@ -664,3 +697,69 @@ def list_availability_rows(
     with connect() as conn:
         rows = conn.execute(query, params).fetchall()
     return [dict(row) for row in rows]
+
+
+
+def list_bookings(chat_id: str, *, statuses: list[str] | None = None, limit: int = 10) -> list[dict]:
+    params: list[Any] = [chat_id]
+    query = f"SELECT * FROM {T_BOOKINGS} WHERE chat_id = ?"
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        query += f" AND status IN ({placeholders})"
+        params.extend(statuses)
+    query += " ORDER BY id DESC LIMIT ?"
+    params.append(limit)
+    with connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [dict(row) for row in rows]
+
+
+def latest_active_booking(chat_id: str) -> dict | None:
+    rows = list_bookings(
+        chat_id,
+        statuses=["waiting_payment", "booked", "paid_needs_manual_review", "paid_yclients_error", "manual_review", "rescheduled"],
+        limit=1,
+    )
+    return rows[0] if rows else latest_booking(chat_id)
+
+
+def create_watchlist(chat_id: str, *, service_type: str | None, object_title: str, date: str) -> int:
+    now = datetime.utcnow().isoformat()
+    query = """
+        INSERT INTO mvp_availability_watchlist(chat_id, service_type, object_title, date, status, created_at)
+        VALUES (?, ?, ?, ?, 'active', ?)
+    """
+    if _use_postgres():
+        query += " RETURNING id"
+    with connect() as conn:
+        cur = conn.execute(query, (chat_id, service_type, object_title, date, now))
+        if _use_postgres():
+            return int(cur.fetchone()["id"])
+        return int(cur.lastrowid)
+
+
+def list_active_watchlist(limit: int = 50) -> list[dict]:
+    with connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM {T_AVAILABILITY_WATCHLIST} WHERE status = 'active' ORDER BY id ASC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def mark_watchlist_notified(watchlist_id: int) -> None:
+    now = datetime.utcnow().isoformat()
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE {T_AVAILABILITY_WATCHLIST} SET status='notified', notified_at=? WHERE id=?",
+            (now, watchlist_id),
+        )
+
+
+def cancel_watchlist(watchlist_id: int) -> None:
+    now = datetime.utcnow().isoformat()
+    with connect() as conn:
+        conn.execute(
+            f"UPDATE {T_AVAILABILITY_WATCHLIST} SET status='canceled', canceled_at=? WHERE id=?",
+            (now, watchlist_id),
+        )

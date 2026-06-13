@@ -41,6 +41,13 @@ class BookingDraft:
     reschedule_booking_id: int | None = None
     blocked_until: str | None = None
     block_reason: str | None = None
+    pending_action: dict[str, Any] = field(default_factory=dict)
+    # Контекст последнего списка дат, который бот предложил клиенту.
+    # Нужен для нормальных уточнений вроде «попозже», «не эти даты»,
+    # без привязки к конкретным фразам в пользовательском тексте.
+    last_offered_dates: list[str] = field(default_factory=list)
+    last_offered_service_type: str | None = None
+    last_offered_object_title: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "BookingDraft":
@@ -50,6 +57,10 @@ class BookingDraft:
             payload["upsell_items"] = []
         if payload.get("available_variants") is None:
             payload["available_variants"] = []
+        if payload.get("pending_action") is None:
+            payload["pending_action"] = {}
+        if payload.get("last_offered_dates") is None:
+            payload["last_offered_dates"] = []
         return cls(**payload)
 
     def to_dict(self) -> dict[str, Any]:
@@ -75,11 +86,6 @@ class BookingDraft:
         if not self.event_format:
             return "event_format"
         if not self.upsell_done:
-            return "upsell_items"
-        # Если клиент не выбрал допы, но предложение было сделано меньше двух раз,
-        # не считаем шаг допов закрытым. next_step не должен менять состояние,
-        # он только сообщает следующий шаг.
-        if self.upsell_done and not self.upsell_items and self.upsell_offer_count < 2:
             return "upsell_items"
         if not self.client_name:
             return "client_name"
@@ -117,3 +123,4 @@ class AdminDecision:
     confidence: float = 0.0
     requested_media: list[str] = field(default_factory=list)
     ready_for_confirmation: bool = False
+    wants_payment: bool = False

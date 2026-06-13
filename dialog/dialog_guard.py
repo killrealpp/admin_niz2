@@ -182,7 +182,7 @@ def next_step_question(draft: BookingDraft) -> str:
     if step == "service_variant":
         return "какую беседку выбираем?"
     if step == "time":
-        return "на какое время бронируем?"
+        return "во сколько планируете приехать?"
     if step == "duration":
         return "на сколько часов бронируем?"
     if step == "event_format":

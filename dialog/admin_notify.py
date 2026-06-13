@@ -168,3 +168,51 @@ def _format_duration(value: object) -> str:
     if number.is_integer():
         return f"{int(number)} ч"
     return f"{number:g} ч"
+
+
+
+def notify_admin_cancel_refund_required(
+    *,
+    chat_id: str,
+    booking_id: int,
+    draft: BookingDraft,
+    reason: str | None = None,
+) -> None:
+    extra_lines = [
+        "Клиент попросил отменить бронь.",
+        "Если предоплата уже была получена, нужно вернуть её в течение 7 дней.",
+    ]
+    if reason:
+        extra_lines.append(f"Причина/комментарий: {reason}")
+    sqlite.enqueue_admin_notification(
+        _booking_message(
+            title="Отмена брони: проверьте возврат предоплаты",
+            chat_id=chat_id,
+            booking_id=booking_id,
+            draft=draft,
+            payment_status="нужно проверить оплату/возврат",
+            extra_lines=extra_lines,
+        ),
+        chat_id=chat_id,
+    )
+
+
+def notify_admin_booking_rescheduled(
+    *,
+    chat_id: str,
+    booking_id: int,
+    draft: BookingDraft,
+    old_date: str | None,
+    old_time: str | None,
+) -> None:
+    sqlite.enqueue_admin_notification(
+        _booking_message(
+            title="Бронь перенесена",
+            chat_id=chat_id,
+            booking_id=booking_id,
+            draft=draft,
+            payment_status="проверьте статус оплаты по брони",
+            extra_lines=[f"Было: {old_date or 'не указано'} {old_time or ''}".strip()],
+        ),
+        chat_id=chat_id,
+    )

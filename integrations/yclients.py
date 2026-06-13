@@ -77,6 +77,10 @@ class YClientsClient:
         logger.info("YCLIENTS update_record record_id=%s", record_id)
         return self._request("PUT", f"/record/{self.company_id}/{record_id}", json=payload)
 
+    def delete_record(self, record_id: str) -> dict[str, Any]:
+        logger.info("YCLIENTS delete_record record_id=%s", record_id)
+        return self._request("DELETE", f"/record/{self.company_id}/{record_id}")
+
     def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         quiet = bool(kwargs.pop("quiet", False))
         last_error = None
@@ -88,12 +92,30 @@ class YClientsClient:
                 with httpx.Client(timeout=20) as client:
                     response = client.request(method, f"{self.base_url}{path}", headers=self.headers, **kwargs)
                 log("YCLIENTS request response method=%s path=%s status=%s", method, path, response.status_code)
+
+                # DELETE in YClients commonly returns 204 No Content on success.
+                # Treat it as success and do not try to parse an empty body as JSON.
+                if method.upper() == "DELETE" and response.status_code in {200, 202, 204}:
+                    if not response.text.strip():
+                        return {}
+
+                # Idempotent delete: if the record is already gone, the booking is
+                # effectively canceled in YClients. Do not retry and turn success
+                # into a fake failure after a previous 204.
+                if method.upper() == "DELETE" and response.status_code == 404:
+                    logger.info("YCLIENTS delete_record already_absent path=%s", path)
+                    return {}
+
                 if response.status_code >= 400:
                     raise YClientsError(f"YCLIENTS error {response.status_code}: {response.text}")
+
+                if not response.text.strip():
+                    return {}
+
                 payload = response.json()
-                if payload.get("success") is False:
+                if isinstance(payload, dict) and payload.get("success") is False:
                     raise YClientsError(str(payload.get("meta") or payload.get("message") or payload))
-                return payload.get("data", payload)
+                return payload.get("data", payload) if isinstance(payload, dict) else payload
             except Exception as exc:
                 last_error = exc
                 logger.warning("YCLIENTS request failed method=%s path=%s attempt=%s error=%s", method, path, attempt + 1, exc)

@@ -7,17 +7,20 @@
 - today — сегодняшняя дата YYYY-MM-DD;
 - recent_dialog — последние сообщения;
 - current_draft — текущее состояние заявки;
+- current_draft.last_offered_dates — последние даты, которые бот уже предложил клиенту;
+- current_draft.last_offered_service_type / last_offered_object_title — объект, к которому относились последние предложенные даты;
 - services_catalog — доступные типы объектов;
 - message — последнее сообщение клиента.
 
 Определи:
 1. intent — смысл сообщения;
 2. availability_query — какую доступность нужно запросить у кэша;
-3. fields_patch — какие поля заявки можно уверенно обновить уже на этапе роутинга.
+3. fields_patch — какие поля заявки можно уверенно обновить уже на этапе роутинга;
+4. action — опасное/служебное действие, которое код выполнит только после подтверждения пользователя.
 
 Формат ответа:
 {
-  "intent": "availability_question|booking_request|info_question|change_booking|confirm|reset|other",
+  "intent": "availability_question|booking_request|date_refinement|info_question|change_booking|confirm|reset|other",
   "availability_query": {
     "mode": "date_overview|object_dates",
     "date_from": "YYYY-MM-DD или null",
@@ -25,7 +28,8 @@
     "service_type": "gazebo|bathhouse|house|warm_gazebo|null",
     "object_title": "название объекта или null"
   },
-  "fields_patch": {}
+  "fields_patch": {},
+  "action": {"type": "none", "params": {}}
 }
 
 Режимы availability_query:
@@ -37,6 +41,12 @@
 2. object_dates — когда клиент спрашивает, когда конкретный объект свободен.
 Примеры: «когда крытая свободна», «а крытая?», «а баня?», «когда дом свободен», «беседка 6 когда свободна».
 В этом режиме обязательно заполни object_title.
+
+3. date_refinement — когда клиент уточняет уже предложенные даты, не меняя объект.
+Примеры по смыслу: «попозже», «есть дальше?», «не эти даты», «не на 14/15», «другая дата», «а после этих?».
+Это НЕ reset и НЕ отказ от бронирования, если current_draft.service_type уже выбран или есть last_offered_service_type.
+Для date_refinement верни availability_query по тому же объекту, что в last_offered_object_title/current_draft.service_type, а date_from поставь позже последней даты из current_draft.last_offered_dates.
+Если сам не уверен в точной следующей дате, всё равно intent="date_refinement", а date_from можешь оставить null — код уточнит по last_offered_dates.
 
 Правила для object_title:
 - Крытая / крытая беседка => "Крытая беседка".
@@ -82,7 +92,25 @@
 Дополнительные правила безопасности draft:
 - Рекомендация не равна выбору. Если клиент спрашивает «что есть», «что посоветуете», «что-нибудь где тепло», «какие варианты», «покажи другое», не записывай service_type/service_variant только потому, что нашёлся подходящий объект.
 - Если клиент просит «что-нибудь где тепло на дату», это recommendation_request или availability_question. Можно поставить date, но НЕ service_type и НЕ service_variant.
-- Если клиент говорит «нет, давайте не на эту дату», «не на 13», «не хочу этот вариант», intent = reset или change_booking. В fields_patch поставь null для старого выбранного поля: service_variant=null, при отказе от даты date=null.
+- Если клиент говорит «нет, давайте не на эту дату», «не на 13», «не хочу этот вариант» и при этом НЕ просит даты позже/дальше, intent = reset или change_booking. В fields_patch поставь null для старого выбранного поля: service_variant=null, при отказе от даты date=null.
+- Если клиент отказывается именно от предложенных дат и просит позже/дальше по тому же объекту, intent = date_refinement. Не очищай service_type/date через fields_patch, просто запроси следующие даты.
 - Если клиент говорит «не хочу пятую беседку», fields_patch должен быть {"service_variant": null}. Не продолжай оформление Беседки №5.
 - Если клиент говорит «давайте тогда не на 13», fields_patch должен очищать date и текущий выбранный вариант: {"date": null, "service_variant": null, "service_type": null}.
 - Если клиент явно выбирает объект словами «берём», «давайте эту», «оформляем», «хочу забронировать», тогда можно записывать service_type/service_variant.
+
+
+## Служебные action
+Верни action.type, если сообщение явно про один из сценариев:
+- "offer_watchlist" — клиент хочет конкретный объект на конкретную дату, но по availability он недоступен. params: {"service_type":"bathhouse|house|gazebo|warm_gazebo", "object_title":"...", "date":"YYYY-MM-DD"}. Бот предложит уведомить, если освободится.
+- "request_reschedule_confirmation" — клиент просит перенести существующую бронь на новую дату/время. params: {"date":"YYYY-MM-DD|null", "time":"HH:MM|null"}. Код сначала проверит доступность и спросит подтверждение, НЕ переносит сразу.
+- "request_cancel_confirmation" — клиент просит отменить существующую бронь. params можно оставить {}. Код спросит подтверждение, НЕ отменяет сразу.
+- "new_booking" — клиент явно хочет оформить вторую/новую бронь, а не менять текущую. params можно оставить {}.
+
+Важно: перенос и отмена всегда только через подтверждение. Не считай фразу «перенеси на 15» финальным разрешением изменить YClients.
+Если предыдущая попытка переноса не подошла и клиент пишет «тогда на 23», это продолжение переноса: action.type="request_reschedule_confirmation", params.date="2026-06-23".
+
+## ACTION SAFETY
+
+- Не возвращай `action.type="new_booking"` на сообщения подтверждения, оплаты или продолжения текущей заявки: «всё верно», «подтверждаю», «оплачу», «давайте оплату», «кидайте ссылку».
+- `new_booking` можно возвращать только если клиент явно просит новую/ещё одну бронь: «хочу ещё одну бронь», «новое бронирование», «забронируем второй объект». В этом случае добавь `params.explicit=true`.
+- Если заявка уже собрана и клиент просит оплату/ссылку, верни `action.type="create_payment"`.

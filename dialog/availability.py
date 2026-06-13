@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
@@ -9,7 +10,10 @@ from app.core.config import get_settings
 from app.data.services import load_services, service_title, service_variants, variant_by_title
 from app.dialog.availability_cache import get_cached_times
 from app.dialog.state import BookingDraft
+from app.dialog.pricing import calculate_booking_price
 from app.storage import sqlite
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -96,14 +100,47 @@ def check_availability(draft: BookingDraft, *, chat_id: str | None = None) -> Av
     if _has_any_booking_for_date(draft.service_type, draft.date, staff_id):
                 return Availability(False, "", [])
             
-    normalized_times = sorted(set(cached_times))
+    normalized_times = sorted(set(str(item) for item in cached_times if item))
+    title = str(selected.get("title") or "")
+
+    # Для объектов с full-day блокировкой (баня, дом, беседки) кэш хранит маркер
+    # "day": значит объект свободен на всю дату. В таком случае не надо искать
+    # конкретное время старта в get_book_times — иначе после оплаты бронь на 10 часов
+    # ошибочно уходит в ручную проверку с причиной "доступность не подтвердилась".
+    if "day" in normalized_times:
+        # День свободен по /records, но перед оплатой/созданием записи
+        # YClients ещё должен разрешать конкретное время старта для выбранной услуги.
+        # Иначе получаем оплату, а /book_record потом отвечает 422.
+        if draft.time:
+            live_times = _live_book_times_for_variant(selected, draft.date)
+            if live_times is not None:
+                return Availability(draft.time in live_times, "", [title] if draft.time in live_times else [])
+        return Availability(True, "", [title])
+
     if not draft.time:
-        return Availability(True, "", [str(selected.get("title") or "")])
-    
+        return Availability(True, "", [title])
+
     if draft.time in normalized_times:
-        return Availability(True, "", [str(selected.get("title") or "")])
-    
+        return Availability(True, "", [title])
+
     return Availability(False, "", [])
+
+
+
+def _live_book_times_for_variant(variant: dict[str, Any], date: str) -> list[str] | None:
+    service_id = str(variant.get("yclients_service_id") or "")
+    staff_id = str(variant.get("yclients_staff_id") or "")
+    if not service_id or not staff_id or not date:
+        return None
+    try:
+        from app.integrations.yclients import YClientsClient
+        raw_times = YClientsClient().get_book_times(staff_id=staff_id, service_id=service_id, date=date)
+    except Exception as exc:
+        logger.warning("YCLIENTS live slot check failed staff_id=%s service_id=%s date=%s error=%s", staff_id, service_id, date, exc)
+        return None
+    result = sorted(set(t for item in raw_times if (t := _extract_time(item))))
+    logger.info("YCLIENTS_LIVE_SLOT_CHECK date=%s staff_id=%s service_id=%s times=%s", date, staff_id, service_id, result[:20])
+    return result
 
 
 def list_available_dates(
@@ -156,6 +193,17 @@ def build_yclients_payload(draft: BookingDraft) -> dict[str, Any]:
     if not service_id or not staff_id:
         raise RuntimeError("YCLIENTS ids are not configured")
     dt = datetime.fromisoformat(f"{draft.date} {draft.time}:00").replace(tzinfo=ZoneInfo(get_settings().app_timezone))
+    appointment = {
+        "id": 1,
+        "services": [int(service_id)],
+        "staff_id": int(staff_id),
+        "datetime": dt.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+    # Важно: не передаём duration/length в YClients. Для бани на 8-10 часов
+    # выбирается service_id базовой услуги на 7 часов, а фактическая длительность
+    # и доплата фиксируются в комментарии. Так YClients не пытается найти
+    # несуществующую услугу "10 часов" и не ломает создание записи после оплаты.
     return {
         "phone": _digits_phone(draft.phone or ""),
         "fullname": draft.client_name or "Клиент",
@@ -163,14 +211,7 @@ def build_yclients_payload(draft: BookingDraft) -> dict[str, Any]:
         "comment": _comment(draft),
         "notify_by_sms": 0,
         "notify_by_email": 0,
-        "appointments": [
-            {
-                "id": 1,
-                "services": [int(service_id)],
-                "staff_id": int(staff_id),
-                "datetime": dt.strftime("%Y-%m-%dT%H:%M:%S"),
-            }
-        ],
+        "appointments": [appointment],
     }
 
 
@@ -237,8 +278,29 @@ def _digits_phone(phone: str) -> str:
 
 def _comment(draft: BookingDraft) -> str:
     upsells = ", ".join(draft.upsell_items) or "не указаны"
-    return (
-        f"Заявка из Telegram-бота. Гостей: {draft.guests_count or 'не указано'}. "
-        f"Формат: {draft.event_format or 'не указано'}. Допы: {upsells}. "
-        f"Длительность: {draft.duration or 'не указана'} ч."
-    )
+    price = calculate_booking_price(draft)
+    price_text = f"{price:,}".replace(",", " ") + " ₽" if price else "не рассчитана"
+    lines = [
+        "Заявка из Telegram-бота.",
+        f"Объект: {service_title(draft.service_type)}.",
+        f"Дата: {draft.date or 'не указана'}.",
+        f"Время: {booking_period(draft)}.",
+        f"Гостей: {draft.guests_count or 'не указано'}.",
+        f"Формат: {draft.event_format or 'не указано'}.",
+        f"Допы: {upsells}.",
+        f"Итоговая стоимость: {price_text}.",
+    ]
+    if draft.service_type == "bathhouse" and draft.duration:
+        try:
+            duration = float(draft.duration)
+        except (TypeError, ValueError):
+            duration = 0
+        if duration > 7:
+            extra_hours = duration - 7
+            extra_sum = int(extra_hours * 1500)
+            lines.append(
+                "Важно: в YClients используется услуга бани на 7 часов, "
+                f"фактическая бронь — {duration:g} часов. "
+                f"Доплата сверх 7 часов: {extra_sum:,} ₽.".replace(",", " ")
+            )
+    return "\n".join(lines)

@@ -17,6 +17,7 @@ from app.core.config import get_settings
 from app.dialog.availability_cache import refresh_availability_cache, refresh_availability_cache_if_stale
 from app.dialog.engine import handle_text, pop_requested_media
 from app.dialog.payment_status import sync_paid_bookings
+from app.dialog.watchlist import check_active_watchlist
 from app.storage import sqlite
 
 
@@ -123,6 +124,7 @@ async def run_bot() -> None:
     payment_task = asyncio.create_task(_payment_status_loop(bot))
     admin_task = asyncio.create_task(_admin_notification_loop(bot))
     availability_task = asyncio.create_task(_availability_cache_loop())
+    watchlist_task = asyncio.create_task(_watchlist_loop(bot))
     startup_availability_task: asyncio.Task[None] | None = None
     try:
         me = await bot.get_me()
@@ -133,6 +135,7 @@ async def run_bot() -> None:
         payment_task.cancel()
         admin_task.cancel()
         availability_task.cancel()
+        watchlist_task.cancel()
         if startup_availability_task is not None:
             startup_availability_task.cancel()
         await bot.session.close()
@@ -200,3 +203,16 @@ async def _startup_availability_cache_refresh() -> None:
         await asyncio.to_thread(sync_records_once, days_back=1, days_forward=60)
     except Exception:
         logger.exception("Initial YCLIENTS sync failed")
+
+
+async def _watchlist_loop(bot: Bot) -> None:
+    while True:
+        try:
+            events = await asyncio.to_thread(check_active_watchlist)
+            for event in events:
+                await bot.send_message(event["chat_id"], event["message"])
+            if events:
+                logger.info("WATCHLIST events sent count=%s", len(events))
+        except Exception:
+            logger.exception("Watchlist loop failed")
+        await asyncio.sleep(60 * 15)

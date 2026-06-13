@@ -173,7 +173,7 @@ def _refresh_availability_cache_locked(
                             "status": "empty",
                         }
                     )
-                    logger.info(
+                    logger.debug(
                         "AVAIL_FULL_DAY_BUSY date=%s title=%s staff_id=%s service_id=%s",
                         date,
                         title,
@@ -194,7 +194,7 @@ def _refresh_availability_cache_locked(
                             "status": "free",
                         }
                     )
-                    logger.info(
+                    logger.debug(
                         "AVAIL_FULL_DAY_FREE date=%s title=%s staff_id=%s service_id=%s",
                         date,
                         title,
@@ -403,7 +403,7 @@ def _build_availability_rows_for_date(
                         "status": "empty",
                     }
                 )
-                logger.info("AVAIL_FULL_DAY_BUSY date=%s title=%s staff_id=%s service_id=%s", date, title, sid, service_id)
+                logger.debug("AVAIL_FULL_DAY_BUSY date=%s title=%s staff_id=%s service_id=%s", date, title, sid, service_id)
             else:
                 cache[key] = ["day"]
                 rows.append(
@@ -417,7 +417,7 @@ def _build_availability_rows_for_date(
                         "status": "free",
                     }
                 )
-                logger.info("AVAIL_FULL_DAY_FREE date=%s title=%s staff_id=%s service_id=%s", date, title, sid, service_id)
+                logger.debug("AVAIL_FULL_DAY_FREE date=%s title=%s staff_id=%s service_id=%s", date, title, sid, service_id)
 
         if not slot_items:
             continue
@@ -535,7 +535,7 @@ def availability_context_for_llm(
         limit=limit * 4,
     )
 
-    logger.info(
+    logger.debug(
         "AVAIL_CONTEXT_FOR_LLM service_type=%s date=%s rows=%s sample=%s",
         service_type,
         date,
@@ -566,7 +566,7 @@ def availability_context_for_llm(
     dates = sorted(set(available_by_date.keys()) | set(unavailable_by_date.keys()))
 
     if not dates:
-        logger.info("AVAIL_CONTEXT_TEXT_FOR_LLM: empty")
+        logger.debug("AVAIL_CONTEXT_TEXT_FOR_LLM: empty")
         return "Кэш доступности пуст. Нельзя утверждать, что объекты свободны."
 
     lines: list[str] = [
@@ -603,7 +603,7 @@ def availability_context_for_llm(
     )
     context = suffix + "\n" + "\n".join(lines)
 
-    logger.info("AVAIL_CONTEXT_TEXT_FOR_LLM:\n%s", context[:6000])
+    logger.debug("AVAIL_CONTEXT_TEXT_FOR_LLM:\n%s", context[:6000])
     return context
 
 
@@ -693,7 +693,7 @@ def availability_object_dates_for_llm(
         lines.append("Ближайшая свободная дата в текущем диапазоне не найдена.")
 
     context = "\n".join(lines)
-    logger.info("AVAIL_OBJECT_CONTEXT_FOR_LLM:\n%s", context[:6000])
+    logger.debug("AVAIL_OBJECT_CONTEXT_FOR_LLM:\n%s", context[:6000])
     return context
 
 
